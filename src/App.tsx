@@ -299,30 +299,35 @@ function PasswortAendern({ profil }) {
 
 /* ---------- Dashboard ---------- */
 
-function Dashboard({ saison }) {
+function Dashboard({ saison, profil }) {
   const [ladend, setLadend] = useState(true);
   const [eigenerTabellenplatz, setEigenerTabellenplatz] = useState(null);
   const [naechstesSpiel, setNaechstesSpiel] = useState(null);
   const [geburtstag, setGeburtstag] = useState(null);
   const [termine, setTermine] = useState([]);
+  const [offeneUmfragen, setOffeneUmfragen] = useState([]);
 
   useEffect(() => {
     if (!saison) return;
     setLadend(true);
     (async () => {
-      const [{ data: tabelleZeile }, { data: spiele }, { data: profile }, { data: kalender }] = await Promise.all([
+      const [{ data: tabelleZeile }, { data: spiele }, { data: profile }, { data: kalender }, { data: umfragen }, { data: eigeneAntworten }] = await Promise.all([
         supabase.from("tabelle").select("*").eq("saison_id", saison.id).eq("ist_eigenes_team", true).maybeSingle(),
         supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).gte("datum", new Date().toISOString()).order("datum").limit(1),
         supabase.from("profiles").select("id, vorname, nachname, geburtstag"),
         supabase.from("kalender_ereignisse").select("*").gte("datum", new Date().toISOString()).order("datum").limit(4),
+        supabase.from("umfragen").select("id, titel").eq("aktiv", true),
+        supabase.from("umfrage_antworten").select("umfrage_id").eq("spieler_id", profil.id),
       ]);
       setEigenerTabellenplatz(tabelleZeile ?? null);
       setNaechstesSpiel(spiele?.[0] ?? null);
       setGeburtstag(naechsterGeburtstag(profile ?? []));
       setTermine(kalender ?? []);
+      const beantwortetIds = new Set((eigeneAntworten ?? []).map((a) => a.umfrage_id));
+      setOffeneUmfragen((umfragen ?? []).filter((u) => !beantwortetIds.has(u.id)));
       setLadend(false);
     })();
-  }, [saison]);
+  }, [saison, profil.id]);
 
   if (ladend) return <Leerzustand text="Lade Dashboard…" />;
 
@@ -372,8 +377,22 @@ function Dashboard({ saison }) {
 
       <div className="grid md:grid-cols-2 gap-4">
         <div className="bg-white rounded-lg border p-5">
-          <SectionLabel icon={MessageSquare}>Nachrichten & Umfragen</SectionLabel>
-          <p className="text-sm text-gray-400">Folgt in einer späteren Ausbaustufe.</p>
+          <SectionLabel icon={Vote}>
+            Offene Umfragen {offeneUmfragen.length > 0 && <span className="ml-1 text-white text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: COLORS.orange }}>{offeneUmfragen.length} neu</span>}
+          </SectionLabel>
+          {offeneUmfragen.length === 0 ? (
+            <p className="text-sm text-gray-400">Keine offenen Umfragen.</p>
+          ) : (
+            <ul className="space-y-2">
+              {offeneUmfragen.map((u) => (
+                <li key={u.id} className="flex items-center gap-2 text-sm text-gray-700">
+                  <Vote size={14} style={{ color: COLORS.orange }} />
+                  {u.titel}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-xs text-gray-400 mt-3">Nachrichten zwischen Spielern folgen in einer späteren Ausbaustufe.</p>
         </div>
 
         <div className="bg-white rounded-lg border p-5">
@@ -734,6 +753,7 @@ function Kader({ saison, profil }) {
   const [info, setInfo] = useState(null);
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
 
   async function laden() {
     setLadend(true);
@@ -749,9 +769,14 @@ function Kader({ saison, profil }) {
   useEffect(() => { if (saison) laden(); }, [saison]);
 
   async function aktualisieren() {
+    setFehler(null);
     setAktualisiertLadend(true);
-    await supabase.functions.invoke("fetch-mannschaft", { body: { saisonId: saison.id } });
+    const { data, error } = await supabase.functions.invoke("fetch-mannschaft", { body: { saisonId: saison.id } });
     setAktualisiertLadend(false);
+    if (error || data?.error) {
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
     laden();
   }
 
@@ -768,6 +793,7 @@ function Kader({ saison, profil }) {
             </button>
           )}
         </div>
+        {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
         {info ? (
           <>
             <div className="grid sm:grid-cols-2 gap-3 text-sm">
@@ -846,7 +872,7 @@ function Spielerverwaltung() {
 
     setLadend(false);
     if (error || data?.error) {
-      setFehler(error?.message || data.error);
+      setFehler(await echteFehlermeldung(error, data));
       return;
     }
     setEinmalpasswort(einmalig);
@@ -906,6 +932,278 @@ function Spielerverwaltung() {
           {spielerListe.length === 0 && <p className="text-sm text-gray-400">Noch keine Spieler angelegt.</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------- Umfragen ---------- */
+
+function Umfragen({ profil }) {
+  const [umfragen, setUmfragen] = useState([]);
+  const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({}); // { [umfrageId]: [{spieler_id, ausgewaehlte_optionen}] }
+  const [spielerListe, setSpielerListe] = useState([]);
+  const [ladend, setLadend] = useState(true);
+
+  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [] });
+  const [fehler, setFehler] = useState(null);
+  const [speichernLadend, setSpeichernLadend] = useState(false);
+
+  async function laden() {
+    setLadend(true);
+    const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }] = await Promise.all([
+      supabase.from("umfragen").select("*").eq("aktiv", true).order("erstellt_am", { ascending: false }),
+      supabase.from("umfrage_antworten").select("umfrage_id, spieler_id, ausgewaehlte_optionen"),
+      supabase.from("profiles").select("id, vorname, nachname"),
+    ]);
+    setUmfragen(umfragenDaten ?? []);
+    setSpielerListe(spielerDaten ?? []);
+    const gruppiert = {};
+    (antwortenDaten ?? []).forEach((a) => {
+      if (!gruppiert[a.umfrage_id]) gruppiert[a.umfrage_id] = [];
+      gruppiert[a.umfrage_id].push(a);
+    });
+    setAntwortenNachUmfrage(gruppiert);
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, []);
+
+  async function abstimmen(umfrageId, mehrfachauswahl, gewaehlt) {
+    await supabase.from("umfrage_antworten").upsert(
+      { umfrage_id: umfrageId, spieler_id: profil.id, ausgewaehlte_optionen: gewaehlt, beantwortet_am: new Date().toISOString() },
+      { onConflict: "umfrage_id,spieler_id" }
+    );
+    laden();
+    // TODO nächster Schritt: Ersteller optional per E-Mail benachrichtigen, sobald der E-Mail-Dienst angebunden ist.
+  }
+
+  function optionHinzufuegen() {
+    setForm((f) => ({ ...f, optionen: [...f.optionen, ""] }));
+  }
+  function optionAendern(i, wert) {
+    setForm((f) => ({ ...f, optionen: f.optionen.map((o, idx) => (idx === i ? wert : o)) }));
+  }
+  function optionEntfernen(i) {
+    setForm((f) => ({ ...f, optionen: f.optionen.filter((_, idx) => idx !== i) }));
+  }
+
+  async function umfrageErstellen() {
+    setFehler(null);
+    const optionenBereinigt = form.optionen.map((o) => o.trim()).filter(Boolean);
+    if (!form.titel.trim()) return setFehler("Bitte einen Titel eingeben.");
+    if (optionenBereinigt.length < 2) return setFehler("Bitte mindestens 2 Antwortoptionen angeben.");
+    if (form.empfaenger === "einzeln" && form.einzelneIds.length === 0) return setFehler("Bitte mindestens einen Spieler auswählen.");
+
+    setSpeichernLadend(true);
+    const { data: neueUmfrage, error } = await supabase
+      .from("umfragen")
+      .insert({
+        titel: form.titel.trim(),
+        beschreibung: form.beschreibung.trim() || null,
+        optionen: optionenBereinigt,
+        mehrfachauswahl: form.mehrfachauswahl,
+        erstellt_von: profil.id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      setSpeichernLadend(false);
+      return setFehler(error.message);
+    }
+
+    if (form.empfaenger === "einzeln") {
+      await supabase.from("umfrage_ziele").insert(form.einzelneIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
+    }
+
+    setSpeichernLadend(false);
+    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [] });
+    laden();
+    // TODO nächster Schritt: betroffene Spieler optional per E-Mail informieren, sobald der E-Mail-Dienst angebunden ist.
+  }
+
+  if (ladend) return <Leerzustand text="Lade Umfragen…" />;
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      {profil.ist_admin && (
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={Vote}>Neue Umfrage erstellen</SectionLabel>
+          <input
+            placeholder="Titel"
+            value={form.titel}
+            onChange={(e) => setForm({ ...form, titel: e.target.value })}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          />
+          <textarea
+            placeholder="Beschreibung (optional)"
+            value={form.beschreibung}
+            onChange={(e) => setForm({ ...form, beschreibung: e.target.value })}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+            rows={2}
+          />
+          <label className="block text-xs text-gray-500 mb-1">Antwortoptionen</label>
+          <div className="space-y-2 mb-2">
+            {form.optionen.map((o, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  value={o}
+                  onChange={(e) => optionAendern(i, e.target.value)}
+                  placeholder={`Option ${i + 1}`}
+                  className="flex-1 border rounded-md px-3 py-2 text-sm"
+                />
+                {form.optionen.length > 2 && (
+                  <button onClick={() => optionEntfernen(i)} className="px-2 text-gray-400">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <button onClick={optionHinzufuegen} className="text-xs mb-4" style={{ color: COLORS.petrol }}>
+            + weitere Option
+          </button>
+
+          <label className="flex items-center gap-2 text-sm mb-4">
+            <input type="checkbox" checked={form.mehrfachauswahl} onChange={(e) => setForm({ ...form, mehrfachauswahl: e.target.checked })} />
+            Mehrfachauswahl erlauben
+          </label>
+
+          <label className="block text-xs text-gray-500 mb-1">Empfänger</label>
+          <div className="flex gap-2 mb-3">
+            <button
+              onClick={() => setForm({ ...form, empfaenger: "alle" })}
+              className="px-3 py-1.5 rounded-full text-sm font-semibold"
+              style={form.empfaenger === "alle" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+            >
+              Alle Spieler
+            </button>
+            <button
+              onClick={() => setForm({ ...form, empfaenger: "einzeln" })}
+              className="px-3 py-1.5 rounded-full text-sm font-semibold"
+              style={form.empfaenger === "einzeln" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+            >
+              Einzelne Spieler
+            </button>
+          </div>
+
+          {form.empfaenger === "einzeln" && (
+            <div className="grid sm:grid-cols-2 gap-1 mb-3 max-h-40 overflow-y-auto border rounded-md p-2">
+              {spielerListe.map((s) => (
+                <label key={s.id} className="flex items-center gap-2 text-sm py-1">
+                  <input
+                    type="checkbox"
+                    checked={form.einzelneIds.includes(s.id)}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        einzelneIds: e.target.checked ? [...f.einzelneIds, s.id] : f.einzelneIds.filter((id) => id !== s.id),
+                      }))
+                    }
+                  />
+                  {s.vorname} {s.nachname}
+                </label>
+              ))}
+            </div>
+          )}
+
+          {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <button
+            onClick={umfrageErstellen}
+            disabled={speichernLadend}
+            className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+            style={{ background: COLORS.orange, opacity: speichernLadend ? 0.6 : 1 }}
+          >
+            {speichernLadend ? "Erstelle…" : "Umfrage erstellen"}
+          </button>
+        </div>
+      )}
+
+      {umfragen.length === 0 ? (
+        <Leerzustand text="Keine aktiven Umfragen." />
+      ) : (
+        umfragen.map((u) => (
+          <UmfrageKarte
+            key={u.id}
+            umfrage={u}
+            antworten={antwortenNachUmfrage[u.id] ?? []}
+            profil={profil}
+            onAbstimmen={(gewaehlt) => abstimmen(u.id, u.mehrfachauswahl, gewaehlt)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+function UmfrageKarte({ umfrage, antworten, profil, onAbstimmen }) {
+  const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
+  const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
+  const zeigeErgebnis = Boolean(eigeneAntwort) || profil.ist_admin;
+
+  function toggle(index) {
+    if (umfrage.mehrfachauswahl) {
+      setAuswahl((prev) => (prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]));
+    } else {
+      setAuswahl([index]);
+    }
+  }
+
+  const gesamtStimmen = antworten.length;
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <div className="flex items-center gap-2 mb-1">
+        <Vote size={16} style={{ color: COLORS.orange }} />
+        <h3 className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
+      </div>
+      {umfrage.beschreibung && <p className="text-sm text-gray-500 mb-3">{umfrage.beschreibung}</p>}
+
+      {zeigeErgebnis ? (
+        <div className="space-y-2">
+          {umfrage.optionen.map((option, i) => {
+            const stimmenFuerOption = antworten.filter((a) => a.ausgewaehlte_optionen.includes(i)).length;
+            const prozent = gesamtStimmen === 0 ? 0 : Math.round((stimmenFuerOption / gesamtStimmen) * 100);
+            const istEigene = eigeneAntwort?.ausgewaehlte_optionen.includes(i);
+            return (
+              <div key={i}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span style={istEigene ? { color: COLORS.orangeDeep, fontWeight: 600 } : { color: COLORS.anthracite }}>
+                    {option} {istEigene && "✓"}
+                  </span>
+                  <span className="text-gray-400">{stimmenFuerOption} · {prozent}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+                  <div className="h-full rounded-full" style={{ width: `${prozent}%`, background: COLORS.petrol }} />
+                </div>
+              </div>
+            );
+          })}
+          <p className="text-xs text-gray-400 pt-1">{gesamtStimmen} Stimme(n) insgesamt{!eigeneAntwort && profil.ist_admin ? " · du hast noch nicht abgestimmt" : ""}</p>
+          {profil.ist_admin && !eigeneAntwort && (
+            <button onClick={() => setAuswahl([])} className="text-xs underline" style={{ color: COLORS.petrol }}>
+              Trotzdem abstimmen
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {umfrage.optionen.map((option, i) => (
+            <label key={i} className="flex items-center gap-2 text-sm p-2 rounded-md border cursor-pointer" style={auswahl.includes(i) ? { borderColor: COLORS.orange, background: "#FCEEE7" } : {}}>
+              <input type={umfrage.mehrfachauswahl ? "checkbox" : "radio"} checked={auswahl.includes(i)} onChange={() => toggle(i)} />
+              {option}
+            </label>
+          ))}
+          <button
+            onClick={() => onAbstimmen(auswahl)}
+            disabled={auswahl.length === 0}
+            className="px-4 py-2 rounded-md text-white text-sm font-semibold mt-2"
+            style={{ background: COLORS.orange, opacity: auswahl.length === 0 ? 0.5 : 1 }}
+          >
+            Abstimmen
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1008,6 +1306,7 @@ const NAV_BASIS = [
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
+  { key: "umfragen", label: "Umfragen", icon: Vote },
   { key: "einstellungen", label: "Einstellungen", icon: Settings },
 ];
 
@@ -1061,6 +1360,7 @@ export default function App() {
     planung: "Spielerplanung",
     kalender: "Ereigniskalender",
     kader: "Kader — 3. Mannschaft",
+    umfragen: "Umfragen",
     einstellungen: "Einstellungen",
     spieler: "Spielerverwaltung",
   };
@@ -1117,6 +1417,10 @@ export default function App() {
         <main className="p-6 overflow-y-auto">
           {tab === "einstellungen" ? (
             <Einstellungen profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
+          ) : tab === "umfragen" ? (
+            <Umfragen profil={profil} />
+          ) : tab === "spieler" ? (
+            profil.ist_admin && <Spielerverwaltung />
           ) : !saisonsGeladen ? (
             <Leerzustand text="Lade Saison…" />
           ) : !aktiveSaison ? (
@@ -1126,12 +1430,11 @@ export default function App() {
             </div>
           ) : (
             <>
-              {tab === "dashboard" && <Dashboard saison={aktiveSaison} />}
+              {tab === "dashboard" && <Dashboard saison={aktiveSaison} profil={profil} />}
               {tab === "tabelle" && <Tabelle saison={aktiveSaison} profil={profil} />}
               {tab === "planung" && <Spielerplanung saison={aktiveSaison} profil={profil} />}
               {tab === "kalender" && <Kalender profil={profil} />}
               {tab === "kader" && <Kader saison={aktiveSaison} profil={profil} />}
-              {tab === "spieler" && profil.ist_admin && <Spielerverwaltung />}
             </>
           )}
         </main>
