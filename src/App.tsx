@@ -322,7 +322,7 @@ function Dashboard({ saison }) {
               <p className="text-sm opacity-80 mt-1">{eigenerTabellenplatz.punkte} Punkte aus {eigenerTabellenplatz.spiele} Spielen</p>
             </>
           ) : (
-            <p className="text-sm opacity-80">Noch keine Tabelle hinterlegt — im Reiter „Tabelle" aktualisieren.</p>
+            <p className="text-sm opacity-80">Noch keine Tabelle hinterlegt — im Reiter "Tabelle" aktualisieren.</p>
           )}
         </TiltCard>
 
@@ -444,7 +444,7 @@ function Tabelle({ saison, profil }) {
       {ladend ? (
         <Leerzustand text="Lade Tabelle…" />
       ) : zeilen.length === 0 ? (
-        <Leerzustand text={profil.ist_admin ? "Noch keine Tabelle vorhanden — oben auf „Jetzt aktualisieren" klicken." : "Noch keine Tabelle vorhanden."} />
+        <Leerzustand text={profil.ist_admin ? 'Noch keine Tabelle vorhanden — oben auf "Jetzt aktualisieren" klicken.' : "Noch keine Tabelle vorhanden."} />
       ) : (
         <div className="bg-white rounded-lg border overflow-hidden">
           <table className="w-full text-sm">
@@ -769,7 +769,7 @@ function Kader({ saison, profil }) {
             )}
           </>
         ) : (
-          <Leerzustand text={profil.ist_admin ? "Noch keine Mannschafts-Infos hinterlegt — oben auf „Jetzt aktualisieren" klicken." : "Noch keine Mannschafts-Infos hinterlegt."} />
+          <Leerzustand text={profil.ist_admin ? 'Noch keine Mannschafts-Infos hinterlegt — oben auf "Jetzt aktualisieren" klicken.' : "Noch keine Mannschafts-Infos hinterlegt."} />
         )}
       </div>
 
