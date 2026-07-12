@@ -1100,7 +1100,9 @@ export default function App() {
           </div>
         </header>
         <main className="p-6 overflow-y-auto">
-          {!saisonsGeladen ? (
+          {tab === "einstellungen" ? (
+            <Einstellungen profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
+          ) : !saisonsGeladen ? (
             <Leerzustand text="Lade Saison…" />
           ) : !aktiveSaison ? (
             <div className="bg-white rounded-lg border p-6 text-sm text-gray-500 max-w-md">
@@ -1114,7 +1116,6 @@ export default function App() {
               {tab === "planung" && <Spielerplanung saison={aktiveSaison} profil={profil} />}
               {tab === "kalender" && <Kalender profil={profil} />}
               {tab === "kader" && <Kader saison={aktiveSaison} profil={profil} />}
-              {tab === "einstellungen" && <Einstellungen profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />}
               {tab === "spieler" && profil.ist_admin && <Spielerverwaltung />}
             </>
           )}
