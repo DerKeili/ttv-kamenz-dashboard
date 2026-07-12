@@ -1,0 +1,1125 @@
+import React, { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
+import {
+  LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
+  Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
+  Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck,
+  UserPlus, KeyRound, Eye, EyeOff, Plus
+} from "lucide-react";
+
+/* ------------------------------------------------------------------
+   TTV 97 Kamenz e.V. — Die 3. Mannschaft
+   Echte Supabase-Anbindung: Auth, Rollen, Tabelle, Kader, Kalender,
+   Spielerplanung. Keine Testdaten mehr — alles kommt aus der Datenbank.
+   Läuft nur in einem echten React-Build (npm install @supabase/supabase-js),
+   nicht in der reinen Chat-Vorschau.
+------------------------------------------------------------------- */
+
+// Diese beiden Werte sind bewusst öffentlich im Frontend – die eigentliche
+// Absicherung passiert über Row Level Security in Supabase, nicht über Geheimhaltung.
+const supabase = createClient(
+  "https://oskplsznrhpcfvoogcup.supabase.co",
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9za3Bsc3pucmhwY2Z2b29nY3VwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMyNzU3NzksImV4cCI6MjA5ODg1MTc3OX0.x8aWcUz2MNLjfy_YZ4RvQtk6zWbHlvmrMdTrBPC0pFs"
+);
+
+const COLORS = {
+  petrolDark: "#0F2E2A",
+  petrol: "#1B5951",
+  petrolLight: "#2E7A6E",
+  orange: "#E2632B",
+  orangeDeep: "#B84A1C",
+  anthracite: "#26251F",
+  paper: "#F8F6F1",
+};
+
+/* ---------- Hilfsfunktionen ---------- */
+
+function formatDatum(iso) {
+  if (!iso) return "–";
+  return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function naechsterGeburtstag(spielerListe) {
+  if (!spielerListe || spielerListe.length === 0) return null;
+  const heute = new Date();
+  const mitTag = spielerListe
+    .filter((s) => s.geburtstag)
+    .map((s) => {
+      const gd = new Date(s.geburtstag);
+      let next = new Date(heute.getFullYear(), gd.getMonth(), gd.getDate());
+      if (next < heute) next = new Date(heute.getFullYear() + 1, gd.getMonth(), gd.getDate());
+      return { ...s, next };
+    });
+  mitTag.sort((a, b) => a.next - b.next);
+  return mitTag[0] ?? null;
+}
+
+/* ---------- Wiederkehrende Bauteile: geneigte "Tischplatten"-Karte ---------- */
+
+function TiltCard({ children, className = "", tone = "petrol" }) {
+  const bg =
+    tone === "petrol"
+      ? `linear-gradient(135deg, ${COLORS.petrolLight}, ${COLORS.petrol} 60%, ${COLORS.petrolDark})`
+      : tone === "orange"
+      ? `linear-gradient(135deg, #F0895C, ${COLORS.orange} 55%, ${COLORS.orangeDeep})`
+      : "#fff";
+  return (
+    <div
+      className={`relative ${className}`}
+      style={{
+        background: bg,
+        clipPath: "polygon(0 14px, 14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SectionLabel({ icon: Icon, children }) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <Icon size={16} style={{ color: COLORS.orange }} />
+      <h3 className="uppercase tracking-wide text-xs font-semibold" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif", letterSpacing: "0.08em" }}>
+        {children}
+      </h3>
+    </div>
+  );
+}
+
+function Leerzustand({ text }) {
+  return <p className="text-sm text-gray-400 py-4 text-center">{text}</p>;
+}
+
+/* ---------- Login ---------- */
+
+function Login({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [passwort, setPasswort] = useState("");
+  const [zeigen, setZeigen] = useState(false);
+  const [fehler, setFehler] = useState(null);
+  const [ladend, setLadend] = useState(false);
+
+  async function anmelden() {
+    setFehler(null);
+    setLadend(true);
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password: passwort });
+    if (error) {
+      setFehler(error.message === "Invalid login credentials" ? "E-Mail oder Passwort ist falsch." : error.message);
+      setLadend(false);
+      return;
+    }
+    const { data: profil, error: profilError } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", data.user.id)
+      .single();
+
+    setLadend(false);
+    if (profilError || !profil) {
+      setFehler("Anmeldung erfolgreich, aber kein Spielerprofil gefunden. Bitte beim Admin melden.");
+      return;
+    }
+    onLogin(profil);
+  }
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{ background: `radial-gradient(circle at 30% 20%, ${COLORS.petrol}, ${COLORS.petrolDark})`, fontFamily: "Inter, sans-serif" }}
+    >
+      <div className="w-full max-w-sm">
+        <TiltCard tone="paper" className="p-8 shadow-2xl">
+          <div className="flex flex-col items-center mb-6">
+            <h1 className="text-xl font-bold text-center" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
+              TTV 97 KAMENZ e.V.
+            </h1>
+          </div>
+          <label className="block text-xs font-medium mb-1" style={{ color: COLORS.anthracite }}>E-Mail</label>
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full border rounded-md px-3 py-2 mb-4 text-sm"
+            placeholder="vorname.nachname@ttv97-kamenz.de"
+          />
+          <label className="block text-xs font-medium mb-1" style={{ color: COLORS.anthracite }}>Passwort</label>
+          <div className="relative mb-2">
+            <input
+              type={zeigen ? "text" : "password"}
+              value={passwort}
+              onChange={(e) => setPasswort(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && anmelden()}
+              className="w-full border rounded-md px-3 py-2 pr-9 text-sm"
+              placeholder="••••••••"
+            />
+            <button type="button" onClick={() => setZeigen(!zeigen)} className="absolute right-2 top-2.5 text-gray-400">
+              {zeigen ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <button
+            onClick={anmelden}
+            disabled={ladend}
+            className="w-full py-2.5 rounded-md text-white font-semibold text-sm transition mt-2"
+            style={{ background: COLORS.orange, fontFamily: "Oswald, sans-serif", opacity: ladend ? 0.6 : 1 }}
+          >
+            {ladend ? "MELDE AN…" : "ANMELDEN"}
+          </button>
+          <p className="text-[11px] text-center mt-4 text-gray-500">
+            Erstanmeldung? Nutze das Einmalpasswort vom Admin – du wirst danach direkt zur Passwortänderung geführt.
+          </p>
+        </TiltCard>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Erstes Login: Passwort muss geändert werden ---------- */
+
+function ErstesPasswortAendern({ profil, onFertig }) {
+  const [neu, setNeu] = useState("");
+  const [wiederholung, setWiederholung] = useState("");
+  const [fehler, setFehler] = useState(null);
+  const [ladend, setLadend] = useState(false);
+
+  async function speichern() {
+    setFehler(null);
+    if (neu.length < 8) return setFehler("Das neue Passwort muss mindestens 8 Zeichen haben.");
+    if (neu !== wiederholung) return setFehler("Die beiden Passwörter stimmen nicht überein.");
+
+    setLadend(true);
+    const { error: updateError } = await supabase.auth.updateUser({ password: neu });
+    if (updateError) {
+      setFehler(updateError.message);
+      setLadend(false);
+      return;
+    }
+    const { error: profilError } = await supabase
+      .from("profiles")
+      .update({ muss_passwort_aendern: false })
+      .eq("id", profil.id);
+    setLadend(false);
+    if (profilError) return setFehler(profilError.message);
+    onFertig();
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6" style={{ background: COLORS.petrolDark }}>
+      <TiltCard tone="paper" className="p-8 shadow-2xl w-full max-w-sm">
+        <div className="flex items-center gap-2 mb-4">
+          <KeyRound size={18} style={{ color: COLORS.orange }} />
+          <h2 className="font-bold" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>Passwort festlegen</h2>
+        </div>
+        <p className="text-sm text-gray-500 mb-4">
+          Willkommen, {profil.vorname}! Bevor es losgeht, lege bitte ein eigenes Passwort fest — das Einmalpasswort vom Admin ist danach ungültig.
+        </p>
+        <label className="block text-xs font-medium mb-1">Neues Passwort</label>
+        <input type="password" value={neu} onChange={(e) => setNeu(e.target.value)} className="w-full border rounded-md px-3 py-2 mb-3 text-sm" />
+        <label className="block text-xs font-medium mb-1">Wiederholen</label>
+        <input type="password" value={wiederholung} onChange={(e) => setWiederholung(e.target.value)} className="w-full border rounded-md px-3 py-2 mb-4 text-sm" />
+        {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+        <button
+          onClick={speichern}
+          disabled={ladend}
+          className="w-full py-2.5 rounded-md text-white font-semibold text-sm"
+          style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}
+        >
+          {ladend ? "Speichere…" : "Passwort speichern und starten"}
+        </button>
+      </TiltCard>
+    </div>
+  );
+}
+
+/* ---------- Passwort ändern (erfordert altes Passwort) ---------- */
+
+function PasswortAendern({ profil }) {
+  const [alt, setAlt] = useState("");
+  const [neu, setNeu] = useState("");
+  const [wiederholung, setWiederholung] = useState("");
+  const [status, setStatus] = useState(null);
+  const [ladend, setLadend] = useState(false);
+
+  async function speichern() {
+    setStatus(null);
+    if (neu.length < 8) return setStatus({ art: "fehler", text: "Das neue Passwort muss mindestens 8 Zeichen haben." });
+    if (neu !== wiederholung) return setStatus({ art: "fehler", text: "Die beiden neuen Passwörter stimmen nicht überein." });
+
+    setLadend(true);
+    const { error: pruefFehler } = await supabase.auth.signInWithPassword({ email: profil.email, password: alt });
+    if (pruefFehler) {
+      setLadend(false);
+      return setStatus({ art: "fehler", text: "Das aktuelle Passwort ist nicht korrekt." });
+    }
+    const { error: updateFehler } = await supabase.auth.updateUser({ password: neu });
+    setLadend(false);
+    if (updateFehler) return setStatus({ art: "fehler", text: updateFehler.message });
+    setAlt(""); setNeu(""); setWiederholung("");
+    setStatus({ art: "erfolg", text: "Passwort wurde geändert." });
+  }
+
+  return (
+    <div className="bg-white rounded-lg border p-5 max-w-md">
+      <SectionLabel icon={KeyRound}>Passwort ändern</SectionLabel>
+      <label className="block text-xs text-gray-500 mb-1">Aktuelles Passwort</label>
+      <input type="password" value={alt} onChange={(e) => setAlt(e.target.value)} className="w-full border rounded-md px-3 py-2 mb-3 text-sm" />
+      <label className="block text-xs text-gray-500 mb-1">Neues Passwort</label>
+      <input type="password" value={neu} onChange={(e) => setNeu(e.target.value)} className="w-full border rounded-md px-3 py-2 mb-3 text-sm" />
+      <label className="block text-xs text-gray-500 mb-1">Neues Passwort wiederholen</label>
+      <input type="password" value={wiederholung} onChange={(e) => setWiederholung(e.target.value)} className="w-full border rounded-md px-3 py-2 mb-3 text-sm" />
+      {status && (
+        <p className="text-xs mb-3" style={{ color: status.art === "fehler" ? COLORS.orangeDeep : COLORS.petrol }}>{status.text}</p>
+      )}
+      <button
+        onClick={speichern}
+        disabled={ladend}
+        className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+        style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}
+      >
+        {ladend ? "Speichere…" : "Passwort speichern"}
+      </button>
+    </div>
+  );
+}
+
+/* ---------- Dashboard ---------- */
+
+function Dashboard({ saison }) {
+  const [ladend, setLadend] = useState(true);
+  const [eigenerTabellenplatz, setEigenerTabellenplatz] = useState(null);
+  const [naechstesSpiel, setNaechstesSpiel] = useState(null);
+  const [geburtstag, setGeburtstag] = useState(null);
+  const [termine, setTermine] = useState([]);
+
+  useEffect(() => {
+    if (!saison) return;
+    setLadend(true);
+    (async () => {
+      const [{ data: tabelleZeile }, { data: spiele }, { data: profile }, { data: kalender }] = await Promise.all([
+        supabase.from("tabelle").select("*").eq("saison_id", saison.id).eq("ist_eigenes_team", true).maybeSingle(),
+        supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).gte("datum", new Date().toISOString()).order("datum").limit(1),
+        supabase.from("profiles").select("id, vorname, nachname, geburtstag"),
+        supabase.from("kalender_ereignisse").select("*").gte("datum", new Date().toISOString()).order("datum").limit(4),
+      ]);
+      setEigenerTabellenplatz(tabelleZeile ?? null);
+      setNaechstesSpiel(spiele?.[0] ?? null);
+      setGeburtstag(naechsterGeburtstag(profile ?? []));
+      setTermine(kalender ?? []);
+      setLadend(false);
+    })();
+  }, [saison]);
+
+  if (ladend) return <Leerzustand text="Lade Dashboard…" />;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid md:grid-cols-3 gap-4">
+        <TiltCard tone="petrol" className="p-5 text-white">
+          <SectionLabel icon={Trophy}>Aktuelle Tabelle</SectionLabel>
+          {eigenerTabellenplatz ? (
+            <>
+              <p className="text-3xl font-bold" style={{ fontFamily: "Oswald, sans-serif" }}>Platz {eigenerTabellenplatz.platz}</p>
+              <p className="text-sm opacity-80 mt-1">{eigenerTabellenplatz.punkte} Punkte aus {eigenerTabellenplatz.spiele} Spielen</p>
+            </>
+          ) : (
+            <p className="text-sm opacity-80">Noch keine Tabelle hinterlegt — im Reiter „Tabelle" aktualisieren.</p>
+          )}
+        </TiltCard>
+
+        <TiltCard tone="orange" className="p-5 text-white">
+          <SectionLabel icon={CalendarDays}>Nächstes Spiel</SectionLabel>
+          {naechstesSpiel ? (
+            <>
+              <p className="text-lg font-bold" style={{ fontFamily: "Oswald, sans-serif" }}>
+                {naechstesSpiel.ist_heimspiel ? naechstesSpiel.gastteam : naechstesSpiel.heimteam}
+              </p>
+              <p className="text-sm opacity-90 mt-1">{formatDatum(naechstesSpiel.datum)} · {naechstesSpiel.ist_heimspiel ? "Heimspiel" : "Auswärts"}</p>
+            </>
+          ) : (
+            <p className="text-sm opacity-90">Noch kein Spiel terminiert.</p>
+          )}
+        </TiltCard>
+
+        <TiltCard tone="paper" className="p-5 border">
+          <SectionLabel icon={Cake}>Nächster Geburtstag</SectionLabel>
+          {geburtstag ? (
+            <>
+              <p className="text-lg font-bold" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
+                {geburtstag.vorname} {geburtstag.nachname}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">{formatDatum(geburtstag.next.toISOString())}</p>
+            </>
+          ) : (
+            <p className="text-sm text-gray-400">Keine Geburtstage hinterlegt.</p>
+          )}
+        </TiltCard>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={MessageSquare}>Nachrichten & Umfragen</SectionLabel>
+          <p className="text-sm text-gray-400">Folgt in einer späteren Ausbaustufe.</p>
+        </div>
+
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={CalendarDays}>Anstehende Termine</SectionLabel>
+          {termine.length === 0 ? (
+            <Leerzustand text="Keine anstehenden Termine." />
+          ) : (
+            <ul className="space-y-2">
+              {termine.map((e) => (
+                <li key={e.id} className="flex items-center justify-between text-sm">
+                  <span className="text-gray-700">{e.titel}</span>
+                  <span className="text-xs text-gray-400">{formatDatum(e.datum)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Tabelle ---------- */
+
+function Tabelle({ saison, profil }) {
+  const [zeilen, setZeilen] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  async function laden() {
+    setLadend(true);
+    const { data } = await supabase.from("tabelle").select("*").eq("saison_id", saison.id).order("platz");
+    setZeilen(data ?? []);
+    setLadend(false);
+  }
+
+  useEffect(() => { if (saison) laden(); }, [saison]);
+
+  async function aktualisieren() {
+    setFehler(null);
+    setAktualisiertLadend(true);
+    const { data, error } = await supabase.functions.invoke("fetch-tabelle", { body: { saisonId: saison.id } });
+    setAktualisiertLadend(false);
+    if (error || data?.error) {
+      setFehler(error?.message || data.error);
+      return;
+    }
+    laden();
+  }
+
+  const aktualisiertAm = zeilen[0]?.aktualisiert_am;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between text-xs text-gray-500 flex-wrap gap-2">
+        <span>
+          {saison.tabellen_url ? (
+            <a href={saison.tabellen_url} target="_blank" rel="noreferrer" className="underline" style={{ color: COLORS.petrol }}>
+              Quelle: tischtennislive.de
+            </a>
+          ) : (
+            <span>Kein Tabellen-Link hinterlegt (siehe Einstellungen)</span>
+          )}
+        </span>
+        <div className="flex items-center gap-3">
+          {aktualisiertAm && <span>Aktualisiert: {new Date(aktualisiertAm).toLocaleString("de-DE")}</span>}
+          {profil.ist_admin && (
+            <button
+              onClick={aktualisieren}
+              className="px-3 py-1 rounded-md text-white text-xs font-semibold"
+              style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
+              disabled={aktualisiertLadend}
+            >
+              {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+
+      {ladend ? (
+        <Leerzustand text="Lade Tabelle…" />
+      ) : zeilen.length === 0 ? (
+        <Leerzustand text={profil.ist_admin ? "Noch keine Tabelle vorhanden — oben auf „Jetzt aktualisieren" klicken." : "Noch keine Tabelle vorhanden."} />
+      ) : (
+        <div className="bg-white rounded-lg border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead style={{ background: COLORS.petrolDark }}>
+              <tr className="text-white text-left">
+                <th className="p-3 font-medium">#</th>
+                <th className="p-3 font-medium">Mannschaft</th>
+                <th className="p-3 font-medium text-center">Spiele</th>
+                <th className="p-3 font-medium text-center">Punkte</th>
+              </tr>
+            </thead>
+            <tbody>
+              {zeilen.map((t) => (
+                <tr key={t.id} className="border-t" style={t.ist_eigenes_team ? { background: "#FCEEE7" } : {}}>
+                  <td className="p-3">{t.platz}</td>
+                  <td className="p-3 font-medium" style={t.ist_eigenes_team ? { color: COLORS.orangeDeep } : {}}>{t.team}</td>
+                  <td className="p-3 text-center">{t.spiele}</td>
+                  <td className="p-3 text-center font-semibold">{t.punkte}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Spielerplanung ---------- */
+
+function Spielerplanung({ saison, profil }) {
+  const [runde, setRunde] = useState("Hinrunde");
+  const [spiele, setSpiele] = useState([]);
+  const [spieler, setSpieler] = useState([]);
+  const [meldungen, setMeldungen] = useState({}); // { [spielId]: { [spielerId]: status } }
+  const [ladend, setLadend] = useState(true);
+
+  useEffect(() => {
+    if (!saison) return;
+    setLadend(true);
+    (async () => {
+      const [{ data: spieleDaten }, { data: spielerDaten }, { data: meldungenDaten }] = await Promise.all([
+        supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum"),
+        supabase.from("profiles").select("*").order("nachname"),
+        supabase.from("spielerplanung_meldungen").select("*").eq("saison_id", saison.id),
+      ]);
+      setSpiele(spieleDaten ?? []);
+      setSpieler(spielerDaten ?? []);
+      const map = {};
+      (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
+      (meldungenDaten ?? []).forEach((m) => { if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status; });
+      setMeldungen(map);
+      setLadend(false);
+    })();
+  }, [saison, runde]);
+
+  async function toggle(spielId, spielerId) {
+    if (spielerId !== profil.id && !profil.ist_admin) return; // nur eigene Meldung, außer Admin
+    const order = { offen: "ja", ja: "nein", nein: "offen" };
+    const neuerStatus = order[meldungen[spielId]?.[spielerId] ?? "offen"];
+
+    setMeldungen((prev) => ({ ...prev, [spielId]: { ...prev[spielId], [spielerId]: neuerStatus } }));
+
+    await supabase.from("spielerplanung_meldungen").upsert(
+      { saison_id: saison.id, spiel_id: spielId, spieler_id: spielerId, status: neuerStatus, aktualisiert_am: new Date().toISOString() },
+      { onConflict: "spiel_id,spieler_id" }
+    );
+    // TODO nächster Schritt: bei Status "nein" oder <4 Zusagen alle Spieler per E-Mail informieren,
+    // sobald der E-Mail-Dienst angebunden ist.
+  }
+
+  function countJa(spielId) {
+    return Object.values(meldungen[spielId] ?? {}).filter((v) => v === "ja").length;
+  }
+
+  if (ladend) return <Leerzustand text="Lade Spielerplanung…" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        {["Hinrunde", "Rückrunde"].map((r) => (
+          <button
+            key={r}
+            onClick={() => setRunde(r)}
+            className="px-4 py-1.5 rounded-full text-sm font-semibold transition"
+            style={
+              runde === r
+                ? { background: COLORS.orange, color: "white" }
+                : { background: "#fff", color: COLORS.anthracite, border: "1px solid #ddd" }
+            }
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+
+      {spiele.length === 0 ? (
+        <Leerzustand text={`Noch keine Spiele für die ${runde} hinterlegt.`} />
+      ) : (
+        <>
+          <div className="bg-white rounded-lg border overflow-x-auto">
+            <table className="w-full text-sm min-w-[640px]">
+              <thead>
+                <tr style={{ background: COLORS.petrolDark }} className="text-white">
+                  <th className="p-3 text-left font-medium sticky left-0" style={{ background: COLORS.petrolDark }}>Spieler</th>
+                  {spiele.map((s) => (
+                    <th key={s.id} className="p-3 text-center font-medium min-w-[110px]">
+                      <div>{formatDatum(s.datum)}</div>
+                      <div className="text-[11px] font-normal opacity-80">{s.ist_heimspiel ? s.gastteam : s.heimteam}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {spieler.map((sp) => (
+                  <tr key={sp.id} className="border-t">
+                    <td className="p-3 font-medium sticky left-0 bg-white">{sp.vorname} {sp.nachname}</td>
+                    {spiele.map((s) => {
+                      const status = meldungen[s.id]?.[sp.id] ?? "offen";
+                      const eigeneZeile = sp.id === profil.id || profil.ist_admin;
+                      const style =
+                        status === "ja"
+                          ? { background: "#DDF0EA", color: COLORS.petrol }
+                          : status === "nein"
+                          ? { background: "#FBE2DA", color: COLORS.orangeDeep }
+                          : { background: "#F1F1EF", color: "#999" };
+                      return (
+                        <td key={s.id} className="p-2 text-center">
+                          <button
+                            onClick={() => toggle(s.id, sp.id)}
+                            disabled={!eigeneZeile}
+                            className="w-full py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1"
+                            style={{ ...style, opacity: eigeneZeile ? 1 : 0.7, cursor: eigeneZeile ? "pointer" : "default" }}
+                          >
+                            {status === "ja" && <Check size={13} />}
+                            {status === "nein" && <X size={13} />}
+                            {status === "offen" && <HelpCircle size={13} />}
+                            {status === "ja" ? "Kann" : status === "nein" ? "Kann nicht" : "Offen"}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t">
+                  <td className="p-3 text-xs font-semibold text-gray-500 sticky left-0 bg-white">Zusagen</td>
+                  {spiele.map((s) => {
+                    const ja = countJa(s.id);
+                    const kritisch = ja < 4;
+                    return (
+                      <td key={s.id} className="p-2 text-center">
+                        <div
+                          className="mx-auto w-fit px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1"
+                          style={kritisch ? { background: COLORS.orange, color: "white" } : { background: "#E4F2EE", color: COLORS.petrol }}
+                        >
+                          {kritisch && <AlertTriangle size={12} />}
+                          {ja}/{spieler.length} zugesagt
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {spiele.some((s) => countJa(s.id) < 4) && (
+            <div className="flex items-start gap-2 p-3 rounded-md text-sm" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span>
+                Mindestens ein Spiel hat aktuell weniger als 4 Zusagen. E-Mail-Benachrichtigung an alle Spieler folgt,
+                sobald der E-Mail-Dienst angebunden ist.
+              </span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Kalender ---------- */
+
+function Kalender({ profil }) {
+  const [ereignisse, setEreignisse] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [form, setForm] = useState({ titel: "", datum: "", typ: "termin" });
+  const [fehler, setFehler] = useState(null);
+
+  async function laden() {
+    setLadend(true);
+    const { data } = await supabase.from("kalender_ereignisse").select("*").order("datum");
+    setEreignisse(data ?? []);
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, []);
+
+  async function anlegen() {
+    setFehler(null);
+    if (!form.titel || !form.datum) return setFehler("Titel und Datum sind Pflichtfelder.");
+    const { error } = await supabase.from("kalender_ereignisse").insert({
+      titel: form.titel,
+      datum: new Date(form.datum).toISOString(),
+      typ: form.typ,
+      erstellt_von: profil.id,
+    });
+    if (error) return setFehler(error.message);
+    setForm({ titel: "", datum: "", typ: "termin" });
+    laden();
+    // TODO nächster Schritt: optional per E-Mail an alle Spieler verschicken,
+    // sobald der E-Mail-Dienst angebunden ist.
+  }
+
+  const iconFor = { training: Users, spiel: Trophy, lehrgang: GraduationCap, termin: CalendarDays };
+
+  return (
+    <div className="space-y-4">
+      {profil.ist_admin && (
+        <div className="bg-white rounded-lg border p-4">
+          <SectionLabel icon={Plus}>Neuen Termin anlegen</SectionLabel>
+          <div className="grid sm:grid-cols-4 gap-2 mb-2">
+            <input placeholder="Titel" value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2" />
+            <input type="datetime-local" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+            <select value={form.typ} onChange={(e) => setForm({ ...form, typ: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
+              <option value="training">Training</option>
+              <option value="spiel">Spiel</option>
+              <option value="lehrgang">Lehrgang</option>
+              <option value="termin">Sonstiger Termin</option>
+            </select>
+          </div>
+          {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <button onClick={anlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange }}>
+            Termin anlegen
+          </button>
+        </div>
+      )}
+
+      {ladend ? (
+        <Leerzustand text="Lade Kalender…" />
+      ) : ereignisse.length === 0 ? (
+        <Leerzustand text="Noch keine Termine eingetragen." />
+      ) : (
+        <div className="bg-white rounded-lg border divide-y">
+          {ereignisse.map((e) => {
+            const Icon = iconFor[e.typ] || CalendarDays;
+            return (
+              <div key={e.id} className="flex items-center gap-4 p-4">
+                <div className="w-10 h-10 rounded-md flex items-center justify-center shrink-0" style={{ background: COLORS.petrolDark }}>
+                  <Icon size={18} color="white" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{e.titel}</p>
+                  <p className="text-xs text-gray-400">{formatDatum(e.datum)}</p>
+                </div>
+                <ChevronRight size={16} className="text-gray-300" />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Kader ---------- */
+
+function Kader({ saison, profil }) {
+  const [spieler, setSpieler] = useState([]);
+  const [info, setInfo] = useState(null);
+  const [ladend, setLadend] = useState(true);
+  const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+
+  async function laden() {
+    setLadend(true);
+    const [{ data: spielerDaten }, { data: infoDaten }] = await Promise.all([
+      supabase.from("profiles").select("*").order("nachname"),
+      supabase.from("mannschaft_info").select("*").eq("saison_id", saison.id).maybeSingle(),
+    ]);
+    setSpieler(spielerDaten ?? []);
+    setInfo(infoDaten ?? null);
+    setLadend(false);
+  }
+
+  useEffect(() => { if (saison) laden(); }, [saison]);
+
+  async function aktualisieren() {
+    setAktualisiertLadend(true);
+    await supabase.functions.invoke("fetch-mannschaft", { body: { saisonId: saison.id } });
+    setAktualisiertLadend(false);
+    laden();
+  }
+
+  if (ladend) return <Leerzustand text="Lade Kader…" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border p-5">
+        <div className="flex items-center justify-between mb-3">
+          <SectionLabel icon={Users}>Mannschafts-Infos (Verband)</SectionLabel>
+          {profil.ist_admin && (
+            <button onClick={aktualisieren} className="text-xs px-3 py-1 rounded-md text-white font-semibold" style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }} disabled={aktualisiertLadend}>
+              {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
+            </button>
+          )}
+        </div>
+        {info ? (
+          <>
+            <div className="grid sm:grid-cols-2 gap-3 text-sm">
+              <div><span className="text-gray-400 text-xs block">Mannschaftsführer</span>{info.mannschaftsfuehrer ?? "–"}</div>
+              <div><span className="text-gray-400 text-xs block">Vertretung</span>{info.vertretung ?? "–"}</div>
+              <div><span className="text-gray-400 text-xs block">Sportstätte</span>{info.sportstaette ?? "–"}</div>
+              <div><span className="text-gray-400 text-xs block">Spieltag</span>{info.spieltag ?? "–"}</div>
+            </div>
+            {!info.aufstellung_freigegeben && (
+              <div className="flex items-start gap-2 p-3 rounded-md text-sm mt-4" style={{ background: "#F1F1EF", color: "#777" }}>
+                <HelpCircle size={16} className="mt-0.5 shrink-0" />
+                Der Verband hat die Aufstellungsliste für diese Saison noch nicht freigegeben. Bis dahin gilt die intern gepflegte Liste unten.
+              </div>
+            )}
+          </>
+        ) : (
+          <Leerzustand text={profil.ist_admin ? "Noch keine Mannschafts-Infos hinterlegt — oben auf „Jetzt aktualisieren" klicken." : "Noch keine Mannschafts-Infos hinterlegt."} />
+        )}
+      </div>
+
+      {spieler.length === 0 ? (
+        <Leerzustand text="Noch keine Spieler angelegt." />
+      ) : (
+        <div className="grid sm:grid-cols-2 gap-3">
+          {spieler.map((s) => (
+            <div key={s.id} className="bg-white rounded-lg border p-4 flex items-center gap-3">
+              <div
+                className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
+                style={{ background: COLORS.petrol, fontFamily: "Oswald, sans-serif" }}
+              >
+                {s.vorname?.[0]}{s.nachname?.[0]}
+              </div>
+              <div>
+                <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
+                <p className="text-xs" style={{ color: s.rang === "Mannschaftsführer" ? COLORS.orange : "#999" }}>{s.rang}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Spielerverwaltung (nur Admin) ---------- */
+
+function Spielerverwaltung() {
+  const [mannschaften, setMannschaften] = useState([]);
+  const [spielerListe, setSpielerListe] = useState([]);
+  const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", rang: "Spieler", mannschaftId: "" });
+  const [einmalpasswort, setEinmalpasswort] = useState(null);
+  const [fehler, setFehler] = useState(null);
+  const [ladend, setLadend] = useState(false);
+
+  useEffect(() => {
+    supabase.from("mannschaften").select("*").order("name").then(({ data }) => data && setMannschaften(data));
+    supabase.from("profiles").select("*").order("nachname").then(({ data }) => data && setSpielerListe(data));
+  }, []);
+
+  function generierePasswort() {
+    const zeichen = "ABCDEFGHKLMNPQRSTUVWXYZ23456789";
+    return Array.from({ length: 10 }, () => zeichen[Math.floor(Math.random() * zeichen.length)]).join("");
+  }
+
+  async function spielerAnlegen() {
+    setFehler(null);
+    if (!form.vorname || !form.nachname || !form.email || !form.mannschaftId) {
+      return setFehler("Bitte alle Pflichtfelder ausfüllen.");
+    }
+    setLadend(true);
+    const einmalig = generierePasswort();
+
+    const { data, error } = await supabase.functions.invoke("create-spieler", {
+      body: { ...form, mannschaftId: form.mannschaftId, einmalpasswort: einmalig },
+    });
+
+    setLadend(false);
+    if (error || data?.error) {
+      setFehler(error?.message || data.error);
+      return;
+    }
+    setEinmalpasswort(einmalig);
+    setForm({ vorname: "", nachname: "", geburtstag: "", email: "", rang: "Spieler", mannschaftId: form.mannschaftId });
+    const { data: neueListe } = await supabase.from("profiles").select("*").order("nachname");
+    if (neueListe) setSpielerListe(neueListe);
+  }
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={UserPlus}>Neuen Spieler anlegen</SectionLabel>
+        {mannschaften.length === 0 && (
+          <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>
+            Noch keine Mannschaft angelegt. Lege zuerst über den SQL-Editor eine Mannschaft an (siehe auth_schema.sql).
+          </p>
+        )}
+        <div className="grid sm:grid-cols-2 gap-3 mb-3">
+          <input placeholder="Vorname" value={form.vorname} onChange={(e) => setForm({ ...form, vorname: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <input placeholder="Nachname" value={form.nachname} onChange={(e) => setForm({ ...form, nachname: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <input type="date" value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <input placeholder="E-Mail" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <select value={form.rang} onChange={(e) => setForm({ ...form, rang: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
+            <option>Mannschaftsführer</option>
+            <option>stellv. Mannschaftsführer</option>
+            <option>Spieler</option>
+            <option>Ersatz</option>
+          </select>
+          <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
+            <option value="">Mannschaft wählen…</option>
+            {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+        {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+        <button onClick={spielerAnlegen} disabled={ladend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}>
+          {ladend ? "Lege an…" : "Spieler anlegen"}
+        </button>
+
+        {einmalpasswort && (
+          <div className="mt-4 p-3 rounded-md text-sm" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
+            Einmalpasswort: <strong className="font-mono">{einmalpasswort}</strong>
+            <br />
+            <span className="text-xs">Bitte manuell an den Spieler weitergeben — automatischer Mailversand folgt, sobald der E-Mail-Dienst angebunden ist.</span>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={Users}>Alle Spieler</SectionLabel>
+        <div className="divide-y">
+          {spielerListe.map((s) => (
+            <div key={s.id} className="flex items-center justify-between py-2 text-sm">
+              <span>{s.vorname} {s.nachname}</span>
+              <span className="text-xs text-gray-400">{s.rang}</span>
+            </div>
+          ))}
+          {spielerListe.length === 0 && <p className="text-sm text-gray-400">Noch keine Spieler angelegt.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Einstellungen (Saison-Verwaltung) ---------- */
+
+function Einstellungen({ profil, saisons, onSaisonsGeaendert }) {
+  const [neueBezeichnung, setNeueBezeichnung] = useState("");
+  const [fehler, setFehler] = useState(null);
+
+  async function updateField(id, field, value) {
+    onSaisonsGeaendert((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
+    await supabase.from("saisons").update({ [field]: value }).eq("id", id);
+  }
+
+  async function neueSaisonAnlegen() {
+    setFehler(null);
+    if (!neueBezeichnung.trim()) return;
+    await supabase.from("saisons").update({ aktiv: false }).neq("id", "00000000-0000-0000-0000-000000000000");
+    const { data, error } = await supabase.from("saisons").insert({ bezeichnung: neueBezeichnung, aktiv: true }).select().single();
+    if (error) return setFehler(error.message);
+    setNeueBezeichnung("");
+    const { data: alle } = await supabase.from("saisons").select("*").order("erstellt_am", { ascending: false });
+    onSaisonsGeaendert(alle ?? []);
+  }
+
+  const linkFelder = [
+    { key: "tabellen_url", label: "Tabellen-Link", hinweis: "Tabelle → Aktuelle Tabelle" },
+    { key: "mannschaft_url", label: "Mannschafts-Link (Aufstellung)", hinweis: "Mannschaften → eure Mannschaft" },
+    { key: "spielplan_hinrunde_url", label: "Spielplan-Link Hinrunde", hinweis: "Spielplan → Vorrunde" },
+    { key: "spielplan_rueckrunde_url", label: "Spielplan-Link Rückrunde", hinweis: "Spielplan → Rückrunde" },
+  ];
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      {profil.ist_admin ? (
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={CalendarDays}>Saisons</SectionLabel>
+          <div className="space-y-4">
+            {saisons.map((s) => (
+              <div key={s.id} className="border rounded-md p-4" style={s.aktiv ? { borderColor: COLORS.orange } : {}}>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>Saison {s.bezeichnung}</span>
+                  {s.aktiv && (
+                    <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.orange }}>aktiv</span>
+                  )}
+                </div>
+                <div className="space-y-3">
+                  {linkFelder.map((f) => (
+                    <div key={f.key}>
+                      <label className="block text-xs text-gray-500 mb-1">
+                        {f.label} <span className="text-gray-300">({f.hinweis}, ändert sich jede Saison neu)</span>
+                      </label>
+                      <input
+                        defaultValue={s[f.key] ?? ""}
+                        onBlur={(e) => updateField(s.id, f.key, e.target.value)}
+                        placeholder="https://bautzen.tischtennislive.de/…"
+                        className="w-full border rounded-md px-3 py-2 text-sm"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {saisons.length === 0 && <Leerzustand text="Noch keine Saison angelegt." />}
+          </div>
+          {fehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <div className="flex gap-2 mt-4 pt-4 border-t">
+            <input
+              value={neueBezeichnung}
+              onChange={(e) => setNeueBezeichnung(e.target.value)}
+              placeholder="z. B. 2027/2028"
+              className="flex-1 border rounded-md px-3 py-2 text-sm"
+            />
+            <button onClick={neueSaisonAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
+              Neue Saison anlegen
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg border p-5 text-sm text-gray-500">
+          Aktive Saison: <strong>{saisons.find((s) => s.aktiv)?.bezeichnung ?? "keine"}</strong>
+        </div>
+      )}
+
+      <PasswortAendern profil={profil} />
+
+      <div className="bg-white rounded-lg border p-5 text-sm text-gray-500">
+        Benachrichtigungs-Einstellungen (E-Mail bei Nachrichten/Umfragen) folgen, sobald der E-Mail-Dienst angebunden ist.
+      </div>
+    </div>
+  );
+}
+
+/* ---------- App-Shell ---------- */
+
+const NAV_BASIS = [
+  { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { key: "tabelle", label: "Tabelle", icon: Table2 },
+  { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
+  { key: "kalender", label: "Kalender", icon: CalendarDays },
+  { key: "kader", label: "Kader", icon: Users },
+  { key: "einstellungen", label: "Einstellungen", icon: Settings },
+];
+
+export default function App() {
+  const [profil, setProfil] = useState(null);
+  const [sessionGeprueft, setSessionGeprueft] = useState(false);
+  const [tab, setTab] = useState("dashboard");
+  const [navOpen, setNavOpen] = useState(false);
+  const [saisons, setSaisons] = useState([]);
+  const [saisonsGeladen, setSaisonsGeladen] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session) {
+        const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+        if (data) setProfil(data);
+      }
+      setSessionGeprueft(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!profil) return;
+    supabase.from("saisons").select("*").order("erstellt_am", { ascending: false }).then(({ data }) => {
+      setSaisons(data ?? []);
+      setSaisonsGeladen(true);
+    });
+  }, [profil]);
+
+  async function abmelden() {
+    await supabase.auth.signOut();
+    setProfil(null);
+    setTab("dashboard");
+  }
+
+  if (!sessionGeprueft) {
+    return <div className="min-h-screen flex items-center justify-center text-gray-400 text-sm">Lade…</div>;
+  }
+
+  if (!profil) return <Login onLogin={setProfil} />;
+
+  if (profil.muss_passwort_aendern) {
+    return <ErstesPasswortAendern profil={profil} onFertig={() => setProfil({ ...profil, muss_passwort_aendern: false })} />;
+  }
+
+  const nav = profil.ist_admin ? [...NAV_BASIS, { key: "spieler", label: "Spielerverwaltung", icon: UserPlus }] : NAV_BASIS;
+
+  const titles = {
+    dashboard: "Dashboard",
+    tabelle: "Aktuelle Tabelle",
+    planung: "Spielerplanung",
+    kalender: "Ereigniskalender",
+    kader: "Kader — 3. Mannschaft",
+    einstellungen: "Einstellungen",
+    spieler: "Spielerverwaltung",
+  };
+
+  const initialen = `${profil.vorname?.[0] ?? ""}${profil.nachname?.[0] ?? ""}`.toUpperCase();
+  const aktiveSaison = saisons.find((s) => s.aktiv) ?? null;
+
+  return (
+    <div className="min-h-screen flex" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
+      <aside
+        className={`fixed md:static z-20 h-full md:h-auto w-64 transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
+        style={{ background: COLORS.petrolDark }}
+      >
+        <div className="p-5 flex items-center gap-3 border-b" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+          <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: COLORS.orange }}>
+            <span className="text-white font-bold" style={{ fontFamily: "Oswald, sans-serif" }}>3</span>
+          </div>
+          <div>
+            <p className="text-white text-sm font-bold leading-tight" style={{ fontFamily: "Oswald, sans-serif" }}>TTV 97 KAMENZ</p>
+            <p className="text-[10px] uppercase tracking-widest" style={{ color: COLORS.orange }}>3. Mannschaft</p>
+          </div>
+        </div>
+        <nav className="p-3 space-y-1">
+          {nav.map((n) => (
+            <button
+              key={n.key}
+              onClick={() => { setTab(n.key); setNavOpen(false); }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition"
+              style={tab === n.key ? { background: COLORS.orange, color: "white", fontWeight: 600 } : { color: "rgba(255,255,255,0.75)" }}
+            >
+              <n.icon size={16} />
+              {n.label}
+            </button>
+          ))}
+        </nav>
+        <div className="absolute bottom-0 w-full p-3 border-t" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+          <button onClick={abmelden} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
+            <LogOut size={16} /> Abmelden
+          </button>
+        </div>
+      </aside>
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="flex items-center justify-between px-6 py-4 bg-white border-b">
+          <div className="flex items-center gap-3">
+            <button className="md:hidden" onClick={() => setNavOpen(!navOpen)}><Menu size={20} /></button>
+            <h2 className="text-lg font-bold" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>{titles[tab]}</h2>
+          </div>
+          <div className="flex items-center gap-4">
+            <Bell size={18} className="text-gray-400" />
+            <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background: COLORS.petrol }}>{initialen}</div>
+          </div>
+        </header>
+        <main className="p-6 overflow-y-auto">
+          {!saisonsGeladen ? (
+            <Leerzustand text="Lade Saison…" />
+          ) : !aktiveSaison ? (
+            <div className="bg-white rounded-lg border p-6 text-sm text-gray-500 max-w-md">
+              Es ist noch keine aktive Saison hinterlegt.{" "}
+              {profil.ist_admin ? "Lege in den Einstellungen eine an." : "Bitte den Admin kontaktieren."}
+            </div>
+          ) : (
+            <>
+              {tab === "dashboard" && <Dashboard saison={aktiveSaison} />}
+              {tab === "tabelle" && <Tabelle saison={aktiveSaison} profil={profil} />}
+              {tab === "planung" && <Spielerplanung saison={aktiveSaison} profil={profil} />}
+              {tab === "kalender" && <Kalender profil={profil} />}
+              {tab === "kader" && <Kader saison={aktiveSaison} profil={profil} />}
+              {tab === "einstellungen" && <Einstellungen profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />}
+              {tab === "spieler" && profil.ist_admin && <Spielerverwaltung />}
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
