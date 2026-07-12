@@ -91,6 +91,21 @@ function Leerzustand({ text }) {
   return <p className="text-sm text-gray-400 py-4 text-center">{text}</p>;
 }
 
+// supabase-js zeigt bei Edge-Function-Fehlern standardmäßig nur "non-2xx status code" an.
+// Diese Funktion liest die eigentliche Fehlermeldung aus der Antwort der Funktion aus.
+async function echteFehlermeldung(error, data) {
+  if (data?.error) return data.error;
+  if (error?.context && typeof error.context.json === "function") {
+    try {
+      const body = await error.context.json();
+      if (body?.error) return body.error;
+    } catch (_) {
+      // Antwort war kein JSON – dann bleibt die generische Meldung
+    }
+  }
+  return error?.message ?? "Unbekannter Fehler";
+}
+
 /* ---------- Login ---------- */
 
 function Login({ onLogin }) {
@@ -404,7 +419,7 @@ function Tabelle({ saison, profil }) {
     const { data, error } = await supabase.functions.invoke("fetch-tabelle", { body: { saisonId: saison.id } });
     setAktualisiertLadend(false);
     if (error || data?.error) {
-      setFehler(error?.message || data.error);
+      setFehler(await echteFehlermeldung(error, data));
       return;
     }
     laden();
