@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
-import logo from "./assets/logo.jpg";
+import logo from "./logo.jpg";
 import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
@@ -969,10 +969,58 @@ function Spielerverwaltung() {
   const [fehler, setFehler] = useState(null);
   const [ladend, setLadend] = useState(false);
 
-  useEffect(() => {
-    supabase.from("mannschaften").select("*").order("name").then(({ data }) => data && setMannschaften(data));
-    supabase.from("profiles").select("*").order("nachname").then(({ data }) => data && setSpielerListe(data));
-  }, []);
+  const [neueMannschaft, setNeueMannschaft] = useState("");
+  const [mannschaftFehler, setMannschaftFehler] = useState(null);
+  const [bearbeiteMannschaftId, setBearbeiteMannschaftId] = useState(null);
+  const [bearbeiteMannschaftName, setBearbeiteMannschaftName] = useState("");
+
+  async function ladenAlles() {
+    const [{ data: m }, { data: s }] = await Promise.all([
+      supabase.from("mannschaften").select("*").order("name"),
+      supabase.from("profiles").select("*").order("nachname"),
+    ]);
+    if (m) setMannschaften(m);
+    if (s) setSpielerListe(s);
+  }
+
+  useEffect(() => { ladenAlles(); }, []);
+
+  function spielerAnzahl(mannschaftId) {
+    return spielerListe.filter((s) => s.mannschaft_id === mannschaftId).length;
+  }
+
+  async function mannschaftAnlegen() {
+    setMannschaftFehler(null);
+    if (!neueMannschaft.trim()) return;
+    const { error } = await supabase.from("mannschaften").insert({ name: neueMannschaft.trim() });
+    if (error) return setMannschaftFehler(error.message);
+    setNeueMannschaft("");
+    ladenAlles();
+  }
+
+  function mannschaftBearbeitenStarten(m) {
+    setBearbeiteMannschaftId(m.id);
+    setBearbeiteMannschaftName(m.name);
+  }
+
+  async function mannschaftUmbenennen() {
+    if (!bearbeiteMannschaftName.trim()) return;
+    const { error } = await supabase.from("mannschaften").update({ name: bearbeiteMannschaftName.trim() }).eq("id", bearbeiteMannschaftId);
+    if (error) return setMannschaftFehler(error.message);
+    setBearbeiteMannschaftId(null);
+    ladenAlles();
+  }
+
+  async function mannschaftLoeschen(m) {
+    setMannschaftFehler(null);
+    if (spielerAnzahl(m.id) > 0) {
+      return setMannschaftFehler(`"${m.name}" hat noch ${spielerAnzahl(m.id)} zugeordnete Spieler — bitte diese zuerst einem anderen Team zuordnen oder löschen.`);
+    }
+    if (!confirm(`Mannschaft "${m.name}" wirklich löschen?`)) return;
+    const { error } = await supabase.from("mannschaften").delete().eq("id", m.id);
+    if (error) return setMannschaftFehler("Löschen nicht möglich: " + error.message);
+    ladenAlles();
+  }
 
   function generierePasswort() {
     const zeichen = "ABCDEFGHKLMNPQRSTUVWXYZ23456789";
@@ -998,17 +1046,74 @@ function Spielerverwaltung() {
     }
     setEinmalpasswort(einmalig);
     setForm({ vorname: "", nachname: "", geburtstag: "", email: "", rang: "Spieler", mannschaftId: form.mannschaftId });
-    const { data: neueListe } = await supabase.from("profiles").select("*").order("nachname");
-    if (neueListe) setSpielerListe(neueListe);
+    ladenAlles();
   }
 
   return (
     <div className="space-y-4 max-w-2xl">
       <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={Users}>Mannschaften</SectionLabel>
+        <div className="space-y-2 mb-3">
+          {mannschaften.map((m) => (
+            <div key={m.id} className="flex items-center justify-between gap-2 py-2 border-b last:border-b-0">
+              {bearbeiteMannschaftId === m.id ? (
+                <div className="flex items-center gap-2 flex-1">
+                  <input
+                    value={bearbeiteMannschaftName}
+                    onChange={(e) => setBearbeiteMannschaftName(e.target.value)}
+                    className="flex-1 border rounded-md px-2 py-1 text-sm"
+                  />
+                  <button onClick={mannschaftUmbenennen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orange }}>
+                    Speichern
+                  </button>
+                  <button onClick={() => setBearbeiteMannschaftId(null)} className="text-xs px-2 py-1 rounded-md border">
+                    Abbrechen
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="text-sm">
+                    <span className="font-medium" style={{ color: COLORS.anthracite }}>{m.name}</span>
+                    <span className="text-xs text-gray-400 ml-2">{spielerAnzahl(m.id)} Spieler</span>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button onClick={() => mannschaftBearbeitenStarten(m)} className="text-gray-400 hover:text-gray-600">
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      onClick={() => mannschaftLoeschen(m)}
+                      className={spielerAnzahl(m.id) > 0 ? "text-gray-300 cursor-not-allowed" : ""}
+                      style={spielerAnzahl(m.id) === 0 ? { color: COLORS.orangeDeep } : {}}
+                      title={spielerAnzahl(m.id) > 0 ? "Nur löschbar, wenn keine Spieler zugeordnet sind" : "Löschen"}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+          {mannschaften.length === 0 && <p className="text-sm text-gray-400">Noch keine Mannschaft angelegt.</p>}
+        </div>
+        {mannschaftFehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{mannschaftFehler}</p>}
+        <div className="flex gap-2">
+          <input
+            value={neueMannschaft}
+            onChange={(e) => setNeueMannschaft(e.target.value)}
+            placeholder="z. B. 2. Mannschaft"
+            className="flex-1 border rounded-md px-3 py-2 text-sm"
+          />
+          <button onClick={mannschaftAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
+            Mannschaft anlegen
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg border p-5">
         <SectionLabel icon={UserPlus}>Neuen Spieler anlegen</SectionLabel>
         {mannschaften.length === 0 && (
           <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>
-            Noch keine Mannschaft angelegt. Lege zuerst über den SQL-Editor eine Mannschaft an (siehe auth_schema.sql).
+            Bitte oben zuerst eine Mannschaft anlegen.
           </p>
         )}
         <div className="grid sm:grid-cols-2 gap-3 mb-3">
