@@ -940,29 +940,37 @@ function Spielerverwaltung() {
 
 function Umfragen({ profil }) {
   const [umfragen, setUmfragen] = useState([]);
-  const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({}); // { [umfrageId]: [{spieler_id, ausgewaehlte_optionen}] }
+  const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({});
+  const [zieleNachUmfrage, setZieleNachUmfrage] = useState({}); // { [umfrageId]: spielerId[] } – leer = "alle"
   const [spielerListe, setSpielerListe] = useState([]);
   const [ladend, setLadend] = useState(true);
 
-  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [] });
+  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], endetAm: "" });
   const [fehler, setFehler] = useState(null);
   const [speichernLadend, setSpeichernLadend] = useState(false);
 
   async function laden() {
     setLadend(true);
-    const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }] = await Promise.all([
+    const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }, { data: zieleDaten }] = await Promise.all([
       supabase.from("umfragen").select("*").eq("aktiv", true).order("erstellt_am", { ascending: false }),
       supabase.from("umfrage_antworten").select("umfrage_id, spieler_id, ausgewaehlte_optionen"),
       supabase.from("profiles").select("id, vorname, nachname"),
+      supabase.from("umfrage_ziele").select("umfrage_id, spieler_id"),
     ]);
     setUmfragen(umfragenDaten ?? []);
     setSpielerListe(spielerDaten ?? []);
-    const gruppiert = {};
+    const antwortenGruppiert = {};
     (antwortenDaten ?? []).forEach((a) => {
-      if (!gruppiert[a.umfrage_id]) gruppiert[a.umfrage_id] = [];
-      gruppiert[a.umfrage_id].push(a);
+      if (!antwortenGruppiert[a.umfrage_id]) antwortenGruppiert[a.umfrage_id] = [];
+      antwortenGruppiert[a.umfrage_id].push(a);
     });
-    setAntwortenNachUmfrage(gruppiert);
+    setAntwortenNachUmfrage(antwortenGruppiert);
+    const zieleGruppiert = {};
+    (zieleDaten ?? []).forEach((z) => {
+      if (!zieleGruppiert[z.umfrage_id]) zieleGruppiert[z.umfrage_id] = [];
+      zieleGruppiert[z.umfrage_id].push(z.spieler_id);
+    });
+    setZieleNachUmfrage(zieleGruppiert);
     setLadend(false);
   }
 
@@ -975,6 +983,17 @@ function Umfragen({ profil }) {
     );
     laden();
     // TODO nächster Schritt: Ersteller optional per E-Mail benachrichtigen, sobald der E-Mail-Dienst angebunden ist.
+  }
+
+  async function beenden(umfrageId) {
+    await supabase.from("umfragen").update({ endet_am: new Date().toISOString() }).eq("id", umfrageId);
+    laden();
+  }
+
+  async function loeschen(umfrageId) {
+    if (!confirm("Diese Umfrage inklusive aller Stimmen endgültig löschen?")) return;
+    await supabase.from("umfragen").delete().eq("id", umfrageId);
+    laden();
   }
 
   function optionHinzufuegen() {
@@ -1003,6 +1022,7 @@ function Umfragen({ profil }) {
         optionen: optionenBereinigt,
         mehrfachauswahl: form.mehrfachauswahl,
         erstellt_von: profil.id,
+        endet_am: form.endetAm ? new Date(form.endetAm).toISOString() : null,
       })
       .select()
       .single();
@@ -1017,7 +1037,7 @@ function Umfragen({ profil }) {
     }
 
     setSpeichernLadend(false);
-    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [] });
+    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], endetAm: "" });
     laden();
     // TODO nächster Schritt: betroffene Spieler optional per E-Mail informieren, sobald der E-Mail-Dienst angebunden ist.
   }
@@ -1107,6 +1127,16 @@ function Umfragen({ profil }) {
             </div>
           )}
 
+          <label className="block text-xs text-gray-500 mb-1">
+            Endet am (optional — sonst läuft die Umfrage, bis alle abgestimmt haben oder du sie manuell beendest)
+          </label>
+          <input
+            type="datetime-local"
+            value={form.endetAm}
+            onChange={(e) => setForm({ ...form, endetAm: e.target.value })}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-4"
+          />
+
           {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
           <button
             onClick={umfrageErstellen}
@@ -1122,25 +1152,37 @@ function Umfragen({ profil }) {
       {umfragen.length === 0 ? (
         <Leerzustand text="Keine aktiven Umfragen." />
       ) : (
-        umfragen.map((u) => (
-          <UmfrageKarte
-            key={u.id}
-            umfrage={u}
-            antworten={antwortenNachUmfrage[u.id] ?? []}
-            profil={profil}
-            onAbstimmen={(gewaehlt) => abstimmen(u.id, u.mehrfachauswahl, gewaehlt)}
-          />
-        ))
+        umfragen.map((u) => {
+          const ziele = zieleNachUmfrage[u.id] ?? [];
+          const zielAnzahl = ziele.length > 0 ? ziele.length : spielerListe.length;
+          return (
+            <UmfrageKarte
+              key={u.id}
+              umfrage={u}
+              antworten={antwortenNachUmfrage[u.id] ?? []}
+              zielAnzahl={zielAnzahl}
+              profil={profil}
+              onAbstimmen={(gewaehlt) => abstimmen(u.id, u.mehrfachauswahl, gewaehlt)}
+              onBeenden={() => beenden(u.id)}
+              onLoeschen={() => loeschen(u.id)}
+            />
+          );
+        })
       )}
     </div>
   );
 }
 
-function UmfrageKarte({ umfrage, antworten, profil, onAbstimmen }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, onAbstimmen, onBeenden, onLoeschen }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [adminWillAbstimmen, setAdminWillAbstimmen] = useState(false);
-  const zeigeErgebnis = Boolean(eigeneAntwort) || (profil.ist_admin && !adminWillAbstimmen);
+
+  const zeitAbgelaufen = Boolean(umfrage.endet_am) && new Date(umfrage.endet_am) <= new Date();
+  const alleAbgestimmt = zielAnzahl > 0 && antworten.length >= zielAnzahl;
+  const istBeendet = zeitAbgelaufen || alleAbgestimmt;
+
+  const zeigeErgebnis = istBeendet || Boolean(eigeneAntwort) || (profil.ist_admin && !adminWillAbstimmen);
 
   function toggle(index) {
     if (umfrage.mehrfachauswahl) {
@@ -1154,11 +1196,33 @@ function UmfrageKarte({ umfrage, antworten, profil, onAbstimmen }) {
 
   return (
     <div className="bg-white rounded-lg border p-5">
-      <div className="flex items-center gap-2 mb-1">
-        <Vote size={16} style={{ color: COLORS.orange }} />
-        <h3 className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <Vote size={16} style={{ color: COLORS.orange }} />
+          <h3 className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
+          {istBeendet && (
+            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.anthracite }}>
+              Beendet
+            </span>
+          )}
+        </div>
+        {profil.ist_admin && (
+          <div className="flex items-center gap-3 shrink-0">
+            {!istBeendet && (
+              <button onClick={onBeenden} className="text-xs underline" style={{ color: COLORS.petrol }}>
+                Jetzt beenden
+              </button>
+            )}
+            <button onClick={onLoeschen} className="text-xs underline" style={{ color: COLORS.orangeDeep }}>
+              Löschen
+            </button>
+          </div>
+        )}
       </div>
       {umfrage.beschreibung && <p className="text-sm text-gray-500 mb-3">{umfrage.beschreibung}</p>}
+      {!istBeendet && umfrage.endet_am && (
+        <p className="text-xs text-gray-400 mb-2">Endet am {formatDatum(umfrage.endet_am)}</p>
+      )}
 
       {zeigeErgebnis ? (
         <div className="space-y-2">
@@ -1180,8 +1244,10 @@ function UmfrageKarte({ umfrage, antworten, profil, onAbstimmen }) {
               </div>
             );
           })}
-          <p className="text-xs text-gray-400 pt-1">{gesamtStimmen} Stimme(n) insgesamt{!eigeneAntwort && profil.ist_admin ? " · du hast noch nicht abgestimmt" : ""}</p>
-          {profil.ist_admin && !eigeneAntwort && (
+          <p className="text-xs text-gray-400 pt-1">
+            {gesamtStimmen} Stimme(n) insgesamt{!eigeneAntwort && !istBeendet && profil.ist_admin ? " · du hast noch nicht abgestimmt" : ""}
+          </p>
+          {profil.ist_admin && !eigeneAntwort && !istBeendet && (
             <button onClick={() => setAdminWillAbstimmen(true)} className="text-xs underline" style={{ color: COLORS.petrol }}>
               Trotzdem abstimmen
             </button>
