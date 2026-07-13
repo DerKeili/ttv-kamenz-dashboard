@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
+import logo from "./assets/logo.jpg";
 import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck,
-  UserPlus, KeyRound, Eye, EyeOff, Plus
+  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -670,11 +671,21 @@ function Spielerplanung({ saison, profil }) {
 
 /* ---------- Kalender ---------- */
 
+function isoZuDatetimeLocal(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function Kalender({ profil }) {
   const [ereignisse, setEreignisse] = useState([]);
   const [ladend, setLadend] = useState(true);
-  const [form, setForm] = useState({ titel: "", datum: "", typ: "termin" });
+  const [form, setForm] = useState({ titel: "", datum: "", datumEnde: "", typ: "termin" });
   const [fehler, setFehler] = useState(null);
+
+  const [bearbeitenId, setBearbeitenId] = useState(null);
+  const [bearbeitenForm, setBearbeitenForm] = useState({ titel: "", datum: "", datumEnde: "", typ: "termin" });
 
   async function laden() {
     setLadend(true);
@@ -691,14 +702,46 @@ function Kalender({ profil }) {
     const { error } = await supabase.from("kalender_ereignisse").insert({
       titel: form.titel,
       datum: new Date(form.datum).toISOString(),
+      datum_ende: form.datumEnde ? new Date(form.datumEnde).toISOString() : null,
       typ: form.typ,
       erstellt_von: profil.id,
     });
     if (error) return setFehler(error.message);
-    setForm({ titel: "", datum: "", typ: "termin" });
+    setForm({ titel: "", datum: "", datumEnde: "", typ: "termin" });
     laden();
     // TODO nächster Schritt: optional per E-Mail an alle Spieler verschicken,
     // sobald der E-Mail-Dienst angebunden ist.
+  }
+
+  function bearbeitenStarten(e) {
+    setBearbeitenId(e.id);
+    setBearbeitenForm({
+      titel: e.titel,
+      datum: isoZuDatetimeLocal(e.datum),
+      datumEnde: isoZuDatetimeLocal(e.datum_ende),
+      typ: e.typ,
+    });
+  }
+
+  async function bearbeitenSpeichern() {
+    if (!bearbeitenForm.titel || !bearbeitenForm.datum) return;
+    await supabase
+      .from("kalender_ereignisse")
+      .update({
+        titel: bearbeitenForm.titel,
+        datum: new Date(bearbeitenForm.datum).toISOString(),
+        datum_ende: bearbeitenForm.datumEnde ? new Date(bearbeitenForm.datumEnde).toISOString() : null,
+        typ: bearbeitenForm.typ,
+      })
+      .eq("id", bearbeitenId);
+    setBearbeitenId(null);
+    laden();
+  }
+
+  async function loeschen(id) {
+    if (!confirm("Diesen Termin wirklich löschen?")) return;
+    await supabase.from("kalender_ereignisse").delete().eq("id", id);
+    laden();
   }
 
   const iconFor = { training: Users, spiel: Trophy, lehrgang: GraduationCap, termin: CalendarDays };
@@ -708,10 +751,17 @@ function Kalender({ profil }) {
       {profil.ist_admin && (
         <div className="bg-white rounded-lg border p-4">
           <SectionLabel icon={Plus}>Neuen Termin anlegen</SectionLabel>
-          <div className="grid sm:grid-cols-4 gap-2 mb-2">
+          <div className="grid sm:grid-cols-2 gap-2 mb-2">
             <input placeholder="Titel" value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2" />
-            <input type="datetime-local" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
-            <select value={form.typ} onChange={(e) => setForm({ ...form, typ: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Beginn</label>
+              <input type="datetime-local" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Ende (optional, für mehrtägige Termine)</label>
+              <input type="datetime-local" value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+            </div>
+            <select value={form.typ} onChange={(e) => setForm({ ...form, typ: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2">
               <option value="training">Training</option>
               <option value="spiel">Spiel</option>
               <option value="lehrgang">Lehrgang</option>
@@ -733,6 +783,62 @@ function Kalender({ profil }) {
         <div className="bg-white rounded-lg border divide-y">
           {ereignisse.map((e) => {
             const Icon = iconFor[e.typ] || CalendarDays;
+
+            if (bearbeitenId === e.id) {
+              return (
+                <div key={e.id} className="p-4 space-y-2">
+                  <input
+                    value={bearbeitenForm.titel}
+                    onChange={(ev) => setBearbeitenForm({ ...bearbeitenForm, titel: ev.target.value })}
+                    className="w-full border rounded-md px-3 py-2 text-sm"
+                  />
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Beginn</label>
+                      <input
+                        type="datetime-local"
+                        value={bearbeitenForm.datum}
+                        onChange={(ev) => setBearbeitenForm({ ...bearbeitenForm, datum: ev.target.value })}
+                        className="w-full border rounded-md px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Ende (optional)</label>
+                      <input
+                        type="datetime-local"
+                        value={bearbeitenForm.datumEnde}
+                        onChange={(ev) => setBearbeitenForm({ ...bearbeitenForm, datumEnde: ev.target.value })}
+                        className="w-full border rounded-md px-3 py-2 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <select
+                    value={bearbeitenForm.typ}
+                    onChange={(ev) => setBearbeitenForm({ ...bearbeitenForm, typ: ev.target.value })}
+                    className="w-full border rounded-md px-3 py-2 text-sm"
+                  >
+                    <option value="training">Training</option>
+                    <option value="spiel">Spiel</option>
+                    <option value="lehrgang">Lehrgang</option>
+                    <option value="termin">Sonstiger Termin</option>
+                  </select>
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={bearbeitenSpeichern} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange }}>
+                      Speichern
+                    </button>
+                    <button onClick={() => setBearbeitenId(null)} className="px-3 py-1.5 rounded-md text-xs border">
+                      Abbrechen
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            const zeitraum =
+              e.datum_ende && new Date(e.datum_ende).toDateString() !== new Date(e.datum).toDateString()
+                ? `${formatDatum(e.datum)} – ${formatDatum(e.datum_ende)}`
+                : formatDatum(e.datum);
+
             return (
               <div key={e.id} className="flex items-center gap-4 p-4">
                 <div className="w-10 h-10 rounded-md flex items-center justify-center shrink-0" style={{ background: COLORS.petrolDark }}>
@@ -740,9 +846,18 @@ function Kalender({ profil }) {
                 </div>
                 <div className="flex-1">
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{e.titel}</p>
-                  <p className="text-xs text-gray-400">{formatDatum(e.datum)}</p>
+                  <p className="text-xs text-gray-400">{zeitraum}</p>
                 </div>
-                <ChevronRight size={16} className="text-gray-300" />
+                {profil.ist_admin && (
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button onClick={() => bearbeitenStarten(e)} className="text-gray-400 hover:text-gray-600">
+                      <Pencil size={16} />
+                    </button>
+                    <button onClick={() => loeschen(e.id)} className="text-gray-400" style={{ color: COLORS.orangeDeep }}>
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1467,9 +1582,7 @@ export default function App() {
         style={{ background: COLORS.petrolDark }}
       >
         <div className="p-5 flex items-center gap-3 border-b" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
-          <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: COLORS.orange }}>
-            <span className="text-white font-bold" style={{ fontFamily: "Oswald, sans-serif" }}>3</span>
-          </div>
+          <img src={logo} alt="TTV 97 Kamenz Logo" className="w-10 h-10 rounded-full object-cover shrink-0" style={{ border: `2px solid ${COLORS.orange}` }} />
           <div>
             <p className="text-white text-sm font-bold leading-tight" style={{ fontFamily: "Oswald, sans-serif" }}>TTV 97 KAMENZ</p>
             <p className="text-[10px] uppercase tracking-widest" style={{ color: COLORS.orange }}>3. Mannschaft</p>
