@@ -299,7 +299,7 @@ function PasswortAendern({ profil }) {
 
 /* ---------- Dashboard ---------- */
 
-function Dashboard({ saison, profil }) {
+function Dashboard({ saison, profil, onOeffneUmfrage }) {
   const [ladend, setLadend] = useState(true);
   const [eigenerTabellenplatz, setEigenerTabellenplatz] = useState(null);
   const [naechstesSpiel, setNaechstesSpiel] = useState(null);
@@ -385,9 +385,15 @@ function Dashboard({ saison, profil }) {
           ) : (
             <ul className="space-y-2">
               {offeneUmfragen.map((u) => (
-                <li key={u.id} className="flex items-center gap-2 text-sm text-gray-700">
-                  <Vote size={14} style={{ color: COLORS.orange }} />
-                  {u.titel}
+                <li key={u.id}>
+                  <button
+                    onClick={() => onOeffneUmfrage(u.id)}
+                    className="flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900 w-full text-left"
+                  >
+                    <Vote size={14} style={{ color: COLORS.orange }} />
+                    <span className="underline decoration-gray-300">{u.titel}</span>
+                    <ChevronRight size={14} className="text-gray-300 ml-auto" />
+                  </button>
                 </li>
               ))}
             </ul>
@@ -938,7 +944,7 @@ function Spielerverwaltung() {
 
 /* ---------- Umfragen ---------- */
 
-function Umfragen({ profil }) {
+function Umfragen({ profil, zielUmfrageId }) {
   const [umfragen, setUmfragen] = useState([]);
   const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({});
   const [zieleNachUmfrage, setZieleNachUmfrage] = useState({}); // { [umfrageId]: spielerId[] } – leer = "alle"
@@ -975,6 +981,12 @@ function Umfragen({ profil }) {
   }
 
   useEffect(() => { laden(); }, []);
+
+  useEffect(() => {
+    if (!zielUmfrageId || ladend) return;
+    const element = document.getElementById(`umfrage-${zielUmfrageId}`);
+    if (element) element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [zielUmfrageId, ladend]);
 
   async function abstimmen(umfrageId, mehrfachauswahl, gewaehlt) {
     await supabase.from("umfrage_antworten").upsert(
@@ -1130,12 +1142,23 @@ function Umfragen({ profil }) {
           <label className="block text-xs text-gray-500 mb-1">
             Endet am (optional — sonst läuft die Umfrage, bis alle abgestimmt haben oder du sie manuell beendest)
           </label>
-          <input
-            type="datetime-local"
-            value={form.endetAm}
-            onChange={(e) => setForm({ ...form, endetAm: e.target.value })}
-            className="w-full border rounded-md px-3 py-2 text-sm mb-4"
-          />
+          <div className="flex gap-2 mb-4">
+            <input
+              type="datetime-local"
+              value={form.endetAm}
+              onChange={(e) => setForm({ ...form, endetAm: e.target.value })}
+              className="flex-1 border rounded-md px-3 py-2 text-sm"
+            />
+            {form.endetAm && (
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, endetAm: "" })}
+                className="px-3 py-2 rounded-md text-sm border text-gray-500"
+              >
+                Leeren
+              </button>
+            )}
+          </div>
 
           {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
           <button
@@ -1162,6 +1185,7 @@ function Umfragen({ profil }) {
               antworten={antwortenNachUmfrage[u.id] ?? []}
               zielAnzahl={zielAnzahl}
               profil={profil}
+              hervorgehoben={u.id === zielUmfrageId}
               onAbstimmen={(gewaehlt) => abstimmen(u.id, u.mehrfachauswahl, gewaehlt)}
               onBeenden={() => beenden(u.id)}
               onLoeschen={() => loeschen(u.id)}
@@ -1173,7 +1197,7 @@ function Umfragen({ profil }) {
   );
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, onAbstimmen, onBeenden, onLoeschen }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, onAbstimmen, onBeenden, onLoeschen }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [adminWillAbstimmen, setAdminWillAbstimmen] = useState(false);
@@ -1195,7 +1219,7 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, onAbstimmen, onB
   const gesamtStimmen = antworten.length;
 
   return (
-    <div className="bg-white rounded-lg border p-5">
+    <div id={`umfrage-${umfrage.id}`} className="bg-white rounded-lg border p-5" style={hervorgehoben ? { boxShadow: `0 0 0 2px ${COLORS.orange}` } : {}}>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <Vote size={16} style={{ color: COLORS.orange }} />
@@ -1381,6 +1405,7 @@ export default function App() {
   const [profil, setProfil] = useState(null);
   const [sessionGeprueft, setSessionGeprueft] = useState(false);
   const [tab, setTab] = useState("dashboard");
+  const [zielUmfrageId, setZielUmfrageId] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
   const [saisons, setSaisons] = useState([]);
   const [saisonsGeladen, setSaisonsGeladen] = useState(false);
@@ -1485,7 +1510,7 @@ export default function App() {
           {tab === "einstellungen" ? (
             <Einstellungen profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
           ) : tab === "umfragen" ? (
-            <Umfragen profil={profil} />
+            <Umfragen profil={profil} zielUmfrageId={zielUmfrageId} />
           ) : tab === "spieler" ? (
             profil.ist_admin && <Spielerverwaltung />
           ) : !saisonsGeladen ? (
@@ -1497,7 +1522,16 @@ export default function App() {
             </div>
           ) : (
             <>
-              {tab === "dashboard" && <Dashboard saison={aktiveSaison} profil={profil} />}
+              {tab === "dashboard" && (
+                <Dashboard
+                  saison={aktiveSaison}
+                  profil={profil}
+                  onOeffneUmfrage={(umfrageId) => {
+                    setZielUmfrageId(umfrageId);
+                    setTab("umfragen");
+                  }}
+                />
+              )}
               {tab === "tabelle" && <Tabelle saison={aktiveSaison} profil={profil} />}
               {tab === "planung" && <Spielerplanung saison={aktiveSaison} profil={profil} />}
               {tab === "kalender" && <Kalender profil={profil} />}
