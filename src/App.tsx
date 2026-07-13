@@ -1139,7 +1139,8 @@ function Umfragen({ profil }) {
 function UmfrageKarte({ umfrage, antworten, profil, onAbstimmen }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
-  const zeigeErgebnis = Boolean(eigeneAntwort) || profil.ist_admin;
+  const [adminWillAbstimmen, setAdminWillAbstimmen] = useState(false);
+  const zeigeErgebnis = Boolean(eigeneAntwort) || (profil.ist_admin && !adminWillAbstimmen);
 
   function toggle(index) {
     if (umfrage.mehrfachauswahl) {
@@ -1181,7 +1182,7 @@ function UmfrageKarte({ umfrage, antworten, profil, onAbstimmen }) {
           })}
           <p className="text-xs text-gray-400 pt-1">{gesamtStimmen} Stimme(n) insgesamt{!eigeneAntwort && profil.ist_admin ? " · du hast noch nicht abgestimmt" : ""}</p>
           {profil.ist_admin && !eigeneAntwort && (
-            <button onClick={() => setAuswahl([])} className="text-xs underline" style={{ color: COLORS.petrol }}>
+            <button onClick={() => setAdminWillAbstimmen(true)} className="text-xs underline" style={{ color: COLORS.petrol }}>
               Trotzdem abstimmen
             </button>
           )}
