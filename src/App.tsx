@@ -1769,6 +1769,11 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, o
       {!istBeendet && umfrage.endet_am && (
         <p className="text-xs text-gray-400 mb-2">Endet am {formatDatum(umfrage.endet_am)}</p>
       )}
+      {!istBeendet && zielAnzahl > 0 && (
+        <p className="text-xs mb-2" style={{ color: COLORS.orange }}>
+          {antworten.length} von {zielAnzahl} haben abgestimmt — noch {zielAnzahl - antworten.length} ausstehend
+        </p>
+      )}
 
       {zeigeErgebnis ? (
         <div className="space-y-2">
@@ -2177,6 +2182,15 @@ export default function App() {
           </button>
         </div>
       </aside>
+
+      <button
+        onClick={abmelden}
+        className="fixed bottom-4 left-4 z-30 md:hidden w-11 h-11 rounded-full flex items-center justify-center shadow-lg"
+        style={{ background: COLORS.petrolDark, color: "white" }}
+        title="Abmelden"
+      >
+        <LogOut size={18} />
+      </button>
 
       <div className="flex-1 flex flex-col min-w-0">
         <header className="flex items-center justify-between px-6 py-4 bg-white border-b">
