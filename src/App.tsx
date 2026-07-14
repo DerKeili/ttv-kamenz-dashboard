@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck,
-  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2
+  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -678,10 +678,85 @@ function isoZuDatetimeLocal(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function zuIcsDatum(iso) {
+  return new Date(iso).toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+}
+
+function ereignisEndeOderPlusEineStunde(e) {
+  return e.datum_ende ?? new Date(new Date(e.datum).getTime() + 60 * 60 * 1000).toISOString();
+}
+
+function icsHerunterladen(e) {
+  const inhalt = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//TTV 97 Kamenz//3. Mannschaft//DE",
+    "BEGIN:VEVENT",
+    `UID:${e.id}@ttv97-kamenz`,
+    `DTSTAMP:${zuIcsDatum(new Date().toISOString())}`,
+    `DTSTART:${zuIcsDatum(e.datum)}`,
+    `DTEND:${zuIcsDatum(ereignisEndeOderPlusEineStunde(e))}`,
+    `SUMMARY:${e.titel.replace(/\n/g, " ")}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+
+  const blob = new Blob([inhalt], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${e.titel.replace(/[^\w äöüÄÖÜß-]/g, "")}.ics`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function googleKalenderLink(e) {
+  const start = zuIcsDatum(e.datum);
+  const ende = zuIcsDatum(ereignisEndeOderPlusEineStunde(e));
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: e.titel,
+    dates: `${start}/${ende}`,
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function KalenderExportMenu({ ereignis }) {
+  const [offen, setOffen] = useState(false);
+  return (
+    <div className="relative">
+      <button onClick={() => setOffen((o) => !o)} className="text-gray-400 hover:text-gray-600" title="Zum eigenen Kalender hinzufügen">
+        <CalendarPlus size={16} />
+      </button>
+      {offen && (
+        <div className="absolute right-0 mt-1 bg-white border rounded-md shadow-lg z-10 text-xs whitespace-nowrap overflow-hidden">
+          <a
+            href={googleKalenderLink(ereignis)}
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => setOffen(false)}
+            className="block px-3 py-2 hover:bg-gray-50"
+            style={{ color: COLORS.anthracite }}
+          >
+            Google Kalender
+          </a>
+          <button
+            onClick={() => { icsHerunterladen(ereignis); setOffen(false); }}
+            className="block w-full text-left px-3 py-2 hover:bg-gray-50"
+            style={{ color: COLORS.anthracite }}
+          >
+            Apple / Outlook (.ics)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Kalender({ profil }) {
   const [ereignisse, setEreignisse] = useState([]);
   const [ladend, setLadend] = useState(true);
-  const [form, setForm] = useState({ titel: "", datum: "", datumEnde: "", typ: "termin" });
+  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false });
   const [fehler, setFehler] = useState(null);
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
@@ -698,16 +773,23 @@ function Kalender({ profil }) {
 
   async function anlegen() {
     setFehler(null);
-    if (!form.titel || !form.datum) return setFehler("Titel und Datum sind Pflichtfelder.");
+    if (!form.titel || !form.datum || !form.uhrzeit) return setFehler("Titel, Datum und Uhrzeit sind Pflichtfelder.");
+    if (form.zeitraum && !form.datumEnde) return setFehler("Bitte ein Enddatum für den Zeitraum angeben.");
+
+    const start = new Date(`${form.datum}T${form.uhrzeit}`);
+    const ende = form.zeitraum
+      ? new Date(form.datumEnde)
+      : new Date(start.getTime() + Number(form.dauerMinuten) * 60000);
+
     const { error } = await supabase.from("kalender_ereignisse").insert({
       titel: form.titel,
-      datum: new Date(form.datum).toISOString(),
-      datum_ende: form.datumEnde ? new Date(form.datumEnde).toISOString() : null,
+      datum: start.toISOString(),
+      datum_ende: ende.toISOString(),
       typ: form.typ,
       erstellt_von: profil.id,
     });
     if (error) return setFehler(error.message);
-    setForm({ titel: "", datum: "", datumEnde: "", typ: "termin" });
+    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false });
     laden();
     // TODO nächster Schritt: optional per E-Mail an alle Spieler verschicken,
     // sobald der E-Mail-Dienst angebunden ist.
@@ -738,8 +820,14 @@ function Kalender({ profil }) {
     laden();
   }
 
+  const [loeschenBestaetigungId, setLoeschenBestaetigungId] = useState(null);
+
   async function loeschen(id) {
-    if (!confirm("Diesen Termin wirklich löschen?")) return;
+    if (loeschenBestaetigungId !== id) {
+      setLoeschenBestaetigungId(id);
+      return;
+    }
+    setLoeschenBestaetigungId(null);
     await supabase.from("kalender_ereignisse").delete().eq("id", id);
     laden();
   }
@@ -753,20 +841,59 @@ function Kalender({ profil }) {
           <SectionLabel icon={Plus}>Neuen Termin anlegen</SectionLabel>
           <div className="grid sm:grid-cols-2 gap-2 mb-2">
             <input placeholder="Titel" value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2" />
+
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Beginn</label>
-              <input type="datetime-local" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              <label className="block text-xs text-gray-400 mb-1">Datum</label>
+              <input type="date" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Ende (optional, für mehrtägige Termine)</label>
-              <input type="datetime-local" value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              <label className="block text-xs text-gray-400 mb-1">Uhrzeit</label>
+              <input type="time" value={form.uhrzeit} onChange={(e) => setForm({ ...form, uhrzeit: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
             </div>
-            <select value={form.typ} onChange={(e) => setForm({ ...form, typ: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2">
-              <option value="training">Training</option>
-              <option value="spiel">Spiel</option>
-              <option value="lehrgang">Lehrgang</option>
-              <option value="termin">Sonstiger Termin</option>
-            </select>
+
+            {!form.zeitraum && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Dauer</label>
+                <select
+                  value={form.dauerMinuten}
+                  onChange={(e) => setForm({ ...form, dauerMinuten: Number(e.target.value) })}
+                  className="w-full border rounded-md px-3 py-2 text-sm"
+                >
+                  <option value={30}>30 Minuten</option>
+                  <option value={45}>45 Minuten</option>
+                  <option value={60}>1 Stunde</option>
+                  <option value={90}>1,5 Stunden</option>
+                  <option value={120}>2 Stunden</option>
+                  <option value={180}>3 Stunden</option>
+                  <option value={240}>4 Stunden</option>
+                </select>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Typ</label>
+              <select value={form.typ} onChange={(e) => setForm({ ...form, typ: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                <option value="training">Training</option>
+                <option value="spiel">Spiel</option>
+                <option value="lehrgang">Lehrgang</option>
+                <option value="termin">Sonstiger Termin</option>
+              </select>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm sm:col-span-2 mt-1">
+              <input
+                type="checkbox"
+                checked={form.zeitraum}
+                onChange={(e) => setForm({ ...form, zeitraum: e.target.checked, datumEnde: e.target.checked ? form.datumEnde : "" })}
+              />
+              Zeitraum (geht über mehrere Tage, z. B. ein Lehrgang) — statt Dauer
+            </label>
+
+            {form.zeitraum && (
+              <div className="sm:col-span-2">
+                <label className="block text-xs text-gray-400 mb-1">Ende (Datum & Uhrzeit)</label>
+                <input type="datetime-local" value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              </div>
+            )}
           </div>
           {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
           <button onClick={anlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange }}>
@@ -848,14 +975,29 @@ function Kalender({ profil }) {
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{e.titel}</p>
                   <p className="text-xs text-gray-400">{zeitraum}</p>
                 </div>
-                {profil.ist_admin && (
+                {loeschenBestaetigungId === e.id ? (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-gray-500">Löschen?</span>
+                    <button onClick={() => loeschen(e.id)} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
+                      Ja
+                    </button>
+                    <button onClick={() => setLoeschenBestaetigungId(null)} className="text-xs px-2 py-1 rounded-md border">
+                      Nein
+                    </button>
+                  </div>
+                ) : (
                   <div className="flex items-center gap-3 shrink-0">
-                    <button onClick={() => bearbeitenStarten(e)} className="text-gray-400 hover:text-gray-600">
-                      <Pencil size={16} />
-                    </button>
-                    <button onClick={() => loeschen(e.id)} className="text-gray-400" style={{ color: COLORS.orangeDeep }}>
-                      <Trash2 size={16} />
-                    </button>
+                    <KalenderExportMenu ereignis={e} />
+                    {profil.ist_admin && (
+                      <>
+                        <button onClick={() => bearbeitenStarten(e)} className="text-gray-400 hover:text-gray-600">
+                          <Pencil size={16} />
+                        </button>
+                        <button onClick={() => loeschen(e.id)} className="text-gray-400" style={{ color: COLORS.orangeDeep }}>
+                          <Trash2 size={16} />
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1011,12 +1153,18 @@ function Spielerverwaltung() {
     ladenAlles();
   }
 
+  const [mannschaftLoeschenBestaetigung, setMannschaftLoeschenBestaetigung] = useState(null);
+
   async function mannschaftLoeschen(m) {
     setMannschaftFehler(null);
     if (spielerAnzahl(m.id) > 0) {
       return setMannschaftFehler(`"${m.name}" hat noch ${spielerAnzahl(m.id)} zugeordnete Spieler — bitte diese zuerst einem anderen Team zuordnen oder löschen.`);
     }
-    if (!confirm(`Mannschaft "${m.name}" wirklich löschen?`)) return;
+    if (mannschaftLoeschenBestaetigung !== m.id) {
+      setMannschaftLoeschenBestaetigung(m.id);
+      return;
+    }
+    setMannschaftLoeschenBestaetigung(null);
     const { error } = await supabase.from("mannschaften").delete().eq("id", m.id);
     if (error) return setMannschaftFehler("Löschen nicht möglich: " + error.message);
     ladenAlles();
@@ -1076,19 +1224,31 @@ function Spielerverwaltung() {
                     <span className="font-medium" style={{ color: COLORS.anthracite }}>{m.name}</span>
                     <span className="text-xs text-gray-400 ml-2">{spielerAnzahl(m.id)} Spieler</span>
                   </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <button onClick={() => mannschaftBearbeitenStarten(m)} className="text-gray-400 hover:text-gray-600">
-                      <Pencil size={15} />
-                    </button>
-                    <button
-                      onClick={() => mannschaftLoeschen(m)}
-                      className={spielerAnzahl(m.id) > 0 ? "text-gray-300 cursor-not-allowed" : ""}
-                      style={spielerAnzahl(m.id) === 0 ? { color: COLORS.orangeDeep } : {}}
-                      title={spielerAnzahl(m.id) > 0 ? "Nur löschbar, wenn keine Spieler zugeordnet sind" : "Löschen"}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
+                  {mannschaftLoeschenBestaetigung === m.id ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-gray-500">Wirklich löschen?</span>
+                      <button onClick={() => mannschaftLoeschen(m)} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
+                        Ja, löschen
+                      </button>
+                      <button onClick={() => setMannschaftLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">
+                        Abbrechen
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 shrink-0">
+                      <button onClick={() => mannschaftBearbeitenStarten(m)} className="text-gray-400 hover:text-gray-600">
+                        <Pencil size={15} />
+                      </button>
+                      <button
+                        onClick={() => mannschaftLoeschen(m)}
+                        className={spielerAnzahl(m.id) > 0 ? "text-gray-300 cursor-not-allowed" : ""}
+                        style={spielerAnzahl(m.id) === 0 ? { color: COLORS.orangeDeep } : {}}
+                        title={spielerAnzahl(m.id) > 0 ? "Nur löschbar, wenn keine Spieler zugeordnet sind" : "Löschen"}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -1223,7 +1383,6 @@ function Umfragen({ profil, zielUmfrageId }) {
   }
 
   async function loeschen(umfrageId) {
-    if (!confirm("Diese Umfrage inklusive aller Stimmen endgültig löschen?")) return;
     await supabase.from("umfragen").delete().eq("id", umfrageId);
     laden();
   }
@@ -1421,6 +1580,7 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, o
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [adminWillAbstimmen, setAdminWillAbstimmen] = useState(false);
+  const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
 
   const zeitAbgelaufen = Boolean(umfrage.endet_am) && new Date(umfrage.endet_am) <= new Date();
   const alleAbgestimmt = zielAnzahl > 0 && antworten.length >= zielAnzahl;
@@ -1452,14 +1612,28 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, o
         </div>
         {profil.ist_admin && (
           <div className="flex items-center gap-3 shrink-0">
-            {!istBeendet && (
-              <button onClick={onBeenden} className="text-xs underline" style={{ color: COLORS.petrol }}>
-                Jetzt beenden
-              </button>
+            {loeschenBestaetigen ? (
+              <>
+                <span className="text-xs text-gray-500">Wirklich löschen?</span>
+                <button onClick={onLoeschen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
+                  Ja
+                </button>
+                <button onClick={() => setLoeschenBestaetigen(false)} className="text-xs px-2 py-1 rounded-md border">
+                  Nein
+                </button>
+              </>
+            ) : (
+              <>
+                {!istBeendet && (
+                  <button onClick={onBeenden} className="text-xs underline" style={{ color: COLORS.petrol }}>
+                    Jetzt beenden
+                  </button>
+                )}
+                <button onClick={() => setLoeschenBestaetigen(true)} className="text-xs underline" style={{ color: COLORS.orangeDeep }}>
+                  Löschen
+                </button>
+              </>
             )}
-            <button onClick={onLoeschen} className="text-xs underline" style={{ color: COLORS.orangeDeep }}>
-              Löschen
-            </button>
           </div>
         )}
       </div>
