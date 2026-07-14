@@ -1137,6 +1137,57 @@ function Spielerverwaltung() {
   const [bearbeiteMannschaftId, setBearbeiteMannschaftId] = useState(null);
   const [bearbeiteMannschaftName, setBearbeiteMannschaftName] = useState("");
 
+  const [bearbeiteSpielerId, setBearbeiteSpielerId] = useState(null);
+  const [bearbeiteSpielerForm, setBearbeiteSpielerForm] = useState(null);
+  const [spielerBearbeitenFehler, setSpielerBearbeitenFehler] = useState(null);
+  const [spielerBearbeitenLadend, setSpielerBearbeitenLadend] = useState(false);
+  const [spielerLoeschenBestaetigung, setSpielerLoeschenBestaetigung] = useState(null);
+  const [spielerLoeschenLadend, setSpielerLoeschenLadend] = useState(false);
+
+  function spielerBearbeitenStarten(s) {
+    setSpielerBearbeitenFehler(null);
+    setBearbeiteSpielerId(s.id);
+    setBearbeiteSpielerForm({
+      vorname: s.vorname,
+      nachname: s.nachname,
+      geburtstag: s.geburtstag ?? "",
+      email: s.email,
+      rang: s.rang,
+      mannschaftId: s.mannschaft_id ?? "",
+    });
+  }
+
+  async function spielerBearbeitenSpeichern() {
+    setSpielerBearbeitenFehler(null);
+    setSpielerBearbeitenLadend(true);
+    const { data, error } = await supabase.functions.invoke("update-spieler", {
+      body: { spielerId: bearbeiteSpielerId, ...bearbeiteSpielerForm },
+    });
+    setSpielerBearbeitenLadend(false);
+    if (error || data?.error) {
+      setSpielerBearbeitenFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    setBearbeiteSpielerId(null);
+    ladenAlles();
+  }
+
+  async function spielerLoeschen(spielerId) {
+    if (spielerLoeschenBestaetigung !== spielerId) {
+      setSpielerLoeschenBestaetigung(spielerId);
+      return;
+    }
+    setSpielerLoeschenLadend(true);
+    const { data, error } = await supabase.functions.invoke("delete-spieler", { body: { spielerId } });
+    setSpielerLoeschenLadend(false);
+    setSpielerLoeschenBestaetigung(null);
+    if (error || data?.error) {
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    ladenAlles();
+  }
+
   async function ladenAlles() {
     const [{ data: m }, { data: s }] = await Promise.all([
       supabase.from("mannschaften").select("*").order("name"),
@@ -1330,12 +1381,68 @@ function Spielerverwaltung() {
       <div className="bg-white rounded-lg border p-5">
         <SectionLabel icon={Users}>Alle Spieler</SectionLabel>
         <div className="divide-y">
-          {spielerListe.map((s) => (
-            <div key={s.id} className="flex items-center justify-between py-2 text-sm">
-              <span>{s.vorname} {s.nachname}</span>
-              <span className="text-xs text-gray-400">{s.rang}</span>
-            </div>
-          ))}
+          {spielerListe.map((s) => {
+            if (bearbeiteSpielerId === s.id) {
+              return (
+                <div key={s.id} className="py-3 space-y-2">
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    <input value={bearbeiteSpielerForm.vorname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, vorname: e.target.value })} placeholder="Vorname" className="border rounded-md px-3 py-2 text-sm" />
+                    <input value={bearbeiteSpielerForm.nachname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, nachname: e.target.value })} placeholder="Nachname" className="border rounded-md px-3 py-2 text-sm" />
+                    <input type="date" value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+                    <input value={bearbeiteSpielerForm.email} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, email: e.target.value })} placeholder="E-Mail" className="border rounded-md px-3 py-2 text-sm" />
+                    <select value={bearbeiteSpielerForm.rang} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, rang: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
+                      <option>Mannschaftsführer</option>
+                      <option>stellv. Mannschaftsführer</option>
+                      <option>Spieler</option>
+                      <option>Ersatz</option>
+                    </select>
+                    <select value={bearbeiteSpielerForm.mannschaftId} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, mannschaftId: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
+                      <option value="">Mannschaft wählen…</option>
+                      {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </div>
+                  {spielerBearbeitenFehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{spielerBearbeitenFehler}</p>}
+                  <div className="flex gap-2">
+                    <button onClick={spielerBearbeitenSpeichern} disabled={spielerBearbeitenLadend} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange, opacity: spielerBearbeitenLadend ? 0.6 : 1 }}>
+                      {spielerBearbeitenLadend ? "Speichere…" : "Speichern"}
+                    </button>
+                    <button onClick={() => setBearbeiteSpielerId(null)} className="px-3 py-1.5 rounded-md text-xs border">
+                      Abbrechen
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div key={s.id} className="flex items-center justify-between py-2 text-sm gap-2">
+                <div>
+                  <span>{s.vorname} {s.nachname}</span>
+                  <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
+                </div>
+                {spielerLoeschenBestaetigung === s.id ? (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-gray-500">Löschen?</span>
+                    <button onClick={() => spielerLoeschen(s.id)} disabled={spielerLoeschenLadend} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
+                      {spielerLoeschenLadend ? "…" : "Ja"}
+                    </button>
+                    <button onClick={() => setSpielerLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">
+                      Nein
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button onClick={() => spielerBearbeitenStarten(s)} className="text-gray-400 hover:text-gray-600">
+                      <Pencil size={15} />
+                    </button>
+                    <button onClick={() => spielerLoeschen(s.id)} style={{ color: COLORS.orangeDeep }}>
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
           {spielerListe.length === 0 && <p className="text-sm text-gray-400">Noch keine Spieler angelegt.</p>}
         </div>
       </div>
