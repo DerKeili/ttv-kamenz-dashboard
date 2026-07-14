@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck,
-  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus
+  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -300,25 +300,27 @@ function PasswortAendern({ profil }) {
 
 /* ---------- Dashboard ---------- */
 
-function Dashboard({ saison, profil, onOeffneUmfrage }) {
+function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
   const [ladend, setLadend] = useState(true);
   const [eigenerTabellenplatz, setEigenerTabellenplatz] = useState(null);
   const [naechstesSpiel, setNaechstesSpiel] = useState(null);
   const [geburtstag, setGeburtstag] = useState(null);
   const [termine, setTermine] = useState([]);
   const [offeneUmfragen, setOffeneUmfragen] = useState([]);
+  const [ungeleseneNachrichten, setUngeleseneNachrichten] = useState([]);
 
   useEffect(() => {
     if (!saison) return;
     setLadend(true);
     (async () => {
-      const [{ data: tabelleZeile }, { data: spiele }, { data: profile }, { data: kalender }, { data: umfragen }, { data: eigeneAntworten }] = await Promise.all([
+      const [{ data: tabelleZeile }, { data: spiele }, { data: profile }, { data: kalender }, { data: umfragen }, { data: eigeneAntworten }, { data: nachrichten }] = await Promise.all([
         supabase.from("tabelle").select("*").eq("saison_id", saison.id).eq("ist_eigenes_team", true).maybeSingle(),
         supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).gte("datum", new Date().toISOString()).order("datum").limit(1),
         supabase.from("profiles").select("id, vorname, nachname, geburtstag"),
         supabase.from("kalender_ereignisse").select("*").gte("datum", new Date().toISOString()).order("datum").limit(4),
         supabase.from("umfragen").select("id, titel").eq("aktiv", true),
         supabase.from("umfrage_antworten").select("umfrage_id").eq("spieler_id", profil.id),
+        supabase.from("nachrichten").select("id, von_id").eq("an_id", profil.id).eq("gelesen", false),
       ]);
       setEigenerTabellenplatz(tabelleZeile ?? null);
       setNaechstesSpiel(spiele?.[0] ?? null);
@@ -326,11 +328,14 @@ function Dashboard({ saison, profil, onOeffneUmfrage }) {
       setTermine(kalender ?? []);
       const beantwortetIds = new Set((eigeneAntworten ?? []).map((a) => a.umfrage_id));
       setOffeneUmfragen((umfragen ?? []).filter((u) => !beantwortetIds.has(u.id)));
+      setUngeleseneNachrichten(nachrichten ?? []);
       setLadend(false);
     })();
   }, [saison, profil.id]);
 
   if (ladend) return <Leerzustand text="Lade Dashboard…" />;
+
+  const ungeleseneAbsenderAnzahl = new Set(ungeleseneNachrichten.map((n) => n.von_id)).size;
 
   return (
     <div className="space-y-6">
@@ -376,7 +381,7 @@ function Dashboard({ saison, profil, onOeffneUmfrage }) {
         </TiltCard>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid md:grid-cols-3 gap-4">
         <div className="bg-white rounded-lg border p-5">
           <SectionLabel icon={Vote}>
             Offene Umfragen {offeneUmfragen.length > 0 && <span className="ml-1 text-white text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: COLORS.orange }}>{offeneUmfragen.length} neu</span>}
@@ -399,7 +404,23 @@ function Dashboard({ saison, profil, onOeffneUmfrage }) {
               ))}
             </ul>
           )}
-          <p className="text-xs text-gray-400 mt-3">Nachrichten zwischen Spielern folgen in einer späteren Ausbaustufe.</p>
+        </div>
+
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={MessageSquare}>
+            Nachrichten {ungeleseneNachrichten.length > 0 && <span className="ml-1 text-white text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: COLORS.orange }}>{ungeleseneNachrichten.length} neu</span>}
+          </SectionLabel>
+          {ungeleseneNachrichten.length === 0 ? (
+            <p className="text-sm text-gray-400">Keine neuen Nachrichten.</p>
+          ) : (
+            <button onClick={() => onOeffneNachricht(null)} className="flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900 w-full text-left">
+              <MessageSquare size={14} style={{ color: COLORS.orange }} />
+              <span className="underline decoration-gray-300">
+                {ungeleseneAbsenderAnzahl === 1 ? "Neue Nachricht ansehen" : `Neue Nachrichten von ${ungeleseneAbsenderAnzahl} Spielern`}
+              </span>
+              <ChevronRight size={14} className="text-gray-300 ml-auto" />
+            </button>
+          )}
         </div>
 
         <div className="bg-white rounded-lg border p-5">
@@ -1693,6 +1714,166 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, o
   );
 }
 
+/* ---------- Nachrichten ---------- */
+
+function Nachrichten({ profil, zielSpielerId }) {
+  const [spielerListe, setSpielerListe] = useState([]);
+  const [nachrichten, setNachrichten] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [partnerId, setPartnerId] = useState(zielSpielerId ?? null);
+  const [entwurf, setEntwurf] = useState("");
+  const [sendenLadend, setSendenLadend] = useState(false);
+
+  async function laden() {
+    setLadend(true);
+    const [{ data: spielerDaten }, { data: nachrichtenDaten }] = await Promise.all([
+      supabase.from("profiles").select("id, vorname, nachname").neq("id", profil.id).order("nachname"),
+      supabase.from("nachrichten").select("*").or(`von_id.eq.${profil.id},an_id.eq.${profil.id}`).order("gesendet_am"),
+    ]);
+    setSpielerListe(spielerDaten ?? []);
+    setNachrichten(nachrichtenDaten ?? []);
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, []);
+
+  useEffect(() => {
+    if (zielSpielerId) setPartnerId(zielSpielerId);
+  }, [zielSpielerId]);
+
+  // Ungelesene Nachrichten im offenen Gespräch als gelesen markieren
+  useEffect(() => {
+    if (!partnerId) return;
+    const ungelesen = nachrichten.filter((n) => n.von_id === partnerId && n.an_id === profil.id && !n.gelesen);
+    if (ungelesen.length === 0) return;
+    (async () => {
+      await supabase.from("nachrichten").update({ gelesen: true }).in("id", ungelesen.map((n) => n.id));
+      setNachrichten((prev) => prev.map((n) => (ungelesen.some((u) => u.id === n.id) ? { ...n, gelesen: true } : n)));
+    })();
+  }, [partnerId, nachrichten, profil.id]);
+
+  async function senden() {
+    if (!entwurf.trim() || !partnerId) return;
+    setSendenLadend(true);
+    const { error } = await supabase.from("nachrichten").insert({
+      von_id: profil.id,
+      an_id: partnerId,
+      inhalt: entwurf.trim(),
+    });
+    setSendenLadend(false);
+    if (!error) {
+      setEntwurf("");
+      laden();
+      // TODO nächster Schritt: Empfänger optional per E-Mail benachrichtigen,
+      // sobald der E-Mail-Dienst angebunden ist (nur wenn email_benachrichtigungen = true).
+    }
+  }
+
+  function konversationMit(spielerId) {
+    return nachrichten.filter((n) => n.von_id === spielerId || n.an_id === spielerId);
+  }
+
+  function ungeleseneVon(spielerId) {
+    return nachrichten.filter((n) => n.von_id === spielerId && n.an_id === profil.id && !n.gelesen).length;
+  }
+
+  if (ladend) return <Leerzustand text="Lade Nachrichten…" />;
+
+  const partner = spielerListe.find((s) => s.id === partnerId);
+  const sortiertNachAktivitaet = [...spielerListe].sort((a, b) => {
+    const letzteA = konversationMit(a.id).at(-1)?.gesendet_am ?? "";
+    const letzteB = konversationMit(b.id).at(-1)?.gesendet_am ?? "";
+    return letzteB.localeCompare(letzteA);
+  });
+
+  // Gesprächsansicht
+  if (partner) {
+    const verlauf = konversationMit(partner.id);
+    return (
+      <div className="bg-white rounded-lg border flex flex-col" style={{ height: "70vh" }}>
+        <div className="flex items-center gap-3 p-4 border-b">
+          <button onClick={() => setPartnerId(null)} className="text-gray-400 hover:text-gray-600">
+            <ArrowLeft size={18} />
+          </button>
+          <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{partner.vorname} {partner.nachname}</p>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {verlauf.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center mt-8">Noch keine Nachrichten — schreib die erste!</p>
+          ) : (
+            verlauf.map((n) => {
+              const eigene = n.von_id === profil.id;
+              return (
+                <div key={n.id} className={`flex ${eigene ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className="max-w-[75%] rounded-lg px-3 py-2 text-sm"
+                    style={eigene ? { background: COLORS.orange, color: "white" } : { background: "#F1F1EF", color: COLORS.anthracite }}
+                  >
+                    <p>{n.inhalt}</p>
+                    <p className="text-[10px] mt-1 opacity-70">{new Date(n.gesendet_am).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+        <div className="flex items-center gap-2 p-3 border-t">
+          <input
+            value={entwurf}
+            onChange={(e) => setEntwurf(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && senden()}
+            placeholder="Nachricht schreiben…"
+            className="flex-1 border rounded-md px-3 py-2 text-sm"
+          />
+          <button
+            onClick={senden}
+            disabled={sendenLadend || !entwurf.trim()}
+            className="w-10 h-10 rounded-md flex items-center justify-center text-white shrink-0"
+            style={{ background: COLORS.orange, opacity: sendenLadend || !entwurf.trim() ? 0.5 : 1 }}
+          >
+            <Send size={16} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Übersicht aller Spieler / Unterhaltungen
+  return (
+    <div className="bg-white rounded-lg border divide-y max-w-xl">
+      {sortiertNachAktivitaet.map((s) => {
+        const verlauf = konversationMit(s.id);
+        const letzte = verlauf.at(-1);
+        const ungelesen = ungeleseneVon(s.id);
+        return (
+          <button
+            key={s.id}
+            onClick={() => setPartnerId(s.id)}
+            className="w-full flex items-center gap-3 p-4 text-left hover:bg-gray-50"
+          >
+            <div
+              className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
+              style={{ background: COLORS.petrol, fontFamily: "Oswald, sans-serif" }}
+            >
+              {s.vorname?.[0]}{s.nachname?.[0]}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
+              <p className="text-xs text-gray-400 truncate">{letzte ? letzte.inhalt : "Noch keine Nachrichten"}</p>
+            </div>
+            {ungelesen > 0 && (
+              <span className="text-white text-[10px] px-1.5 py-0.5 rounded-full shrink-0" style={{ background: COLORS.orange }}>
+                {ungelesen}
+              </span>
+            )}
+          </button>
+        );
+      })}
+      {spielerListe.length === 0 && <Leerzustand text="Keine anderen Spieler vorhanden." />}
+    </div>
+  );
+}
+
 /* ---------- Einstellungen (Saison-Verwaltung) ---------- */
 
 function Einstellungen({ profil, saisons, onSaisonsGeaendert }) {
@@ -1792,6 +1973,7 @@ const NAV_BASIS = [
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
   { key: "umfragen", label: "Umfragen", icon: Vote },
+  { key: "nachrichten", label: "Nachrichten", icon: MessageSquare },
   { key: "einstellungen", label: "Einstellungen", icon: Settings },
 ];
 
@@ -1800,6 +1982,7 @@ export default function App() {
   const [sessionGeprueft, setSessionGeprueft] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [zielUmfrageId, setZielUmfrageId] = useState(null);
+  const [zielSpielerId, setZielSpielerId] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
   const [saisons, setSaisons] = useState([]);
   const [saisonsGeladen, setSaisonsGeladen] = useState(false);
@@ -1847,6 +2030,7 @@ export default function App() {
     kalender: "Ereigniskalender",
     kader: "Kader — 3. Mannschaft",
     umfragen: "Umfragen",
+    nachrichten: "Nachrichten",
     einstellungen: "Einstellungen",
     spieler: "Spielerverwaltung",
   };
@@ -1903,6 +2087,8 @@ export default function App() {
             <Einstellungen profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
           ) : tab === "umfragen" ? (
             <Umfragen profil={profil} zielUmfrageId={zielUmfrageId} />
+          ) : tab === "nachrichten" ? (
+            <Nachrichten profil={profil} zielSpielerId={zielSpielerId} />
           ) : tab === "spieler" ? (
             profil.ist_admin && <Spielerverwaltung />
           ) : !saisonsGeladen ? (
@@ -1921,6 +2107,10 @@ export default function App() {
                   onOeffneUmfrage={(umfrageId) => {
                     setZielUmfrageId(umfrageId);
                     setTab("umfragen");
+                  }}
+                  onOeffneNachricht={(spielerId) => {
+                    setZielSpielerId(spielerId);
+                    setTab("nachrichten");
                   }}
                 />
               )}
