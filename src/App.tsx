@@ -568,14 +568,26 @@ function Spielerplanung({ saison, profil }) {
     const order = { offen: "ja", ja: "nein", nein: "offen" };
     const neuerStatus = order[meldungen[spielId]?.[spielerId] ?? "offen"];
 
-    setMeldungen((prev) => ({ ...prev, [spielId]: { ...prev[spielId], [spielerId]: neuerStatus } }));
+    const aktualisierteMeldungenFuerSpiel = { ...meldungen[spielId], [spielerId]: neuerStatus };
+    setMeldungen((prev) => ({ ...prev, [spielId]: aktualisierteMeldungenFuerSpiel }));
 
     await supabase.from("spielerplanung_meldungen").upsert(
       { saison_id: saison.id, spiel_id: spielId, spieler_id: spielerId, status: neuerStatus, aktualisiert_am: new Date().toISOString() },
       { onConflict: "spiel_id,spieler_id" }
     );
-    // TODO nächster Schritt: bei Status "nein" oder <4 Zusagen alle Spieler per E-Mail informieren,
-    // sobald der E-Mail-Dienst angebunden ist.
+
+    const jaAnzahl = Object.values(aktualisierteMeldungenFuerSpiel).filter((v) => v === "ja").length;
+    if (neuerStatus === "nein" || jaAnzahl < 4) {
+      const spielerName = spieler.find((s) => s.id === spielerId);
+      supabase.functions.invoke("notify-spielplan-warnung", {
+        body: {
+          spielId,
+          spielerName: spielerName ? `${spielerName.vorname} ${spielerName.nachname}` : null,
+          neuerStatus,
+          anzahlJa: jaAnzahl,
+        },
+      }); // bewusst nicht awaited – E-Mail-Versand soll die Oberfläche nicht blockieren
+    }
   }
 
   function countJa(spielId) {
@@ -777,7 +789,7 @@ function KalenderExportMenu({ ereignis }) {
 function Kalender({ profil }) {
   const [ereignisse, setEreignisse] = useState([]);
   const [ladend, setLadend] = useState(true);
-  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false });
+  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true });
   const [fehler, setFehler] = useState(null);
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
@@ -810,10 +822,13 @@ function Kalender({ profil }) {
       erstellt_von: profil.id,
     });
     if (error) return setFehler(error.message);
-    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false });
+    if (form.perMail) {
+      supabase.functions.invoke("notify-kalender-eintrag", {
+        body: { titel: form.titel, datum: start.toISOString(), typ: form.typ },
+      }); // bewusst nicht awaited
+    }
+    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true });
     laden();
-    // TODO nächster Schritt: optional per E-Mail an alle Spieler verschicken,
-    // sobald der E-Mail-Dienst angebunden ist.
   }
 
   function bearbeitenStarten(e) {
@@ -915,6 +930,11 @@ function Kalender({ profil }) {
                 <input type="datetime-local" value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
               </div>
             )}
+
+            <label className="flex items-center gap-2 text-sm sm:col-span-2">
+              <input type="checkbox" checked={form.perMail} onChange={(e) => setForm({ ...form, perMail: e.target.checked })} />
+              Alle Spieler per E-Mail über diesen Termin informieren
+            </label>
           </div>
           {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
           <button onClick={anlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange }}>
@@ -1133,9 +1153,11 @@ function Spielerverwaltung() {
   const [ladend, setLadend] = useState(false);
 
   const [neueMannschaft, setNeueMannschaft] = useState("");
+  const [neueMannschaftVerbandsname, setNeueMannschaftVerbandsname] = useState("");
   const [mannschaftFehler, setMannschaftFehler] = useState(null);
   const [bearbeiteMannschaftId, setBearbeiteMannschaftId] = useState(null);
   const [bearbeiteMannschaftName, setBearbeiteMannschaftName] = useState("");
+  const [bearbeiteMannschaftVerbandsname, setBearbeiteMannschaftVerbandsname] = useState("");
 
   const [bearbeiteSpielerId, setBearbeiteSpielerId] = useState(null);
   const [bearbeiteSpielerForm, setBearbeiteSpielerForm] = useState(null);
@@ -1206,20 +1228,28 @@ function Spielerverwaltung() {
   async function mannschaftAnlegen() {
     setMannschaftFehler(null);
     if (!neueMannschaft.trim()) return;
-    const { error } = await supabase.from("mannschaften").insert({ name: neueMannschaft.trim() });
+    const { error } = await supabase.from("mannschaften").insert({
+      name: neueMannschaft.trim(),
+      verband_name: neueMannschaftVerbandsname.trim() || null,
+    });
     if (error) return setMannschaftFehler(error.message);
     setNeueMannschaft("");
+    setNeueMannschaftVerbandsname("");
     ladenAlles();
   }
 
   function mannschaftBearbeitenStarten(m) {
     setBearbeiteMannschaftId(m.id);
     setBearbeiteMannschaftName(m.name);
+    setBearbeiteMannschaftVerbandsname(m.verband_name ?? "");
   }
 
   async function mannschaftUmbenennen() {
     if (!bearbeiteMannschaftName.trim()) return;
-    const { error } = await supabase.from("mannschaften").update({ name: bearbeiteMannschaftName.trim() }).eq("id", bearbeiteMannschaftId);
+    const { error } = await supabase
+      .from("mannschaften")
+      .update({ name: bearbeiteMannschaftName.trim(), verband_name: bearbeiteMannschaftVerbandsname.trim() || null })
+      .eq("id", bearbeiteMannschaftId);
     if (error) return setMannschaftFehler(error.message);
     setBearbeiteMannschaftId(null);
     ladenAlles();
@@ -1277,24 +1307,36 @@ function Spielerverwaltung() {
           {mannschaften.map((m) => (
             <div key={m.id} className="flex items-center justify-between gap-2 py-2 border-b last:border-b-0">
               {bearbeiteMannschaftId === m.id ? (
-                <div className="flex items-center gap-2 flex-1">
+                <div className="flex-1 space-y-2">
                   <input
                     value={bearbeiteMannschaftName}
                     onChange={(e) => setBearbeiteMannschaftName(e.target.value)}
-                    className="flex-1 border rounded-md px-2 py-1 text-sm"
+                    placeholder="Name intern, z. B. 3. Mannschaft"
+                    className="w-full border rounded-md px-2 py-1 text-sm"
                   />
-                  <button onClick={mannschaftUmbenennen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orange }}>
-                    Speichern
-                  </button>
-                  <button onClick={() => setBearbeiteMannschaftId(null)} className="text-xs px-2 py-1 rounded-md border">
-                    Abbrechen
-                  </button>
+                  <input
+                    value={bearbeiteMannschaftVerbandsname}
+                    onChange={(e) => setBearbeiteMannschaftVerbandsname(e.target.value)}
+                    placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 3"
+                    className="w-full border rounded-md px-2 py-1 text-sm"
+                  />
+                  <div className="flex gap-2">
+                    <button onClick={mannschaftUmbenennen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orange }}>
+                      Speichern
+                    </button>
+                    <button onClick={() => setBearbeiteMannschaftId(null)} className="text-xs px-2 py-1 rounded-md border">
+                      Abbrechen
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
                   <div className="text-sm">
                     <span className="font-medium" style={{ color: COLORS.anthracite }}>{m.name}</span>
                     <span className="text-xs text-gray-400 ml-2">{spielerAnzahl(m.id)} Spieler</span>
+                    <div className="text-xs text-gray-400">
+                      {m.verband_name ? `Verband: ${m.verband_name}` : "Kein Verbands-Name hinterlegt"}
+                    </div>
                   </div>
                   {mannschaftLoeschenBestaetigung === m.id ? (
                     <div className="flex items-center gap-2 shrink-0">
@@ -1328,12 +1370,18 @@ function Spielerverwaltung() {
           {mannschaften.length === 0 && <p className="text-sm text-gray-400">Noch keine Mannschaft angelegt.</p>}
         </div>
         {mannschaftFehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{mannschaftFehler}</p>}
-        <div className="flex gap-2">
+        <div className="space-y-2">
           <input
             value={neueMannschaft}
             onChange={(e) => setNeueMannschaft(e.target.value)}
-            placeholder="z. B. 2. Mannschaft"
-            className="flex-1 border rounded-md px-3 py-2 text-sm"
+            placeholder="Name intern, z. B. 2. Mannschaft"
+            className="w-full border rounded-md px-3 py-2 text-sm"
+          />
+          <input
+            value={neueMannschaftVerbandsname}
+            onChange={(e) => setNeueMannschaftVerbandsname(e.target.value)}
+            placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 2"
+            className="w-full border rounded-md px-3 py-2 text-sm"
           />
           <button onClick={mannschaftAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
             Mannschaft anlegen
@@ -1502,7 +1550,6 @@ function Umfragen({ profil, zielUmfrageId }) {
       { onConflict: "umfrage_id,spieler_id" }
     );
     laden();
-    // TODO nächster Schritt: Ersteller optional per E-Mail benachrichtigen, sobald der E-Mail-Dienst angebunden ist.
   }
 
   async function beenden(umfrageId) {
@@ -1555,10 +1602,13 @@ function Umfragen({ profil, zielUmfrageId }) {
       await supabase.from("umfrage_ziele").insert(form.einzelneIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
     }
 
+    supabase.functions.invoke("notify-neue-umfrage", {
+      body: { titel: form.titel.trim(), empfaengerIds: form.empfaenger === "einzeln" ? form.einzelneIds : null },
+    }); // bewusst nicht awaited
+
     setSpeichernLadend(false);
     setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], endetAm: "" });
     laden();
-    // TODO nächster Schritt: betroffene Spieler optional per E-Mail informieren, sobald der E-Mail-Dienst angebunden ist.
   }
 
   if (ladend) return <Leerzustand text="Lade Umfragen…" />;
@@ -1867,17 +1917,19 @@ function Nachrichten({ profil, zielSpielerId }) {
   async function senden() {
     if (!entwurf.trim() || !partnerId) return;
     setSendenLadend(true);
+    const inhaltZuSenden = entwurf.trim();
     const { error } = await supabase.from("nachrichten").insert({
       von_id: profil.id,
       an_id: partnerId,
-      inhalt: entwurf.trim(),
+      inhalt: inhaltZuSenden,
     });
     setSendenLadend(false);
     if (!error) {
       setEntwurf("");
       laden();
-      // TODO nächster Schritt: Empfänger optional per E-Mail benachrichtigen,
-      // sobald der E-Mail-Dienst angebunden ist (nur wenn email_benachrichtigungen = true).
+      supabase.functions.invoke("notify-neue-nachricht", {
+        body: { empfaengerId: partnerId, absenderName: `${profil.vorname} ${profil.nachname}`, inhalt: inhaltZuSenden },
+      }); // bewusst nicht awaited
     }
   }
 
@@ -1991,17 +2043,34 @@ function Nachrichten({ profil, zielSpielerId }) {
 function Einstellungen({ profil, saisons, onSaisonsGeaendert }) {
   const [neueBezeichnung, setNeueBezeichnung] = useState("");
   const [fehler, setFehler] = useState(null);
+  const [mannschaften, setMannschaften] = useState([]);
+  const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(profil.mannschaft_id ?? "");
+
+  useEffect(() => {
+    supabase.from("mannschaften").select("*").order("name").then(({ data }) => {
+      setMannschaften(data ?? []);
+      if (!ausgewaehlteMannschaftId && data?.length > 0) setAusgewaehlteMannschaftId(data[0].id);
+    });
+  }, []);
 
   async function updateField(id, field, value) {
     onSaisonsGeaendert((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
     await supabase.from("saisons").update({ [field]: value }).eq("id", id);
   }
 
+  async function saisonMannschaftZuordnen(saisonId) {
+    if (!ausgewaehlteMannschaftId) return;
+    await supabase.from("saisons").update({ mannschaft_id: ausgewaehlteMannschaftId }).eq("id", saisonId);
+    const { data: alle } = await supabase.from("saisons").select("*").order("erstellt_am", { ascending: false });
+    onSaisonsGeaendert(alle ?? []);
+  }
+
   async function neueSaisonAnlegen() {
     setFehler(null);
     if (!neueBezeichnung.trim()) return;
-    await supabase.from("saisons").update({ aktiv: false }).neq("id", "00000000-0000-0000-0000-000000000000");
-    const { data, error } = await supabase.from("saisons").insert({ bezeichnung: neueBezeichnung, aktiv: true }).select().single();
+    if (!ausgewaehlteMannschaftId) return setFehler("Bitte zuerst eine Mannschaft auswählen.");
+    await supabase.from("saisons").update({ aktiv: false }).eq("mannschaft_id", ausgewaehlteMannschaftId);
+    const { error } = await supabase.from("saisons").insert({ bezeichnung: neueBezeichnung, aktiv: true, mannschaft_id: ausgewaehlteMannschaftId });
     if (error) return setFehler(error.message);
     setNeueBezeichnung("");
     const { data: alle } = await supabase.from("saisons").select("*").order("erstellt_am", { ascending: false });
@@ -2015,55 +2084,102 @@ function Einstellungen({ profil, saisons, onSaisonsGeaendert }) {
     { key: "spielplan_rueckrunde_url", label: "Spielplan-Link Rückrunde", hinweis: "Spielplan → Rückrunde" },
   ];
 
+  const saisonsFuerMannschaft = saisons.filter((s) => s.mannschaft_id === ausgewaehlteMannschaftId);
+  const unzugeordneteSaisons = saisons.filter((s) => !s.mannschaft_id);
+  const eigeneAktiveSaison = saisons.find((s) => s.mannschaft_id === profil.mannschaft_id && s.aktiv);
+
   return (
     <div className="space-y-6 max-w-2xl">
       {profil.ist_admin ? (
-        <div className="bg-white rounded-lg border p-5">
-          <SectionLabel icon={CalendarDays}>Saisons</SectionLabel>
-          <div className="space-y-4">
-            {saisons.map((s) => (
-              <div key={s.id} className="border rounded-md p-4" style={s.aktiv ? { borderColor: COLORS.orange } : {}}>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>Saison {s.bezeichnung}</span>
-                  {s.aktiv && (
-                    <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.orange }}>aktiv</span>
-                  )}
-                </div>
-                <div className="space-y-3">
-                  {linkFelder.map((f) => (
-                    <div key={f.key}>
-                      <label className="block text-xs text-gray-500 mb-1">
-                        {f.label} <span className="text-gray-300">({f.hinweis}, ändert sich jede Saison neu)</span>
-                      </label>
-                      <input
-                        defaultValue={s[f.key] ?? ""}
-                        onBlur={(e) => updateField(s.id, f.key, e.target.value)}
-                        placeholder="https://bautzen.tischtennislive.de/…"
-                        className="w-full border rounded-md px-3 py-2 text-sm"
-                      />
-                    </div>
-                  ))}
-                </div>
+        <>
+          <div className="bg-white rounded-lg border p-5">
+            <SectionLabel icon={Users}>Mannschaft auswählen</SectionLabel>
+            <select
+              value={ausgewaehlteMannschaftId}
+              onChange={(e) => setAusgewaehlteMannschaftId(e.target.value)}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+            >
+              <option value="">Mannschaft wählen…</option>
+              {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+            {mannschaften.length === 0 && (
+              <p className="text-xs text-gray-400 mt-2">Noch keine Mannschaft angelegt — das geht in der Spielerverwaltung.</p>
+            )}
+          </div>
+
+          {unzugeordneteSaisons.length > 0 && (
+            <div className="bg-white rounded-lg border p-5">
+              <SectionLabel icon={AlertTriangle}>Nicht zugeordnete Saisons</SectionLabel>
+              <p className="text-xs text-gray-500 mb-3">
+                Diese Saisons wurden angelegt, bevor es mehrere Mannschaften gab. Bitte jeweils einer Mannschaft zuordnen.
+              </p>
+              <div className="space-y-2">
+                {unzugeordneteSaisons.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between text-sm border rounded-md p-3">
+                    <span>Saison {s.bezeichnung}</span>
+                    <button
+                      onClick={() => saisonMannschaftZuordnen(s.id)}
+                      disabled={!ausgewaehlteMannschaftId}
+                      className="text-xs px-3 py-1.5 rounded-md text-white font-semibold"
+                      style={{ background: COLORS.orange, opacity: ausgewaehlteMannschaftId ? 1 : 0.5 }}
+                    >
+                      Der oben gewählten Mannschaft zuordnen
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
-            {saisons.length === 0 && <Leerzustand text="Noch keine Saison angelegt." />}
-          </div>
-          {fehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
-          <div className="flex gap-2 mt-4 pt-4 border-t">
-            <input
-              value={neueBezeichnung}
-              onChange={(e) => setNeueBezeichnung(e.target.value)}
-              placeholder="z. B. 2027/2028"
-              className="flex-1 border rounded-md px-3 py-2 text-sm"
-            />
-            <button onClick={neueSaisonAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
-              Neue Saison anlegen
-            </button>
-          </div>
-        </div>
+            </div>
+          )}
+
+          {ausgewaehlteMannschaftId && (
+            <div className="bg-white rounded-lg border p-5">
+              <SectionLabel icon={CalendarDays}>Saisons — {mannschaften.find((m) => m.id === ausgewaehlteMannschaftId)?.name}</SectionLabel>
+              <div className="space-y-4">
+                {saisonsFuerMannschaft.map((s) => (
+                  <div key={s.id} className="border rounded-md p-4" style={s.aktiv ? { borderColor: COLORS.orange } : {}}>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>Saison {s.bezeichnung}</span>
+                      {s.aktiv && (
+                        <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.orange }}>aktiv</span>
+                      )}
+                    </div>
+                    <div className="space-y-3">
+                      {linkFelder.map((f) => (
+                        <div key={f.key}>
+                          <label className="block text-xs text-gray-500 mb-1">
+                            {f.label} <span className="text-gray-300">({f.hinweis}, ändert sich jede Saison neu)</span>
+                          </label>
+                          <input
+                            defaultValue={s[f.key] ?? ""}
+                            onBlur={(e) => updateField(s.id, f.key, e.target.value)}
+                            placeholder="https://bautzen.tischtennislive.de/…"
+                            className="w-full border rounded-md px-3 py-2 text-sm"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {saisonsFuerMannschaft.length === 0 && <Leerzustand text="Noch keine Saison für diese Mannschaft angelegt." />}
+              </div>
+              {fehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+              <div className="flex gap-2 mt-4 pt-4 border-t">
+                <input
+                  value={neueBezeichnung}
+                  onChange={(e) => setNeueBezeichnung(e.target.value)}
+                  placeholder="z. B. 2027/2028"
+                  className="flex-1 border rounded-md px-3 py-2 text-sm"
+                />
+                <button onClick={neueSaisonAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
+                  Neue Saison anlegen
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       ) : (
         <div className="bg-white rounded-lg border p-5 text-sm text-gray-500">
-          Aktive Saison: <strong>{saisons.find((s) => s.aktiv)?.bezeichnung ?? "keine"}</strong>
+          Aktive Saison: <strong>{eigeneAktiveSaison?.bezeichnung ?? "keine"}</strong>
         </div>
       )}
 
@@ -2148,7 +2264,7 @@ export default function App() {
   };
 
   const initialen = `${profil.vorname?.[0] ?? ""}${profil.nachname?.[0] ?? ""}`.toUpperCase();
-  const aktiveSaison = saisons.find((s) => s.aktiv) ?? null;
+  const aktiveSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === profil.mannschaft_id) ?? null;
 
   return (
     <div className="min-h-screen flex" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
