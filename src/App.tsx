@@ -543,25 +543,38 @@ function Spielerplanung({ saison, profil }) {
   const [spieler, setSpieler] = useState([]);
   const [meldungen, setMeldungen] = useState({}); // { [spielId]: { [spielerId]: status } }
   const [ladend, setLadend] = useState(true);
+  const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
 
-  useEffect(() => {
-    if (!saison) return;
+  async function laden() {
     setLadend(true);
-    (async () => {
-      const [{ data: spieleDaten }, { data: spielerDaten }, { data: meldungenDaten }] = await Promise.all([
-        supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum"),
-        supabase.from("profiles").select("*").order("nachname"),
-        supabase.from("spielerplanung_meldungen").select("*").eq("saison_id", saison.id),
-      ]);
-      setSpiele(spieleDaten ?? []);
-      setSpieler(spielerDaten ?? []);
-      const map = {};
-      (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
-      (meldungenDaten ?? []).forEach((m) => { if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status; });
-      setMeldungen(map);
-      setLadend(false);
-    })();
-  }, [saison, runde]);
+    const [{ data: spieleDaten }, { data: spielerDaten }, { data: meldungenDaten }] = await Promise.all([
+      supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum"),
+      supabase.from("profiles").select("*").order("nachname"),
+      supabase.from("spielerplanung_meldungen").select("*").eq("saison_id", saison.id),
+    ]);
+    setSpiele(spieleDaten ?? []);
+    setSpieler(spielerDaten ?? []);
+    const map = {};
+    (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
+    (meldungenDaten ?? []).forEach((m) => { if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status; });
+    setMeldungen(map);
+    setLadend(false);
+  }
+
+  useEffect(() => { if (saison) laden(); }, [saison, runde]);
+
+  async function aktualisieren() {
+    setFehler(null);
+    setAktualisiertLadend(true);
+    const { data, error } = await supabase.functions.invoke("fetch-spielplan", { body: { saisonId: saison.id, runde } });
+    setAktualisiertLadend(false);
+    if (error || data?.error) {
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    laden();
+  }
 
   async function toggle(spielId, spielerId) {
     if (spielerId !== profil.id && !profil.ist_admin) return; // nur eigene Meldung, außer Admin
@@ -598,22 +611,35 @@ function Spielerplanung({ saison, profil }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
-        {["Hinrunde", "Rückrunde"].map((r) => (
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex gap-2">
+          {["Hinrunde", "Rückrunde"].map((r) => (
+            <button
+              key={r}
+              onClick={() => setRunde(r)}
+              className="px-4 py-1.5 rounded-full text-sm font-semibold transition"
+              style={
+                runde === r
+                  ? { background: COLORS.orange, color: "white" }
+                  : { background: "#fff", color: COLORS.anthracite, border: "1px solid #ddd" }
+              }
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        {profil.ist_admin && (
           <button
-            key={r}
-            onClick={() => setRunde(r)}
-            className="px-4 py-1.5 rounded-full text-sm font-semibold transition"
-            style={
-              runde === r
-                ? { background: COLORS.orange, color: "white" }
-                : { background: "#fff", color: COLORS.anthracite, border: "1px solid #ddd" }
-            }
+            onClick={aktualisieren}
+            className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
+            style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
+            disabled={aktualisiertLadend}
           >
-            {r}
+            {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
           </button>
-        ))}
+        )}
       </div>
+      {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
 
       {spiele.length === 0 ? (
         <Leerzustand text={`Noch keine Spiele für die ${runde} hinterlegt.`} />
