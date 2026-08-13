@@ -691,9 +691,12 @@ function Spielerplanung({ saison, profil }) {
 
   async function laden() {
     setLadend(true);
+    const spielerQuery = saison.mannschaft_id
+      ? supabase.from("profiles").select("*").eq("mannschaft_id", saison.mannschaft_id).order("nachname")
+      : supabase.from("profiles").select("*").order("nachname");
     const [{ data: spieleDaten }, { data: spielerDaten }, { data: meldungenDaten }] = await Promise.all([
       supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum"),
-      supabase.from("profiles").select("*").order("nachname"),
+      spielerQuery,
       supabase.from("spielerplanung_meldungen").select("*").eq("saison_id", saison.id),
     ]);
     setSpiele(spieleDaten ?? []);
@@ -1233,8 +1236,11 @@ function Kader({ saison, profil }) {
 
   async function laden() {
     setLadend(true);
+    const spielerQuery = saison.mannschaft_id
+      ? supabase.from("profiles").select("*").eq("mannschaft_id", saison.mannschaft_id).order("nachname")
+      : supabase.from("profiles").select("*").order("nachname");
     const [{ data: spielerDaten }, { data: infoDaten }] = await Promise.all([
-      supabase.from("profiles").select("*").order("nachname"),
+      spielerQuery,
       supabase.from("mannschaft_info").select("*").eq("saison_id", saison.id).maybeSingle(),
     ]);
     setSpieler(spielerDaten ?? []);
@@ -2449,6 +2455,8 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [saisons, setSaisons] = useState([]);
   const [saisonsGeladen, setSaisonsGeladen] = useState(false);
+  const [mannschaften, setMannschaften] = useState([]);
+  const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
@@ -2465,6 +2473,10 @@ export default function App() {
     supabase.from("saisons").select("*").order("erstellt_am", { ascending: false }).then(({ data }) => {
       setSaisons(data ?? []);
       setSaisonsGeladen(true);
+    });
+    supabase.from("mannschaften").select("*").order("hierarchie_stufe", { ascending: true, nullsFirst: false }).then(({ data }) => {
+      setMannschaften(data ?? []);
+      setAusgewaehlteMannschaftId((aktuell) => aktuell ?? profil.mannschaft_id);
     });
   }, [profil]);
 
@@ -2500,6 +2512,9 @@ export default function App() {
 
   const initialen = `${profil.vorname?.[0] ?? ""}${profil.nachname?.[0] ?? ""}`.toUpperCase();
   const aktiveSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === profil.mannschaft_id) ?? null;
+  const mannschaftsAbhaengigeTabs = ["tabelle", "planung", "kader"];
+  const effektiveMannschaftId = mannschaftsAbhaengigeTabs.includes(tab) ? (ausgewaehlteMannschaftId ?? profil.mannschaft_id) : profil.mannschaft_id;
+  const angezeigteSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === effektiveMannschaftId) ?? null;
 
   return (
     <div className="min-h-screen flex" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
@@ -2565,7 +2580,7 @@ export default function App() {
             profil.ist_admin && <Spielerverwaltung />
           ) : !saisonsGeladen ? (
             <Leerzustand text="Lade Saison…" />
-          ) : !aktiveSaison ? (
+          ) : tab === "dashboard" && !aktiveSaison ? (
             <div className="bg-white rounded-lg border p-6 text-sm text-gray-500 max-w-md">
               Es ist noch keine aktive Saison hinterlegt.{" "}
               {profil.ist_admin ? "Lege in den Einstellungen eine an." : "Bitte den Admin kontaktieren."}
@@ -2586,10 +2601,40 @@ export default function App() {
                   }}
                 />
               )}
-              {tab === "tabelle" && <Tabelle saison={aktiveSaison} profil={profil} />}
-              {tab === "planung" && <Spielerplanung saison={aktiveSaison} profil={profil} />}
+
+              {mannschaftsAbhaengigeTabs.includes(tab) && mannschaften.length > 1 && (
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {mannschaften.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => setAusgewaehlteMannschaftId(m.id)}
+                      className="px-4 py-1.5 rounded-full text-sm font-semibold transition"
+                      style={
+                        effektiveMannschaftId === m.id
+                          ? { background: COLORS.orange, color: "white" }
+                          : { background: "#fff", color: COLORS.anthracite, border: "1px solid #ddd" }
+                      }
+                    >
+                      {m.name}{m.id === profil.mannschaft_id ? " (eigene)" : ""}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {mannschaftsAbhaengigeTabs.includes(tab) && !angezeigteSaison ? (
+                <div className="bg-white rounded-lg border p-6 text-sm text-gray-500 max-w-md">
+                  Für diese Mannschaft ist noch keine aktive Saison hinterlegt.{" "}
+                  {profil.ist_admin ? "Lege in den Einstellungen eine an." : "Bitte den Admin kontaktieren."}
+                </div>
+              ) : (
+                <>
+                  {tab === "tabelle" && <Tabelle saison={angezeigteSaison} profil={profil} />}
+                  {tab === "planung" && <Spielerplanung saison={angezeigteSaison} profil={profil} />}
+                  {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
+                </>
+              )}
+
               {tab === "kalender" && <Kalender profil={profil} />}
-              {tab === "kader" && <Kader saison={aktiveSaison} profil={profil} />}
             </>
           )}
         </main>
