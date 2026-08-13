@@ -439,6 +439,148 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
           )}
         </div>
       </div>
+
+      <MannschaftsUebersicht profil={profil} />
+    </div>
+  );
+}
+
+/* ---------- Mannschaftsübersicht: nächstes Spiel & Zusagen aller Mannschaften ---------- */
+
+function MannschaftsUebersicht({ profil }) {
+  const [uebersicht, setUebersicht] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [sendenLadendId, setSendenLadendId] = useState(null);
+  const [gesendetIds, setGesendetIds] = useState([]);
+
+  async function laden() {
+    setLadend(true);
+    const { data: mannschaften } = await supabase
+      .from("mannschaften")
+      .select("*")
+      .order("hierarchie_stufe", { ascending: true, nullsFirst: false });
+    const liste = mannschaften ?? [];
+
+    const ergebnisse = await Promise.all(
+      liste.map(async (m) => {
+        const { data: saison } = await supabase
+          .from("saisons")
+          .select("id")
+          .eq("mannschaft_id", m.id)
+          .eq("aktiv", true)
+          .maybeSingle();
+        if (!saison) return { mannschaft: m, spiel: null, jaAnzahl: 0 };
+
+        const { data: spiel } = await supabase
+          .from("verbands_spiele")
+          .select("*")
+          .eq("saison_id", saison.id)
+          .gte("datum", new Date().toISOString())
+          .order("datum")
+          .limit(1)
+          .maybeSingle();
+        if (!spiel) return { mannschaft: m, spiel: null, jaAnzahl: 0 };
+
+        const { data: meldungen } = await supabase.from("spielerplanung_meldungen").select("status").eq("spiel_id", spiel.id);
+        const jaAnzahl = (meldungen ?? []).filter((x) => x.status === "ja").length;
+        return { mannschaft: m, spiel, jaAnzahl };
+      })
+    );
+
+    setUebersicht(ergebnisse);
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, []);
+
+  async function umfrageAnUntereSenden(eintrag, untereMannschaft) {
+    setSendenLadendId(eintrag.mannschaft.id);
+    const gegner = eintrag.spiel.ist_heimspiel ? eintrag.spiel.gastteam : eintrag.spiel.heimteam;
+    const datumText = formatDatum(eintrag.spiel.datum);
+
+    const { data: neueUmfrage, error } = await supabase
+      .from("umfragen")
+      .insert({
+        titel: `Aushilfe gesucht: ${eintrag.mannschaft.name} braucht Spieler`,
+        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText} werden noch Spieler gebraucht. Hast du an dem Tag Zeit auszuhelfen?`,
+        optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
+        mehrfachauswahl: false,
+        erstellt_von: profil.id,
+      })
+      .select()
+      .single();
+
+    if (!error && neueUmfrage) {
+      const { data: spielerUnten } = await supabase.from("profiles").select("id").eq("mannschaft_id", untereMannschaft.id);
+      if (spielerUnten && spielerUnten.length > 0) {
+        await supabase.from("umfrage_ziele").insert(spielerUnten.map((s) => ({ umfrage_id: neueUmfrage.id, spieler_id: s.id })));
+        supabase.functions.invoke("notify-neue-umfrage", {
+          body: { titel: neueUmfrage.titel, empfaengerIds: spielerUnten.map((s) => s.id) },
+        }); // bewusst nicht awaited
+      }
+      setGesendetIds((prev) => [...prev, eintrag.mannschaft.id]);
+    }
+    setSendenLadendId(null);
+  }
+
+  if (ladend) return <Leerzustand text="Lade Mannschaftsübersicht…" />;
+  if (uebersicht.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={Users}>Nächste Spiele aller Mannschaften</SectionLabel>
+      <div className="space-y-3">
+        {uebersicht.map((eintrag) => {
+          const { mannschaft, spiel, jaAnzahl } = eintrag;
+          const benoetigt = mannschaft.benoetigte_spieler ?? 4;
+          const fehlend = spiel ? Math.max(0, benoetigt - jaAnzahl) : 0;
+          const untereMannschaft = mannschaft.hierarchie_stufe
+            ? uebersicht.find((e) => e.mannschaft.hierarchie_stufe === mannschaft.hierarchie_stufe + 1)?.mannschaft
+            : null;
+
+          return (
+            <div key={mannschaft.id} className="border rounded-md p-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{mannschaft.name}</span>
+                {spiel && (
+                  <span
+                    className="text-xs px-2 py-0.5 rounded-full font-semibold"
+                    style={fehlend > 0 ? { background: COLORS.orange, color: "white" } : { background: "#E4F2EE", color: COLORS.petrol }}
+                  >
+                    {jaAnzahl}/{benoetigt} zugesagt
+                  </span>
+                )}
+              </div>
+              {spiel ? (
+                <p className="text-xs text-gray-500 mt-1">
+                  {formatDatum(spiel.datum)} · gegen {spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam}
+                </p>
+              ) : (
+                <p className="text-xs text-gray-400 mt-1">Kein anstehendes Spiel terminiert.</p>
+              )}
+
+              {spiel && fehlend > 0 && profil.ist_admin && (
+                untereMannschaft ? (
+                  gesendetIds.includes(mannschaft.id) ? (
+                    <p className="text-xs mt-2" style={{ color: COLORS.petrol }}>Umfrage an {untereMannschaft.name} verschickt.</p>
+                  ) : (
+                    <button
+                      onClick={() => umfrageAnUntereSenden(eintrag, untereMannschaft)}
+                      disabled={sendenLadendId === mannschaft.id}
+                      className="text-xs mt-2 px-3 py-1.5 rounded-md text-white font-semibold"
+                      style={{ background: COLORS.orangeDeep, opacity: sendenLadendId === mannschaft.id ? 0.6 : 1 }}
+                    >
+                      {sendenLadendId === mannschaft.id ? "Sende…" : `Umfrage an ${untereMannschaft.name} senden`}
+                    </button>
+                  )
+                ) : (
+                  <p className="text-xs mt-2 text-gray-400">Keine tiefere Mannschaft hinterlegt, die aushelfen könnte.</p>
+                )
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1185,11 +1327,13 @@ function Spielerverwaltung() {
   const [neueMannschaft, setNeueMannschaft] = useState("");
   const [neueMannschaftVerbandsname, setNeueMannschaftVerbandsname] = useState("");
   const [neueMannschaftBenoetigteSpieler, setNeueMannschaftBenoetigteSpieler] = useState(4);
+  const [neueMannschaftStufe, setNeueMannschaftStufe] = useState("");
   const [mannschaftFehler, setMannschaftFehler] = useState(null);
   const [bearbeiteMannschaftId, setBearbeiteMannschaftId] = useState(null);
   const [bearbeiteMannschaftName, setBearbeiteMannschaftName] = useState("");
   const [bearbeiteMannschaftVerbandsname, setBearbeiteMannschaftVerbandsname] = useState("");
   const [bearbeiteMannschaftBenoetigteSpieler, setBearbeiteMannschaftBenoetigteSpieler] = useState(4);
+  const [bearbeiteMannschaftStufe, setBearbeiteMannschaftStufe] = useState("");
 
   const [bearbeiteSpielerId, setBearbeiteSpielerId] = useState(null);
   const [bearbeiteSpielerForm, setBearbeiteSpielerForm] = useState(null);
@@ -1264,11 +1408,13 @@ function Spielerverwaltung() {
       name: neueMannschaft.trim(),
       verband_name: neueMannschaftVerbandsname.trim() || null,
       benoetigte_spieler: Number(neueMannschaftBenoetigteSpieler) || 4,
+      hierarchie_stufe: neueMannschaftStufe ? Number(neueMannschaftStufe) : null,
     });
     if (error) return setMannschaftFehler(error.message);
     setNeueMannschaft("");
     setNeueMannschaftVerbandsname("");
     setNeueMannschaftBenoetigteSpieler(4);
+    setNeueMannschaftStufe("");
     ladenAlles();
   }
 
@@ -1277,6 +1423,7 @@ function Spielerverwaltung() {
     setBearbeiteMannschaftName(m.name);
     setBearbeiteMannschaftVerbandsname(m.verband_name ?? "");
     setBearbeiteMannschaftBenoetigteSpieler(m.benoetigte_spieler ?? 4);
+    setBearbeiteMannschaftStufe(m.hierarchie_stufe ?? "");
   }
 
   async function mannschaftUmbenennen() {
@@ -1287,6 +1434,7 @@ function Spielerverwaltung() {
         name: bearbeiteMannschaftName.trim(),
         verband_name: bearbeiteMannschaftVerbandsname.trim() || null,
         benoetigte_spieler: Number(bearbeiteMannschaftBenoetigteSpieler) || 4,
+        hierarchie_stufe: bearbeiteMannschaftStufe ? Number(bearbeiteMannschaftStufe) : null,
       })
       .eq("id", bearbeiteMannschaftId);
     if (error) return setMannschaftFehler(error.message);
@@ -1370,6 +1518,18 @@ function Spielerverwaltung() {
                       className="w-full border rounded-md px-2 py-1 text-sm"
                     />
                   </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Rangstufe (1 = höchste Mannschaft, für die Aushilfe-Funktion)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={bearbeiteMannschaftStufe}
+                      onChange={(e) => setBearbeiteMannschaftStufe(e.target.value)}
+                      placeholder="z. B. 3 für die 3. Mannschaft"
+                      className="w-full border rounded-md px-2 py-1 text-sm"
+                    />
+                  </div>
                   <div className="flex gap-2">
                     <button onClick={mannschaftUmbenennen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orange }}>
                       Speichern
@@ -1387,6 +1547,7 @@ function Spielerverwaltung() {
                     <div className="text-xs text-gray-400">
                       {m.verband_name ? `Verband: ${m.verband_name}` : "Kein Verbands-Name hinterlegt"}
                       {" · "}{m.benoetigte_spieler ?? 4} Spieler pro Spiel benötigt
+                      {m.hierarchie_stufe ? ` · Rangstufe ${m.hierarchie_stufe}` : ""}
                     </div>
                   </div>
                   {mannschaftLoeschenBestaetigung === m.id ? (
@@ -1442,6 +1603,18 @@ function Spielerverwaltung() {
               max={10}
               value={neueMannschaftBenoetigteSpieler}
               onChange={(e) => setNeueMannschaftBenoetigteSpieler(e.target.value)}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Rangstufe (1 = höchste Mannschaft, für die Aushilfe-Funktion)</label>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={neueMannschaftStufe}
+              onChange={(e) => setNeueMannschaftStufe(e.target.value)}
+              placeholder="z. B. 3 für die 3. Mannschaft"
               className="w-full border rounded-md px-3 py-2 text-sm"
             />
           </div>
