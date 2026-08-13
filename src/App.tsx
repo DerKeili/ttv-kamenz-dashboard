@@ -883,7 +883,113 @@ function Spielerplanung({ saison, profil }) {
   );
 }
 
-/* ---------- Kalender ---------- */
+/* ---------- Ergebnisse ---------- */
+
+function Ergebnisse({ saison, profil }) {
+  const [runde, setRunde] = useState("Hinrunde");
+  const [spiele, setSpiele] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  async function laden() {
+    setLadend(true);
+    const { data } = await supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum");
+    setSpiele(data ?? []);
+    setLadend(false);
+  }
+
+  useEffect(() => { if (saison) laden(); }, [saison, runde]);
+
+  async function aktualisieren() {
+    setFehler(null);
+    setAktualisiertLadend(true);
+    const { data, error } = await supabase.functions.invoke("fetch-spielplan", { body: { saisonId: saison.id, runde } });
+    setAktualisiertLadend(false);
+    if (error || data?.error) {
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    laden();
+  }
+
+  function ergebnisInfo(spiel) {
+    if (!spiel.ergebnis) return { text: "noch nicht gespielt", ton: "offen" };
+    const teile = spiel.ergebnis.split(":").map((t) => parseInt(t.trim(), 10));
+    if (teile.length !== 2 || teile.some(isNaN)) return { text: spiel.ergebnis, ton: "offen" };
+    const [heimPunkte, gastPunkte] = teile;
+    const eigenePunkte = spiel.ist_heimspiel ? heimPunkte : gastPunkte;
+    const gegnerPunkte = spiel.ist_heimspiel ? gastPunkte : heimPunkte;
+    const ton = eigenePunkte > gegnerPunkte ? "sieg" : eigenePunkte < gegnerPunkte ? "niederlage" : "unentschieden";
+    return { text: spiel.ergebnis, ton };
+  }
+
+  const tonFarben = {
+    sieg: { background: "#DDF0EA", color: COLORS.petrol },
+    niederlage: { background: "#FBE2DA", color: COLORS.orangeDeep },
+    unentschieden: { background: "#F1F1EF", color: "#777" },
+    offen: { background: "#F1F1EF", color: "#999" },
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex gap-2">
+          {["Hinrunde", "Rückrunde"].map((r) => (
+            <button
+              key={r}
+              onClick={() => setRunde(r)}
+              className="px-4 py-1.5 rounded-full text-sm font-semibold transition"
+              style={
+                runde === r
+                  ? { background: COLORS.orange, color: "white" }
+                  : { background: "#fff", color: COLORS.anthracite, border: "1px solid #ddd" }
+              }
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        {profil.ist_admin && (
+          <button
+            onClick={aktualisieren}
+            className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
+            style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
+            disabled={aktualisiertLadend}
+          >
+            {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
+          </button>
+        )}
+      </div>
+      {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+
+      {ladend ? (
+        <Leerzustand text="Lade Ergebnisse…" />
+      ) : spiele.length === 0 ? (
+        <Leerzustand text={`Noch keine Spiele für die ${runde} hinterlegt.`} />
+      ) : (
+        <div className="bg-white rounded-lg border divide-y">
+          {spiele.map((s) => {
+            const info = ergebnisInfo(s);
+            return (
+              <div key={s.id} className="flex items-center gap-4 p-4">
+                <div className="flex-1">
+                  <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>
+                    {s.heimteam} <span className="text-gray-400 font-normal">vs</span> {s.gastteam}
+                  </p>
+                  <p className="text-xs text-gray-400">{formatDatum(s.datum)} · {s.ist_heimspiel ? "Heimspiel" : "Auswärts"}</p>
+                </div>
+                <span className="text-sm font-bold px-3 py-1.5 rounded-md shrink-0" style={tonFarben[info.ton]}>
+                  {info.text}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function isoZuDatetimeLocal(iso) {
   if (!iso) return "";
@@ -2705,6 +2811,7 @@ function AenderungsPopup({ profil }) {
 const NAV_BASIS = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "tabelle", label: "Tabelle", icon: Table2 },
+  { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
@@ -2770,6 +2877,7 @@ export default function App() {
   const titles = {
     dashboard: "Dashboard",
     tabelle: "Aktuelle Tabelle",
+    ergebnisse: "Ergebnisse",
     planung: "Spielerplanung",
     kalender: "Ereigniskalender",
     kader: "Kader",
@@ -2782,7 +2890,7 @@ export default function App() {
 
   const initialen = `${profil.vorname?.[0] ?? ""}${profil.nachname?.[0] ?? ""}`.toUpperCase();
   const aktiveSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === profil.mannschaft_id) ?? null;
-  const mannschaftsAbhaengigeTabs = ["tabelle", "planung", "kader"];
+  const mannschaftsAbhaengigeTabs = ["tabelle", "ergebnisse", "planung", "kader"];
   const effektiveMannschaftId = mannschaftsAbhaengigeTabs.includes(tab) ? (ausgewaehlteMannschaftId ?? profil.mannschaft_id) : profil.mannschaft_id;
   const angezeigteSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === effektiveMannschaftId) ?? null;
 
@@ -2904,6 +3012,7 @@ export default function App() {
               ) : (
                 <>
                   {tab === "tabelle" && <Tabelle saison={angezeigteSaison} profil={profil} />}
+                  {tab === "ergebnisse" && <Ergebnisse saison={angezeigteSaison} profil={profil} />}
                   {tab === "planung" && <Spielerplanung saison={angezeigteSaison} profil={profil} />}
                   {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
                 </>
