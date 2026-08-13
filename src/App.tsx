@@ -1077,7 +1077,7 @@ function Kalender({ profil }) {
   const [ereignisse, setEreignisse] = useState([]);
   const [mannschaften, setMannschaften] = useState([]);
   const [ladend, setLadend] = useState(true);
-  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
+  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
   const [fehler, setFehler] = useState(null);
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
@@ -1101,10 +1101,12 @@ function Kalender({ profil }) {
     if (!form.titel || !form.datum || !form.uhrzeit) return setFehler("Titel, Datum und Uhrzeit sind Pflichtfelder.");
     if (form.zeitraum && !form.datumEnde) return setFehler("Bitte ein Enddatum für den Zeitraum angeben.");
 
+    const effektiveDauerMinuten = form.dauerMinuten === "eigene" ? form.dauerMinutenEigen : form.dauerMinuten;
+
     const start = new Date(`${form.datum}T${form.uhrzeit}`);
     const ende = form.zeitraum
       ? new Date(form.datumEnde)
-      : new Date(start.getTime() + Number(form.dauerMinuten) * 60000);
+      : new Date(start.getTime() + Number(effektiveDauerMinuten) * 60000);
 
     const { error } = await supabase.from("kalender_ereignisse").insert({
       titel: form.titel,
@@ -1120,7 +1122,7 @@ function Kalender({ profil }) {
         body: { titel: form.titel, datum: start.toISOString(), typ: form.typ, mannschaftId: form.mannschaftId || null },
       }); // bewusst nicht awaited
     }
-    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
+    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
     laden();
   }
 
@@ -1163,7 +1165,7 @@ function Kalender({ profil }) {
     laden();
   }
 
-  const iconFor = { training: Users, spiel: Trophy, lehrgang: GraduationCap, termin: CalendarDays };
+  const iconFor = { training: Users, spiel: Trophy, lehrgang: GraduationCap, termin: CalendarDays, vereinstreffen: Users, turnier: Trophy };
 
   return (
     <div className="space-y-4">
@@ -1186,8 +1188,14 @@ function Kalender({ profil }) {
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Dauer</label>
                 <select
-                  value={form.dauerMinuten}
-                  onChange={(e) => setForm({ ...form, dauerMinuten: Number(e.target.value) })}
+                  value={[30, 45, 60, 90, 120, 180, 240, 480].includes(form.dauerMinuten) ? form.dauerMinuten : "eigene"}
+                  onChange={(e) => {
+                    if (e.target.value === "eigene") {
+                      setForm({ ...form, dauerMinuten: "eigene" });
+                    } else {
+                      setForm({ ...form, dauerMinuten: Number(e.target.value) });
+                    }
+                  }}
                   className="w-full border rounded-md px-3 py-2 text-sm"
                 >
                   <option value={30}>30 Minuten</option>
@@ -1197,7 +1205,21 @@ function Kalender({ profil }) {
                   <option value={120}>2 Stunden</option>
                   <option value={180}>3 Stunden</option>
                   <option value={240}>4 Stunden</option>
+                  <option value={480}>8 Stunden</option>
+                  <option value="eigene">Eigene Dauer…</option>
                 </select>
+                {form.dauerMinuten === "eigene" && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="number"
+                      min={1}
+                      placeholder="Stunden"
+                      onChange={(e) => setForm((f) => ({ ...f, dauerMinutenEigen: Number(e.target.value) * 60 }))}
+                      className="w-full border rounded-md px-3 py-2 text-sm"
+                    />
+                    <span className="text-xs text-gray-400 shrink-0">Stunden</span>
+                  </div>
+                )}
               </div>
             )}
             <div>
@@ -1206,6 +1228,8 @@ function Kalender({ profil }) {
                 <option value="training">Training</option>
                 <option value="spiel">Spiel</option>
                 <option value="lehrgang">Lehrgang</option>
+                <option value="vereinstreffen">Vereinstreffen</option>
+                <option value="turnier">Turnier</option>
                 <option value="termin">Sonstiger Termin</option>
               </select>
             </div>
@@ -1290,6 +1314,8 @@ function Kalender({ profil }) {
                     <option value="training">Training</option>
                     <option value="spiel">Spiel</option>
                     <option value="lehrgang">Lehrgang</option>
+                    <option value="vereinstreffen">Vereinstreffen</option>
+                    <option value="turnier">Turnier</option>
                     <option value="termin">Sonstiger Termin</option>
                   </select>
                   <select
