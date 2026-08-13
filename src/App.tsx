@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck,
-  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft
+  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -34,6 +34,11 @@ const COLORS = {
 };
 
 /* ---------- Hilfsfunktionen ---------- */
+
+// Sortiert Mannschaften zuverlässig nach Rangstufe (1 = höchste Mannschaft), egal was die DB liefert
+function sortiereMannschaften(liste) {
+  return [...(liste ?? [])].sort((a, b) => (a.hierarchie_stufe ?? 999) - (b.hierarchie_stufe ?? 999));
+}
 
 function formatDatum(iso) {
   if (!iso) return "–";
@@ -1284,12 +1289,24 @@ function Kader({ saison, profil }) {
               <div><span className="text-gray-400 text-xs block">Sportstätte</span>{info.sportstaette ?? "–"}</div>
               <div><span className="text-gray-400 text-xs block">Spieltag</span>{info.spieltag ?? "–"}</div>
             </div>
-            {!info.aufstellung_freigegeben && (
+            {info.aufstellung_freigegeben && info.spieler && info.spieler.length > 0 ? (
+              <div className="mt-4">
+                <p className="text-xs text-gray-400 mb-2">Offizielle Aufstellung laut Verband:</p>
+                <div className="divide-y border rounded-md">
+                  {info.spieler.map((sp, i) => (
+                    <div key={i} className="flex items-center justify-between px-3 py-2 text-sm">
+                      <span className="text-gray-400 w-6">{sp.position}.</span>
+                      <span className="flex-1">{sp.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : !info.aufstellung_freigegeben ? (
               <div className="flex items-start gap-2 p-3 rounded-md text-sm mt-4" style={{ background: "#F1F1EF", color: "#777" }}>
                 <HelpCircle size={16} className="mt-0.5 shrink-0" />
                 Der Verband hat die Aufstellungsliste für diese Saison noch nicht freigegeben. Bis dahin gilt die intern gepflegte Liste unten.
               </div>
-            )}
+            ) : null}
           </>
         ) : (
           <Leerzustand text={profil.ist_admin ? 'Noch keine Mannschafts-Infos hinterlegt — oben auf "Jetzt aktualisieren" klicken.' : "Noch keine Mannschafts-Infos hinterlegt."} />
@@ -1311,6 +1328,13 @@ function Kader({ saison, profil }) {
               <div>
                 <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
                 <p className="text-xs" style={{ color: s.rang === "Mannschaftsführer" ? COLORS.orange : "#999" }}>{s.rang}</p>
+                {s.kontakt_sichtbar && (
+                  <div className="text-xs text-gray-400 mt-1">
+                    {s.telefon_handy && <div>📱 {s.telefon_handy}</div>}
+                    {s.telefon_festnetz && <div>☎️ {s.telefon_festnetz}</div>}
+                    <div>✉️ {s.email}</div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -1320,15 +1344,76 @@ function Kader({ saison, profil }) {
   );
 }
 
-/* ---------- Spielerverwaltung (nur Admin) ---------- */
+/* ---------- Nachrichten-Generator für Einmalpasswort (WhatsApp/E-Mail) ---------- */
 
-function Spielerverwaltung() {
+const APP_URL = "https://derkeili.github.io/ttv-kamenz-dashboard/";
+
+function zugangsNachrichtText(vorname, email, passwort) {
+  return `Hallo ${vorname},
+
+dein Zugang zur TTV 97 Kamenz App ist bereit:
+
+E-Mail: ${email}
+Einmalpasswort: ${passwort}
+
+Anmelden hier: ${APP_URL}
+Beim ersten Login wirst du gebeten, dir ein eigenes Passwort zu vergeben.
+
+Tipp: Du kannst dir die App wie eine normale App aufs Handy legen:
+– iPhone: Seite in Safari öffnen → Teilen-Symbol → "Zum Home-Bildschirm"
+– Android: Seite in Chrome öffnen → Menü (⋮) → "Zum Startbildschirm hinzufügen"
+
+Sportliche Grüße
+TTV 97 Kamenz e.V.`;
+}
+
+function ZugangsNachricht({ vorname, email, passwort }) {
+  const [kopiert, setKopiert] = useState(false);
+  const text = zugangsNachrichtText(vorname, email, passwort);
+
+  function kopieren() {
+    navigator.clipboard?.writeText(text);
+    setKopiert(true);
+    setTimeout(() => setKopiert(false), 2000);
+  }
+
+  return (
+    <div className="mt-4 p-3 rounded-md text-sm" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
+      <p className="mb-2">
+        Einmalpasswort: <strong className="font-mono">{passwort}</strong>
+      </p>
+      <textarea readOnly value={text} rows={8} className="w-full border rounded-md px-2 py-2 text-xs font-mono bg-white text-gray-700" />
+      <div className="flex gap-2 mt-2">
+        <button onClick={kopieren} className="text-xs px-3 py-1.5 rounded-md text-white font-semibold" style={{ background: COLORS.orange }}>
+          {kopiert ? "Kopiert ✓" : "Text kopieren"}
+        </button>
+        <a
+          href={`https://wa.me/?text=${encodeURIComponent(text)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs px-3 py-1.5 rounded-md border font-semibold"
+          style={{ color: COLORS.anthracite }}
+        >
+          In WhatsApp öffnen
+        </a>
+        <a
+          href={`mailto:${email}?subject=${encodeURIComponent("Dein Zugang zur TTV 97 Kamenz App")}&body=${encodeURIComponent(text)}`}
+          className="text-xs px-3 py-1.5 rounded-md border font-semibold"
+          style={{ color: COLORS.anthracite }}
+        >
+          Per E-Mail öffnen
+        </a>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Mannschaftsverwaltung (Teams + Saison-Links, nur Admin) ---------- */
+
+function Mannschaftsverwaltung({ profil, saisons, onSaisonsGeaendert }) {
   const [mannschaften, setMannschaften] = useState([]);
   const [spielerListe, setSpielerListe] = useState([]);
-  const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", rang: "Spieler", mannschaftId: "" });
-  const [einmalpasswort, setEinmalpasswort] = useState(null);
-  const [fehler, setFehler] = useState(null);
-  const [ladend, setLadend] = useState(false);
+  const [ladend, setLadend] = useState(true);
 
   const [neueMannschaft, setNeueMannschaft] = useState("");
   const [neueMannschaftVerbandsname, setNeueMannschaftVerbandsname] = useState("");
@@ -1340,65 +1425,23 @@ function Spielerverwaltung() {
   const [bearbeiteMannschaftVerbandsname, setBearbeiteMannschaftVerbandsname] = useState("");
   const [bearbeiteMannschaftBenoetigteSpieler, setBearbeiteMannschaftBenoetigteSpieler] = useState(4);
   const [bearbeiteMannschaftStufe, setBearbeiteMannschaftStufe] = useState("");
+  const [mannschaftLoeschenBestaetigung, setMannschaftLoeschenBestaetigung] = useState(null);
 
-  const [bearbeiteSpielerId, setBearbeiteSpielerId] = useState(null);
-  const [bearbeiteSpielerForm, setBearbeiteSpielerForm] = useState(null);
-  const [spielerBearbeitenFehler, setSpielerBearbeitenFehler] = useState(null);
-  const [spielerBearbeitenLadend, setSpielerBearbeitenLadend] = useState(false);
-  const [spielerLoeschenBestaetigung, setSpielerLoeschenBestaetigung] = useState(null);
-  const [spielerLoeschenLadend, setSpielerLoeschenLadend] = useState(false);
-
-  function spielerBearbeitenStarten(s) {
-    setSpielerBearbeitenFehler(null);
-    setBearbeiteSpielerId(s.id);
-    setBearbeiteSpielerForm({
-      vorname: s.vorname,
-      nachname: s.nachname,
-      geburtstag: s.geburtstag ?? "",
-      email: s.email,
-      rang: s.rang,
-      mannschaftId: s.mannschaft_id ?? "",
-    });
-  }
-
-  async function spielerBearbeitenSpeichern() {
-    setSpielerBearbeitenFehler(null);
-    setSpielerBearbeitenLadend(true);
-    const { data, error } = await supabase.functions.invoke("update-spieler", {
-      body: { spielerId: bearbeiteSpielerId, ...bearbeiteSpielerForm },
-    });
-    setSpielerBearbeitenLadend(false);
-    if (error || data?.error) {
-      setSpielerBearbeitenFehler(await echteFehlermeldung(error, data));
-      return;
-    }
-    setBearbeiteSpielerId(null);
-    ladenAlles();
-  }
-
-  async function spielerLoeschen(spielerId) {
-    if (spielerLoeschenBestaetigung !== spielerId) {
-      setSpielerLoeschenBestaetigung(spielerId);
-      return;
-    }
-    setSpielerLoeschenLadend(true);
-    const { data, error } = await supabase.functions.invoke("delete-spieler", { body: { spielerId } });
-    setSpielerLoeschenLadend(false);
-    setSpielerLoeschenBestaetigung(null);
-    if (error || data?.error) {
-      setFehler(await echteFehlermeldung(error, data));
-      return;
-    }
-    ladenAlles();
-  }
+  const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState("");
+  const [neueBezeichnung, setNeueBezeichnung] = useState("");
+  const [saisonFehler, setSaisonFehler] = useState(null);
 
   async function ladenAlles() {
+    setLadend(true);
     const [{ data: m }, { data: s }] = await Promise.all([
-      supabase.from("mannschaften").select("*").order("name"),
+      supabase.from("mannschaften").select("*"),
       supabase.from("profiles").select("*").order("nachname"),
     ]);
-    if (m) setMannschaften(m);
+    const sortiert = sortiereMannschaften(m);
+    if (m) setMannschaften(sortiert);
     if (s) setSpielerListe(s);
+    setAusgewaehlteMannschaftId((aktuell) => aktuell || sortiert[0]?.id || "");
+    setLadend(false);
   }
 
   useEffect(() => { ladenAlles(); }, []);
@@ -1448,8 +1491,6 @@ function Spielerverwaltung() {
     ladenAlles();
   }
 
-  const [mannschaftLoeschenBestaetigung, setMannschaftLoeschenBestaetigung] = useState(null);
-
   async function mannschaftLoeschen(m) {
     setMannschaftFehler(null);
     if (spielerAnzahl(m.id) > 0) {
@@ -1465,32 +1506,41 @@ function Spielerverwaltung() {
     ladenAlles();
   }
 
-  function generierePasswort() {
-    const zeichen = "ABCDEFGHKLMNPQRSTUVWXYZ23456789";
-    return Array.from({ length: 10 }, () => zeichen[Math.floor(Math.random() * zeichen.length)]).join("");
+  async function updateSaisonField(id, field, value) {
+    onSaisonsGeaendert((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
+    await supabase.from("saisons").update({ [field]: value }).eq("id", id);
   }
 
-  async function spielerAnlegen() {
-    setFehler(null);
-    if (!form.vorname || !form.nachname || !form.email || !form.mannschaftId) {
-      return setFehler("Bitte alle Pflichtfelder ausfüllen.");
-    }
-    setLadend(true);
-    const einmalig = generierePasswort();
-
-    const { data, error } = await supabase.functions.invoke("create-spieler", {
-      body: { ...form, mannschaftId: form.mannschaftId, einmalpasswort: einmalig },
-    });
-
-    setLadend(false);
-    if (error || data?.error) {
-      setFehler(await echteFehlermeldung(error, data));
-      return;
-    }
-    setEinmalpasswort(einmalig);
-    setForm({ vorname: "", nachname: "", geburtstag: "", email: "", rang: "Spieler", mannschaftId: form.mannschaftId });
-    ladenAlles();
+  async function saisonMannschaftZuordnen(saisonId) {
+    if (!ausgewaehlteMannschaftId) return;
+    await supabase.from("saisons").update({ mannschaft_id: ausgewaehlteMannschaftId }).eq("id", saisonId);
+    const { data: alle } = await supabase.from("saisons").select("*").order("erstellt_am", { ascending: false });
+    onSaisonsGeaendert(alle ?? []);
   }
+
+  async function neueSaisonAnlegen() {
+    setSaisonFehler(null);
+    if (!neueBezeichnung.trim()) return;
+    if (!ausgewaehlteMannschaftId) return setSaisonFehler("Bitte zuerst eine Mannschaft auswählen.");
+    await supabase.from("saisons").update({ aktiv: false }).eq("mannschaft_id", ausgewaehlteMannschaftId);
+    const { error } = await supabase.from("saisons").insert({ bezeichnung: neueBezeichnung, aktiv: true, mannschaft_id: ausgewaehlteMannschaftId });
+    if (error) return setSaisonFehler(error.message);
+    setNeueBezeichnung("");
+    const { data: alle } = await supabase.from("saisons").select("*").order("erstellt_am", { ascending: false });
+    onSaisonsGeaendert(alle ?? []);
+  }
+
+  const linkFelder = [
+    { key: "tabellen_url", label: "Tabellen-Link", hinweis: "Tabelle → Aktuelle Tabelle" },
+    { key: "mannschaft_url", label: "Mannschafts-Link (Aufstellung)", hinweis: "Mannschaften → eure Mannschaft" },
+    { key: "spielplan_hinrunde_url", label: "Spielplan-Link Hinrunde", hinweis: "Spielplan → Vorrunde" },
+    { key: "spielplan_rueckrunde_url", label: "Spielplan-Link Rückrunde", hinweis: "Spielplan → Rückrunde" },
+  ];
+
+  const saisonsFuerMannschaft = saisons.filter((s) => s.mannschaft_id === ausgewaehlteMannschaftId);
+  const unzugeordneteSaisons = saisons.filter((s) => !s.mannschaft_id);
+
+  if (ladend) return <Leerzustand text="Lade Mannschaften…" />;
 
   return (
     <div className="space-y-4 max-w-2xl">
@@ -1501,48 +1551,19 @@ function Spielerverwaltung() {
             <div key={m.id} className="flex items-center justify-between gap-2 py-2 border-b last:border-b-0">
               {bearbeiteMannschaftId === m.id ? (
                 <div className="flex-1 space-y-2">
-                  <input
-                    value={bearbeiteMannschaftName}
-                    onChange={(e) => setBearbeiteMannschaftName(e.target.value)}
-                    placeholder="Name intern, z. B. 3. Mannschaft"
-                    className="w-full border rounded-md px-2 py-1 text-sm"
-                  />
-                  <input
-                    value={bearbeiteMannschaftVerbandsname}
-                    onChange={(e) => setBearbeiteMannschaftVerbandsname(e.target.value)}
-                    placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 3"
-                    className="w-full border rounded-md px-2 py-1 text-sm"
-                  />
+                  <input value={bearbeiteMannschaftName} onChange={(e) => setBearbeiteMannschaftName(e.target.value)} placeholder="Name intern, z. B. 3. Mannschaft" className="w-full border rounded-md px-2 py-1 text-sm" />
+                  <input value={bearbeiteMannschaftVerbandsname} onChange={(e) => setBearbeiteMannschaftVerbandsname(e.target.value)} placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 3" className="w-full border rounded-md px-2 py-1 text-sm" />
                   <div>
-                    <label className="block text-xs text-gray-400 mb-1">Benötigte Spieler pro Spiel (je nach Liga unterschiedlich)</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      value={bearbeiteMannschaftBenoetigteSpieler}
-                      onChange={(e) => setBearbeiteMannschaftBenoetigteSpieler(e.target.value)}
-                      className="w-full border rounded-md px-2 py-1 text-sm"
-                    />
+                    <label className="block text-xs text-gray-400 mb-1">Benötigte Spieler pro Spiel</label>
+                    <input type="number" min={1} max={10} value={bearbeiteMannschaftBenoetigteSpieler} onChange={(e) => setBearbeiteMannschaftBenoetigteSpieler(e.target.value)} className="w-full border rounded-md px-2 py-1 text-sm" />
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-400 mb-1">Rangstufe (1 = höchste Mannschaft, für die Aushilfe-Funktion)</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      value={bearbeiteMannschaftStufe}
-                      onChange={(e) => setBearbeiteMannschaftStufe(e.target.value)}
-                      placeholder="z. B. 3 für die 3. Mannschaft"
-                      className="w-full border rounded-md px-2 py-1 text-sm"
-                    />
+                    <label className="block text-xs text-gray-400 mb-1">Rangstufe (1 = höchste Mannschaft)</label>
+                    <input type="number" min={1} max={10} value={bearbeiteMannschaftStufe} onChange={(e) => setBearbeiteMannschaftStufe(e.target.value)} placeholder="z. B. 3 für die 3. Mannschaft" className="w-full border rounded-md px-2 py-1 text-sm" />
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={mannschaftUmbenennen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orange }}>
-                      Speichern
-                    </button>
-                    <button onClick={() => setBearbeiteMannschaftId(null)} className="text-xs px-2 py-1 rounded-md border">
-                      Abbrechen
-                    </button>
+                    <button onClick={mannschaftUmbenennen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orange }}>Speichern</button>
+                    <button onClick={() => setBearbeiteMannschaftId(null)} className="text-xs px-2 py-1 rounded-md border">Abbrechen</button>
                   </div>
                 </div>
               ) : (
@@ -1553,24 +1574,18 @@ function Spielerverwaltung() {
                     <div className="text-xs text-gray-400">
                       {m.verband_name ? `Verband: ${m.verband_name}` : "Kein Verbands-Name hinterlegt"}
                       {" · "}{m.benoetigte_spieler ?? 4} Spieler pro Spiel benötigt
-                      {m.hierarchie_stufe ? ` · Rangstufe ${m.hierarchie_stufe}` : ""}
+                      {m.hierarchie_stufe ? ` · Rangstufe ${m.hierarchie_stufe}` : " · keine Rangstufe"}
                     </div>
                   </div>
                   {mannschaftLoeschenBestaetigung === m.id ? (
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-xs text-gray-500">Wirklich löschen?</span>
-                      <button onClick={() => mannschaftLoeschen(m)} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
-                        Ja, löschen
-                      </button>
-                      <button onClick={() => setMannschaftLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">
-                        Abbrechen
-                      </button>
+                      <button onClick={() => mannschaftLoeschen(m)} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>Ja, löschen</button>
+                      <button onClick={() => setMannschaftLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">Abbrechen</button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-3 shrink-0">
-                      <button onClick={() => mannschaftBearbeitenStarten(m)} className="text-gray-400 hover:text-gray-600">
-                        <Pencil size={15} />
-                      </button>
+                      <button onClick={() => mannschaftBearbeitenStarten(m)} className="text-gray-400 hover:text-gray-600"><Pencil size={15} /></button>
                       <button
                         onClick={() => mannschaftLoeschen(m)}
                         className={spielerAnzahl(m.id) > 0 ? "text-gray-300 cursor-not-allowed" : ""}
@@ -1589,59 +1604,273 @@ function Spielerverwaltung() {
         </div>
         {mannschaftFehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{mannschaftFehler}</p>}
         <div className="space-y-2">
-          <input
-            value={neueMannschaft}
-            onChange={(e) => setNeueMannschaft(e.target.value)}
-            placeholder="Name intern, z. B. 2. Mannschaft"
-            className="w-full border rounded-md px-3 py-2 text-sm"
-          />
-          <input
-            value={neueMannschaftVerbandsname}
-            onChange={(e) => setNeueMannschaftVerbandsname(e.target.value)}
-            placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 2"
-            className="w-full border rounded-md px-3 py-2 text-sm"
-          />
+          <input value={neueMannschaft} onChange={(e) => setNeueMannschaft(e.target.value)} placeholder="Name intern, z. B. 2. Mannschaft" className="w-full border rounded-md px-3 py-2 text-sm" />
+          <input value={neueMannschaftVerbandsname} onChange={(e) => setNeueMannschaftVerbandsname(e.target.value)} placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 2" className="w-full border rounded-md px-3 py-2 text-sm" />
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Benötigte Spieler pro Spiel (je nach Liga unterschiedlich)</label>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={neueMannschaftBenoetigteSpieler}
-              onChange={(e) => setNeueMannschaftBenoetigteSpieler(e.target.value)}
-              className="w-full border rounded-md px-3 py-2 text-sm"
-            />
+            <label className="block text-xs text-gray-400 mb-1">Benötigte Spieler pro Spiel</label>
+            <input type="number" min={1} max={10} value={neueMannschaftBenoetigteSpieler} onChange={(e) => setNeueMannschaftBenoetigteSpieler(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Rangstufe (1 = höchste Mannschaft, für die Aushilfe-Funktion)</label>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={neueMannschaftStufe}
-              onChange={(e) => setNeueMannschaftStufe(e.target.value)}
-              placeholder="z. B. 3 für die 3. Mannschaft"
-              className="w-full border rounded-md px-3 py-2 text-sm"
-            />
+            <label className="block text-xs text-gray-400 mb-1">Rangstufe (1 = höchste Mannschaft)</label>
+            <input type="number" min={1} max={10} value={neueMannschaftStufe} onChange={(e) => setNeueMannschaftStufe(e.target.value)} placeholder="z. B. 3 für die 3. Mannschaft" className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <button onClick={mannschaftAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
-            Mannschaft anlegen
-          </button>
+          <button onClick={mannschaftAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>Mannschaft anlegen</button>
         </div>
       </div>
+
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={CalendarDays}>Saison-Links</SectionLabel>
+        <select value={ausgewaehlteMannschaftId} onChange={(e) => setAusgewaehlteMannschaftId(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm mb-4">
+          <option value="">Mannschaft wählen…</option>
+          {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+
+        {unzugeordneteSaisons.length > 0 && (
+          <div className="mb-4 p-3 border rounded-md">
+            <p className="text-xs text-gray-500 mb-2">Nicht zugeordnete Saisons — bitte der oben gewählten Mannschaft zuweisen:</p>
+            {unzugeordneteSaisons.map((s) => (
+              <div key={s.id} className="flex items-center justify-between text-sm py-1">
+                <span>Saison {s.bezeichnung}</span>
+                <button
+                  onClick={() => saisonMannschaftZuordnen(s.id)}
+                  disabled={!ausgewaehlteMannschaftId}
+                  className="text-xs px-3 py-1.5 rounded-md text-white font-semibold"
+                  style={{ background: COLORS.orange, opacity: ausgewaehlteMannschaftId ? 1 : 0.5 }}
+                >
+                  Zuordnen
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {ausgewaehlteMannschaftId && (
+          <>
+            <div className="space-y-4">
+              {saisonsFuerMannschaft.map((s) => (
+                <div key={s.id} className="border rounded-md p-4" style={s.aktiv ? { borderColor: COLORS.orange } : {}}>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>Saison {s.bezeichnung}</span>
+                    {s.aktiv && <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.orange }}>aktiv</span>}
+                  </div>
+                  <div className="space-y-3">
+                    {linkFelder.map((f) => (
+                      <div key={f.key}>
+                        <label className="block text-xs text-gray-500 mb-1">{f.label} <span className="text-gray-300">({f.hinweis})</span></label>
+                        <input defaultValue={s[f.key] ?? ""} onBlur={(e) => updateSaisonField(s.id, f.key, e.target.value)} placeholder="https://bautzen.tischtennislive.de/…" className="w-full border rounded-md px-3 py-2 text-sm" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {saisonsFuerMannschaft.length === 0 && <Leerzustand text="Noch keine Saison für diese Mannschaft angelegt." />}
+            </div>
+            {saisonFehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{saisonFehler}</p>}
+            <div className="flex gap-2 mt-4 pt-4 border-t">
+              <input value={neueBezeichnung} onChange={(e) => setNeueBezeichnung(e.target.value)} placeholder="z. B. 2027/2028" className="flex-1 border rounded-md px-3 py-2 text-sm" />
+              <button onClick={neueSaisonAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>Neue Saison anlegen</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Spielerverwaltung (Spieler, Kontakt-Import, Passwort-Reset — nur Admin) ---------- */
+
+function Spielerverwaltung() {
+  const [mannschaften, setMannschaften] = useState([]);
+  const [spielerListe, setSpielerListe] = useState([]);
+  const [kontakte, setKontakte] = useState([]);
+  const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", rang: "Spieler", mannschaftId: "" });
+  const [einmalpasswort, setEinmalpasswort] = useState(null);
+  const [fehler, setFehler] = useState(null);
+  const [ladend, setLadend] = useState(false);
+  const [bearbeitenKontaktId, setBearbeitenKontaktId] = useState(null);
+
+  const [bearbeiteSpielerId, setBearbeiteSpielerId] = useState(null);
+  const [bearbeiteSpielerForm, setBearbeiteSpielerForm] = useState(null);
+  const [spielerBearbeitenFehler, setSpielerBearbeitenFehler] = useState(null);
+  const [spielerBearbeitenLadend, setSpielerBearbeitenLadend] = useState(false);
+  const [spielerLoeschenBestaetigung, setSpielerLoeschenBestaetigung] = useState(null);
+  const [spielerLoeschenLadend, setSpielerLoeschenLadend] = useState(false);
+
+  const [zurueckgesetztFuerId, setZurueckgesetztFuerId] = useState(null);
+  const [zurueckgesetztesPasswort, setZurueckgesetztesPasswort] = useState(null);
+  const [resetLadendId, setResetLadendId] = useState(null);
+
+  async function ladenAlles() {
+    const [{ data: m }, { data: s }, { data: k }] = await Promise.all([
+      supabase.from("mannschaften").select("*"),
+      supabase.from("profiles").select("*").order("nachname"),
+      supabase.from("spieler_kontakte").select("*").eq("aktiviert", false).order("nachname"),
+    ]);
+    if (m) setMannschaften(sortiereMannschaften(m));
+    if (s) setSpielerListe(s);
+    if (k) setKontakte(k);
+  }
+
+  useEffect(() => { ladenAlles(); }, []);
+
+  function spielerBearbeitenStarten(s) {
+    setSpielerBearbeitenFehler(null);
+    setBearbeiteSpielerId(s.id);
+    setBearbeiteSpielerForm({
+      vorname: s.vorname,
+      nachname: s.nachname,
+      geburtstag: s.geburtstag ?? "",
+      email: s.email,
+      rang: s.rang,
+      mannschaftId: s.mannschaft_id ?? "",
+    });
+  }
+
+  async function spielerBearbeitenSpeichern() {
+    setSpielerBearbeitenFehler(null);
+    setSpielerBearbeitenLadend(true);
+    const { data, error } = await supabase.functions.invoke("update-spieler", {
+      body: { spielerId: bearbeiteSpielerId, ...bearbeiteSpielerForm },
+    });
+    setSpielerBearbeitenLadend(false);
+    if (error || data?.error) {
+      setSpielerBearbeitenFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    setBearbeiteSpielerId(null);
+    ladenAlles();
+  }
+
+  async function spielerLoeschen(spielerId) {
+    if (spielerLoeschenBestaetigung !== spielerId) {
+      setSpielerLoeschenBestaetigung(spielerId);
+      return;
+    }
+    setSpielerLoeschenLadend(true);
+    const { data, error } = await supabase.functions.invoke("delete-spieler", { body: { spielerId } });
+    setSpielerLoeschenLadend(false);
+    setSpielerLoeschenBestaetigung(null);
+    if (error || data?.error) {
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    ladenAlles();
+  }
+
+  function generierePasswort() {
+    const zeichen = "ABCDEFGHKLMNPQRSTUVWXYZ23456789";
+    return Array.from({ length: 10 }, () => zeichen[Math.floor(Math.random() * zeichen.length)]).join("");
+  }
+
+  async function passwortZuruecksetzen(spieler) {
+    setResetLadendId(spieler.id);
+    setZurueckgesetztFuerId(null);
+    const neu = generierePasswort();
+    const { data, error } = await supabase.functions.invoke("reset-spieler-passwort", {
+      body: { spielerId: spieler.id, neuesPasswort: neu },
+    });
+    setResetLadendId(null);
+    if (error || data?.error) {
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    setZurueckgesetztFuerId(spieler.id);
+    setZurueckgesetztesPasswort(neu);
+  }
+
+  function kontaktUebernehmen(k) {
+    setBearbeitenKontaktId(k.id);
+    setForm({
+      vorname: k.vorname,
+      nachname: k.nachname,
+      geburtstag: k.geburtstag ?? "",
+      email: k.email ?? "",
+      telefonHandy: k.telefon_handy ?? "",
+      telefonFestnetz: k.telefon_festnetz ?? "",
+      rang: "Spieler",
+      mannschaftId: "",
+    });
+    setEinmalpasswort(null);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function spielerAnlegen() {
+    setFehler(null);
+    if (!form.vorname || !form.nachname || !form.email || !form.mannschaftId) {
+      return setFehler("Bitte alle Pflichtfelder ausfüllen (Vorname, Nachname, E-Mail, Mannschaft).");
+    }
+    setLadend(true);
+    const einmalig = generierePasswort();
+
+    const { data, error } = await supabase.functions.invoke("create-spieler", {
+      body: {
+        vorname: form.vorname,
+        nachname: form.nachname,
+        geburtstag: form.geburtstag,
+        email: form.email,
+        telefonHandy: form.telefonHandy,
+        telefonFestnetz: form.telefonFestnetz,
+        rang: form.rang,
+        mannschaftId: form.mannschaftId,
+        einmalpasswort: einmalig,
+      },
+    });
+
+    setLadend(false);
+    if (error || data?.error) {
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    setEinmalpasswort(einmalig);
+
+    if (bearbeitenKontaktId) {
+      await supabase.from("spieler_kontakte").update({ aktiviert: true }).eq("id", bearbeitenKontaktId);
+      setBearbeitenKontaktId(null);
+    }
+
+    setForm({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", rang: "Spieler", mannschaftId: form.mannschaftId });
+    ladenAlles();
+  }
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      {kontakte.length > 0 && (
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={Users}>Importierte Kontakte ({kontakte.length})</SectionLabel>
+          <p className="text-xs text-gray-500 mb-3">Aus dem Telefonverzeichnis importiert, noch ohne App-Zugang. Klick auf „Übernehmen", um das Formular unten vorauszufüllen.</p>
+          <div className="divide-y">
+            {kontakte.map((k) => (
+              <div key={k.id} className="flex items-center justify-between py-2 text-sm">
+                <div>
+                  <span>{k.vorname} {k.nachname}</span>
+                  <span className="text-xs text-gray-400 ml-2">{k.telefon_handy || k.telefon_festnetz || "keine Nummer"}</span>
+                </div>
+                <button onClick={() => kontaktUebernehmen(k)} className="text-xs px-3 py-1.5 rounded-md text-white font-semibold" style={{ background: COLORS.petrol }}>
+                  Übernehmen
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg border p-5">
         <SectionLabel icon={UserPlus}>Neuen Spieler anlegen</SectionLabel>
         {mannschaften.length === 0 && (
           <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>
-            Bitte oben zuerst eine Mannschaft anlegen.
+            Noch keine Mannschaft vorhanden — bitte zuerst im Reiter „Mannschaften" eine anlegen.
           </p>
         )}
         <div className="grid sm:grid-cols-2 gap-3 mb-3">
           <input placeholder="Vorname" value={form.vorname} onChange={(e) => setForm({ ...form, vorname: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
           <input placeholder="Nachname" value={form.nachname} onChange={(e) => setForm({ ...form, nachname: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
-          <input type="date" value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
+            <input type="date" value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+          </div>
           <input placeholder="E-Mail" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <input placeholder="Handynummer (optional)" value={form.telefonHandy} onChange={(e) => setForm({ ...form, telefonHandy: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <input placeholder="Festnetznummer (optional)" value={form.telefonFestnetz} onChange={(e) => setForm({ ...form, telefonFestnetz: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
           <select value={form.rang} onChange={(e) => setForm({ ...form, rang: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
             <option>Mannschaftsführer</option>
             <option>stellv. Mannschaftsführer</option>
@@ -1653,18 +1882,13 @@ function Spielerverwaltung() {
             {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
         </div>
+        <p className="text-xs text-gray-400 mb-3">Hinweis: Ob Telefonnummer und E-Mail für andere Spieler sichtbar sind, entscheidet jeder Spieler selbst in seinen Einstellungen.</p>
         {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
         <button onClick={spielerAnlegen} disabled={ladend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}>
           {ladend ? "Lege an…" : "Spieler anlegen"}
         </button>
 
-        {einmalpasswort && (
-          <div className="mt-4 p-3 rounded-md text-sm" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
-            Einmalpasswort: <strong className="font-mono">{einmalpasswort}</strong>
-            <br />
-            <span className="text-xs">Bitte manuell an den Spieler weitergeben — automatischer Mailversand folgt, sobald der E-Mail-Dienst angebunden ist.</span>
-          </div>
-        )}
+        {einmalpasswort && <ZugangsNachricht vorname={form.vorname || "Spieler"} email={form.email} passwort={einmalpasswort} />}
       </div>
 
       <div className="bg-white rounded-lg border p-5">
@@ -1677,7 +1901,10 @@ function Spielerverwaltung() {
                   <div className="grid sm:grid-cols-2 gap-2">
                     <input value={bearbeiteSpielerForm.vorname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, vorname: e.target.value })} placeholder="Vorname" className="border rounded-md px-3 py-2 text-sm" />
                     <input value={bearbeiteSpielerForm.nachname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, nachname: e.target.value })} placeholder="Nachname" className="border rounded-md px-3 py-2 text-sm" />
-                    <input type="date" value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
+                      <input type="date" value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+                    </div>
                     <input value={bearbeiteSpielerForm.email} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, email: e.target.value })} placeholder="E-Mail" className="border rounded-md px-3 py-2 text-sm" />
                     <select value={bearbeiteSpielerForm.rang} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, rang: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
                       <option>Mannschaftsführer</option>
@@ -1695,40 +1922,38 @@ function Spielerverwaltung() {
                     <button onClick={spielerBearbeitenSpeichern} disabled={spielerBearbeitenLadend} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange, opacity: spielerBearbeitenLadend ? 0.6 : 1 }}>
                       {spielerBearbeitenLadend ? "Speichere…" : "Speichern"}
                     </button>
-                    <button onClick={() => setBearbeiteSpielerId(null)} className="px-3 py-1.5 rounded-md text-xs border">
-                      Abbrechen
-                    </button>
+                    <button onClick={() => setBearbeiteSpielerId(null)} className="px-3 py-1.5 rounded-md text-xs border">Abbrechen</button>
                   </div>
                 </div>
               );
             }
 
             return (
-              <div key={s.id} className="flex items-center justify-between py-2 text-sm gap-2">
-                <div>
-                  <span>{s.vorname} {s.nachname}</span>
-                  <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
+              <div key={s.id} className="py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <span className="text-sm">{s.vorname} {s.nachname}</span>
+                    <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
+                  </div>
+                  {spielerLoeschenBestaetigung === s.id ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-gray-500">Löschen?</span>
+                      <button onClick={() => spielerLoeschen(s.id)} disabled={spielerLoeschenLadend} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
+                        {spielerLoeschenLadend ? "…" : "Ja"}
+                      </button>
+                      <button onClick={() => setSpielerLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">Nein</button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 shrink-0">
+                      <button onClick={() => passwortZuruecksetzen(s)} disabled={resetLadendId === s.id} className="text-xs underline" style={{ color: COLORS.petrol }}>
+                        {resetLadendId === s.id ? "…" : "Passwort zurücksetzen"}
+                      </button>
+                      <button onClick={() => spielerBearbeitenStarten(s)} className="text-gray-400 hover:text-gray-600"><Pencil size={15} /></button>
+                      <button onClick={() => spielerLoeschen(s.id)} style={{ color: COLORS.orangeDeep }}><Trash2 size={15} /></button>
+                    </div>
+                  )}
                 </div>
-                {spielerLoeschenBestaetigung === s.id ? (
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-gray-500">Löschen?</span>
-                    <button onClick={() => spielerLoeschen(s.id)} disabled={spielerLoeschenLadend} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
-                      {spielerLoeschenLadend ? "…" : "Ja"}
-                    </button>
-                    <button onClick={() => setSpielerLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">
-                      Nein
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3 shrink-0">
-                    <button onClick={() => spielerBearbeitenStarten(s)} className="text-gray-400 hover:text-gray-600">
-                      <Pencil size={15} />
-                    </button>
-                    <button onClick={() => spielerLoeschen(s.id)} style={{ color: COLORS.orangeDeep }}>
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                )}
+                {zurueckgesetztFuerId === s.id && <ZugangsNachricht vorname={s.vorname} email={s.email} passwort={zurueckgesetztesPasswort} />}
               </div>
             );
           })}
@@ -2281,153 +2506,136 @@ function Nachrichten({ profil, zielSpielerId }) {
 
 /* ---------- Einstellungen (Saison-Verwaltung) ---------- */
 
-function Einstellungen({ profil, saisons, onSaisonsGeaendert }) {
-  const [neueBezeichnung, setNeueBezeichnung] = useState("");
-  const [fehler, setFehler] = useState(null);
-  const [mannschaften, setMannschaften] = useState([]);
-  const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(profil.mannschaft_id ?? "");
+function Einstellungen({ profil, onProfilGeaendert }) {
+  const [telefonHandy, setTelefonHandy] = useState(profil.telefon_handy ?? "");
+  const [telefonFestnetz, setTelefonFestnetz] = useState(profil.telefon_festnetz ?? "");
+  const [kontaktSichtbar, setKontaktSichtbar] = useState(profil.kontakt_sichtbar ?? false);
+  const [gespeichert, setGespeichert] = useState(false);
+  const [speichernLadend, setSpeichernLadend] = useState(false);
 
-  useEffect(() => {
-    supabase.from("mannschaften").select("*").order("name").then(({ data }) => {
-      setMannschaften(data ?? []);
-      if (!ausgewaehlteMannschaftId && data?.length > 0) setAusgewaehlteMannschaftId(data[0].id);
-    });
-  }, []);
-
-  async function updateField(id, field, value) {
-    onSaisonsGeaendert((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
-    await supabase.from("saisons").update({ [field]: value }).eq("id", id);
+  async function kontaktdatenSpeichern() {
+    setSpeichernLadend(true);
+    const { error } = await supabase
+      .from("profiles")
+      .update({ telefon_handy: telefonHandy || null, telefon_festnetz: telefonFestnetz || null, kontakt_sichtbar: kontaktSichtbar })
+      .eq("id", profil.id);
+    setSpeichernLadend(false);
+    if (!error) {
+      setGespeichert(true);
+      onProfilGeaendert?.({ ...profil, telefon_handy: telefonHandy, telefon_festnetz: telefonFestnetz, kontakt_sichtbar: kontaktSichtbar });
+      setTimeout(() => setGespeichert(false), 2000);
+    }
   }
-
-  async function saisonMannschaftZuordnen(saisonId) {
-    if (!ausgewaehlteMannschaftId) return;
-    await supabase.from("saisons").update({ mannschaft_id: ausgewaehlteMannschaftId }).eq("id", saisonId);
-    const { data: alle } = await supabase.from("saisons").select("*").order("erstellt_am", { ascending: false });
-    onSaisonsGeaendert(alle ?? []);
-  }
-
-  async function neueSaisonAnlegen() {
-    setFehler(null);
-    if (!neueBezeichnung.trim()) return;
-    if (!ausgewaehlteMannschaftId) return setFehler("Bitte zuerst eine Mannschaft auswählen.");
-    await supabase.from("saisons").update({ aktiv: false }).eq("mannschaft_id", ausgewaehlteMannschaftId);
-    const { error } = await supabase.from("saisons").insert({ bezeichnung: neueBezeichnung, aktiv: true, mannschaft_id: ausgewaehlteMannschaftId });
-    if (error) return setFehler(error.message);
-    setNeueBezeichnung("");
-    const { data: alle } = await supabase.from("saisons").select("*").order("erstellt_am", { ascending: false });
-    onSaisonsGeaendert(alle ?? []);
-  }
-
-  const linkFelder = [
-    { key: "tabellen_url", label: "Tabellen-Link", hinweis: "Tabelle → Aktuelle Tabelle" },
-    { key: "mannschaft_url", label: "Mannschafts-Link (Aufstellung)", hinweis: "Mannschaften → eure Mannschaft" },
-    { key: "spielplan_hinrunde_url", label: "Spielplan-Link Hinrunde", hinweis: "Spielplan → Vorrunde" },
-    { key: "spielplan_rueckrunde_url", label: "Spielplan-Link Rückrunde", hinweis: "Spielplan → Rückrunde" },
-  ];
-
-  const saisonsFuerMannschaft = saisons.filter((s) => s.mannschaft_id === ausgewaehlteMannschaftId);
-  const unzugeordneteSaisons = saisons.filter((s) => !s.mannschaft_id);
-  const eigeneAktiveSaison = saisons.find((s) => s.mannschaft_id === profil.mannschaft_id && s.aktiv);
 
   return (
     <div className="space-y-6 max-w-2xl">
-      {profil.ist_admin ? (
-        <>
-          <div className="bg-white rounded-lg border p-5">
-            <SectionLabel icon={Users}>Mannschaft auswählen</SectionLabel>
-            <select
-              value={ausgewaehlteMannschaftId}
-              onChange={(e) => setAusgewaehlteMannschaftId(e.target.value)}
-              className="w-full border rounded-md px-3 py-2 text-sm"
-            >
-              <option value="">Mannschaft wählen…</option>
-              {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-            {mannschaften.length === 0 && (
-              <p className="text-xs text-gray-400 mt-2">Noch keine Mannschaft angelegt — das geht in der Spielerverwaltung.</p>
-            )}
-          </div>
-
-          {unzugeordneteSaisons.length > 0 && (
-            <div className="bg-white rounded-lg border p-5">
-              <SectionLabel icon={AlertTriangle}>Nicht zugeordnete Saisons</SectionLabel>
-              <p className="text-xs text-gray-500 mb-3">
-                Diese Saisons wurden angelegt, bevor es mehrere Mannschaften gab. Bitte jeweils einer Mannschaft zuordnen.
-              </p>
-              <div className="space-y-2">
-                {unzugeordneteSaisons.map((s) => (
-                  <div key={s.id} className="flex items-center justify-between text-sm border rounded-md p-3">
-                    <span>Saison {s.bezeichnung}</span>
-                    <button
-                      onClick={() => saisonMannschaftZuordnen(s.id)}
-                      disabled={!ausgewaehlteMannschaftId}
-                      className="text-xs px-3 py-1.5 rounded-md text-white font-semibold"
-                      style={{ background: COLORS.orange, opacity: ausgewaehlteMannschaftId ? 1 : 0.5 }}
-                    >
-                      Der oben gewählten Mannschaft zuordnen
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {ausgewaehlteMannschaftId && (
-            <div className="bg-white rounded-lg border p-5">
-              <SectionLabel icon={CalendarDays}>Saisons — {mannschaften.find((m) => m.id === ausgewaehlteMannschaftId)?.name}</SectionLabel>
-              <div className="space-y-4">
-                {saisonsFuerMannschaft.map((s) => (
-                  <div key={s.id} className="border rounded-md p-4" style={s.aktiv ? { borderColor: COLORS.orange } : {}}>
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>Saison {s.bezeichnung}</span>
-                      {s.aktiv && (
-                        <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.orange }}>aktiv</span>
-                      )}
-                    </div>
-                    <div className="space-y-3">
-                      {linkFelder.map((f) => (
-                        <div key={f.key}>
-                          <label className="block text-xs text-gray-500 mb-1">
-                            {f.label} <span className="text-gray-300">({f.hinweis}, ändert sich jede Saison neu)</span>
-                          </label>
-                          <input
-                            defaultValue={s[f.key] ?? ""}
-                            onBlur={(e) => updateField(s.id, f.key, e.target.value)}
-                            placeholder="https://bautzen.tischtennislive.de/…"
-                            className="w-full border rounded-md px-3 py-2 text-sm"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                {saisonsFuerMannschaft.length === 0 && <Leerzustand text="Noch keine Saison für diese Mannschaft angelegt." />}
-              </div>
-              {fehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
-              <div className="flex gap-2 mt-4 pt-4 border-t">
-                <input
-                  value={neueBezeichnung}
-                  onChange={(e) => setNeueBezeichnung(e.target.value)}
-                  placeholder="z. B. 2027/2028"
-                  className="flex-1 border rounded-md px-3 py-2 text-sm"
-                />
-                <button onClick={neueSaisonAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
-                  Neue Saison anlegen
-                </button>
-              </div>
-            </div>
-          )}
-        </>
-      ) : (
-        <div className="bg-white rounded-lg border p-5 text-sm text-gray-500">
-          Aktive Saison: <strong>{eigeneAktiveSaison?.bezeichnung ?? "keine"}</strong>
-        </div>
-      )}
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={Users}>Meine Kontaktdaten</SectionLabel>
+        <label className="block text-xs text-gray-500 mb-1">Handynummer</label>
+        <input value={telefonHandy} onChange={(e) => setTelefonHandy(e.target.value)} placeholder="z. B. 0152 12345678" className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
+        <label className="block text-xs text-gray-500 mb-1">Festnetznummer</label>
+        <input value={telefonFestnetz} onChange={(e) => setTelefonFestnetz(e.target.value)} placeholder="z. B. 03578 123456" className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
+        <label className="flex items-center gap-2 text-sm mb-4">
+          <input type="checkbox" checked={kontaktSichtbar} onChange={(e) => setKontaktSichtbar(e.target.checked)} />
+          Telefonnummer und E-Mail für andere Spieler im Kader sichtbar machen
+        </label>
+        {gespeichert && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>Gespeichert ✓</p>}
+        <button onClick={kontaktdatenSpeichern} disabled={speichernLadend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: speichernLadend ? 0.6 : 1 }}>
+          {speichernLadend ? "Speichere…" : "Speichern"}
+        </button>
+      </div>
 
       <PasswortAendern profil={profil} />
 
-      <div className="bg-white rounded-lg border p-5 text-sm text-gray-500">
-        Benachrichtigungs-Einstellungen (E-Mail bei Nachrichten/Umfragen) folgen, sobald der E-Mail-Dienst angebunden ist.
+      {profil.ist_admin && <AenderungshinweisVerwaltung />}
+    </div>
+  );
+}
+
+function AenderungshinweisVerwaltung() {
+  const [titel, setTitel] = useState("");
+  const [beschreibung, setBeschreibung] = useState("");
+  const [gespeichert, setGespeichert] = useState(false);
+  const [ladend, setLadend] = useState(false);
+
+  async function anlegen() {
+    if (!titel.trim() || !beschreibung.trim()) return;
+    setLadend(true);
+    const { error } = await supabase.from("app_updates").insert({ titel: titel.trim(), beschreibung: beschreibung.trim() });
+    setLadend(false);
+    if (!error) {
+      setTitel("");
+      setBeschreibung("");
+      setGespeichert(true);
+      setTimeout(() => setGespeichert(false), 2000);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={Sparkles}>Neuen Änderungshinweis anlegen</SectionLabel>
+      <p className="text-xs text-gray-500 mb-3">Erscheint als Popup bei allen Spielern, die ihn noch nicht gesehen haben.</p>
+      <input value={titel} onChange={(e) => setTitel(e.target.value)} placeholder="Titel" className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
+      <textarea value={beschreibung} onChange={(e) => setBeschreibung(e.target.value)} placeholder="Beschreibung" rows={3} className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
+      {gespeichert && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>Angelegt ✓</p>}
+      <button onClick={anlegen} disabled={ladend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}>
+        {ladend ? "Speichere…" : "Änderungshinweis anlegen"}
+      </button>
+    </div>
+  );
+}
+
+/* ---------- Popup: Neue Funktionen ---------- */
+
+function AenderungsPopup({ profil }) {
+  const [updates, setUpdates] = useState([]);
+  const [sichtbar, setSichtbar] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const [{ data: alle }, { data: gelesen }] = await Promise.all([
+        supabase.from("app_updates").select("*").order("erstellt_am", { ascending: false }),
+        supabase.from("app_updates_gelesen").select("update_id").eq("spieler_id", profil.id),
+      ]);
+      const gelesenIds = new Set((gelesen ?? []).map((g) => g.update_id));
+      const ungelesen = (alle ?? []).filter((u) => !gelesenIds.has(u.id));
+      if (ungelesen.length > 0) {
+        setUpdates(ungelesen);
+        setSichtbar(true);
+      }
+    })();
+  }, [profil.id]);
+
+  async function alsGelesenMarkieren() {
+    await supabase.from("app_updates_gelesen").insert(updates.map((u) => ({ update_id: u.id, spieler_id: profil.id })));
+    setSichtbar(false);
+  }
+
+  if (!sichtbar || updates.length === 0) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="bg-white rounded-lg max-w-md w-full p-6 max-h-[80vh] overflow-y-auto">
+        <div className="flex items-center gap-2 mb-4">
+          <Sparkles size={20} style={{ color: COLORS.orange }} />
+          <h3 className="font-bold" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>Neu in der App</h3>
+        </div>
+        <div className="space-y-4 mb-6">
+          {updates.map((u) => (
+            <div key={u.id}>
+              <p className="font-semibold text-sm mb-1" style={{ color: COLORS.anthracite }}>{u.titel}</p>
+              <p className="text-sm text-gray-600">{u.beschreibung}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={alsGelesenMarkieren} className="flex-1 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange }}>
+            Gelesen
+          </button>
+          <button onClick={() => setSichtbar(false)} className="flex-1 py-2 rounded-md text-sm border">
+            Später
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2474,8 +2682,8 @@ export default function App() {
       setSaisons(data ?? []);
       setSaisonsGeladen(true);
     });
-    supabase.from("mannschaften").select("*").order("hierarchie_stufe", { ascending: true, nullsFirst: false }).then(({ data }) => {
-      setMannschaften(data ?? []);
+    supabase.from("mannschaften").select("*").then(({ data }) => {
+      setMannschaften(sortiereMannschaften(data));
       setAusgewaehlteMannschaftId((aktuell) => aktuell ?? profil.mannschaft_id);
     });
   }, [profil]);
@@ -2496,18 +2704,21 @@ export default function App() {
     return <ErstesPasswortAendern profil={profil} onFertig={() => setProfil({ ...profil, muss_passwort_aendern: false })} />;
   }
 
-  const nav = profil.ist_admin ? [...NAV_BASIS, { key: "spieler", label: "Spielerverwaltung", icon: UserPlus }] : NAV_BASIS;
+  const nav = profil.ist_admin
+    ? [...NAV_BASIS, { key: "mannschaften", label: "Mannschaften", icon: Shield }, { key: "spieler", label: "Spieler", icon: UserPlus }]
+    : NAV_BASIS;
 
   const titles = {
     dashboard: "Dashboard",
     tabelle: "Aktuelle Tabelle",
     planung: "Spielerplanung",
     kalender: "Ereigniskalender",
-    kader: "Kader — 3. Mannschaft",
+    kader: "Kader",
     umfragen: "Umfragen",
     nachrichten: "Nachrichten",
     einstellungen: "Einstellungen",
-    spieler: "Spielerverwaltung",
+    mannschaften: "Mannschaften",
+    spieler: "Spieler",
   };
 
   const initialen = `${profil.vorname?.[0] ?? ""}${profil.nachname?.[0] ?? ""}`.toUpperCase();
@@ -2518,6 +2729,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
+      <AenderungsPopup profil={profil} />
       <aside
         className={`fixed md:static z-20 h-full md:h-auto w-64 transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
         style={{ background: COLORS.petrolDark }}
@@ -2571,11 +2783,13 @@ export default function App() {
         </header>
         <main className="p-6 overflow-y-auto">
           {tab === "einstellungen" ? (
-            <Einstellungen profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
+            <Einstellungen profil={profil} onProfilGeaendert={setProfil} />
           ) : tab === "umfragen" ? (
             <Umfragen profil={profil} zielUmfrageId={zielUmfrageId} />
           ) : tab === "nachrichten" ? (
             <Nachrichten profil={profil} zielSpielerId={zielSpielerId} />
+          ) : tab === "mannschaften" ? (
+            profil.ist_admin && <Mannschaftsverwaltung profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
           ) : tab === "spieler" ? (
             profil.ist_admin && <Spielerverwaltung />
           ) : !saisonsGeladen ? (
