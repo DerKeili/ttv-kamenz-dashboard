@@ -1711,6 +1711,7 @@ function Spielerverwaltung() {
   const [kontakte, setKontakte] = useState([]);
   const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", rang: "Spieler", mannschaftId: "" });
   const [einmalpasswort, setEinmalpasswort] = useState(null);
+  const [erstellterSpieler, setErstellterSpieler] = useState(null);
   const [fehler, setFehler] = useState(null);
   const [ladend, setLadend] = useState(false);
   const [bearbeitenKontaktId, setBearbeitenKontaktId] = useState(null);
@@ -1848,6 +1849,7 @@ function Spielerverwaltung() {
       return;
     }
     setEinmalpasswort(einmalig);
+    setErstellterSpieler({ vorname: form.vorname, email: form.email });
 
     if (bearbeitenKontaktId) {
       await supabase.from("spieler_kontakte").update({ aktiviert: true }).eq("id", bearbeitenKontaktId);
@@ -1914,7 +1916,7 @@ function Spielerverwaltung() {
           {ladend ? "Lege an…" : "Spieler anlegen"}
         </button>
 
-        {einmalpasswort && <ZugangsNachricht vorname={form.vorname || "Spieler"} email={form.email} passwort={einmalpasswort} />}
+        {einmalpasswort && erstellterSpieler && <ZugangsNachricht vorname={erstellterSpieler.vorname} email={erstellterSpieler.email} passwort={einmalpasswort} />}
       </div>
 
       <div className="bg-white rounded-lg border p-5">
