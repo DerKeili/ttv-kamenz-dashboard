@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 import logo from "./logo.jpg";
+import logoKlein from "./logo-klein.png";
 import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
@@ -968,17 +969,22 @@ function KalenderExportMenu({ ereignis }) {
 
 function Kalender({ profil }) {
   const [ereignisse, setEreignisse] = useState([]);
+  const [mannschaften, setMannschaften] = useState([]);
   const [ladend, setLadend] = useState(true);
-  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true });
+  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
   const [fehler, setFehler] = useState(null);
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
-  const [bearbeitenForm, setBearbeitenForm] = useState({ titel: "", datum: "", datumEnde: "", typ: "termin" });
+  const [bearbeitenForm, setBearbeitenForm] = useState({ titel: "", datum: "", datumEnde: "", typ: "termin", mannschaftId: "" });
 
   async function laden() {
     setLadend(true);
-    const { data } = await supabase.from("kalender_ereignisse").select("*").order("datum");
+    const [{ data }, { data: m }] = await Promise.all([
+      supabase.from("kalender_ereignisse").select("*").order("datum"),
+      supabase.from("mannschaften").select("*"),
+    ]);
     setEreignisse(data ?? []);
+    setMannschaften(sortiereMannschaften(m));
     setLadend(false);
   }
 
@@ -999,15 +1005,16 @@ function Kalender({ profil }) {
       datum: start.toISOString(),
       datum_ende: ende.toISOString(),
       typ: form.typ,
+      mannschaft_id: form.mannschaftId || null,
       erstellt_von: profil.id,
     });
     if (error) return setFehler(error.message);
     if (form.perMail) {
       supabase.functions.invoke("notify-kalender-eintrag", {
-        body: { titel: form.titel, datum: start.toISOString(), typ: form.typ },
+        body: { titel: form.titel, datum: start.toISOString(), typ: form.typ, mannschaftId: form.mannschaftId || null },
       }); // bewusst nicht awaited
     }
-    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true });
+    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
     laden();
   }
 
@@ -1018,6 +1025,7 @@ function Kalender({ profil }) {
       datum: isoZuDatetimeLocal(e.datum),
       datumEnde: isoZuDatetimeLocal(e.datum_ende),
       typ: e.typ,
+      mannschaftId: e.mannschaft_id ?? "",
     });
   }
 
@@ -1030,6 +1038,7 @@ function Kalender({ profil }) {
         datum: new Date(bearbeitenForm.datum).toISOString(),
         datum_ende: bearbeitenForm.datumEnde ? new Date(bearbeitenForm.datumEnde).toISOString() : null,
         typ: bearbeitenForm.typ,
+        mannschaft_id: bearbeitenForm.mannschaftId || null,
       })
       .eq("id", bearbeitenId);
     setBearbeitenId(null);
@@ -1092,6 +1101,13 @@ function Kalender({ profil }) {
                 <option value="spiel">Spiel</option>
                 <option value="lehrgang">Lehrgang</option>
                 <option value="termin">Sonstiger Termin</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Sichtbar für</label>
+              <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                <option value="">Alle Mannschaften</option>
+                {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
             </div>
 
@@ -1170,6 +1186,14 @@ function Kalender({ profil }) {
                     <option value="lehrgang">Lehrgang</option>
                     <option value="termin">Sonstiger Termin</option>
                   </select>
+                  <select
+                    value={bearbeitenForm.mannschaftId}
+                    onChange={(ev) => setBearbeitenForm({ ...bearbeitenForm, mannschaftId: ev.target.value })}
+                    className="w-full border rounded-md px-3 py-2 text-sm"
+                  >
+                    <option value="">Alle Mannschaften</option>
+                    {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
                   <div className="flex gap-2 pt-1">
                     <button onClick={bearbeitenSpeichern} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange }}>
                       Speichern
@@ -1186,6 +1210,7 @@ function Kalender({ profil }) {
               e.datum_ende && new Date(e.datum_ende).toDateString() !== new Date(e.datum).toDateString()
                 ? `${formatDatum(e.datum)} – ${formatDatum(e.datum_ende)}`
                 : formatDatum(e.datum);
+            const mannschaftName = e.mannschaft_id ? mannschaften.find((m) => m.id === e.mannschaft_id)?.name : null;
 
             return (
               <div key={e.id} className="flex items-center gap-4 p-4">
@@ -1194,7 +1219,7 @@ function Kalender({ profil }) {
                 </div>
                 <div className="flex-1">
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{e.titel}</p>
-                  <p className="text-xs text-gray-400">{zeitraum}</p>
+                  <p className="text-xs text-gray-400">{zeitraum}{mannschaftName ? ` · nur ${mannschaftName}` : ""}</p>
                 </div>
                 {loeschenBestaetigungId === e.id ? (
                   <div className="flex items-center gap-2 shrink-0">
@@ -1297,6 +1322,7 @@ function Kader({ saison, profil }) {
                     <div key={i} className="flex items-center justify-between px-3 py-2 text-sm">
                       <span className="text-gray-400 w-6">{sp.position}.</span>
                       <span className="flex-1">{sp.name}</span>
+                      {sp.lpz && <span className="text-xs text-gray-400">LPZ {sp.lpz}</span>}
                     </div>
                   ))}
                 </div>
@@ -1971,22 +1997,25 @@ function Umfragen({ profil, zielUmfrageId }) {
   const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({});
   const [zieleNachUmfrage, setZieleNachUmfrage] = useState({}); // { [umfrageId]: spielerId[] } – leer = "alle"
   const [spielerListe, setSpielerListe] = useState([]);
+  const [mannschaften, setMannschaften] = useState([]);
   const [ladend, setLadend] = useState(true);
 
-  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], endetAm: "" });
+  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
   const [fehler, setFehler] = useState(null);
   const [speichernLadend, setSpeichernLadend] = useState(false);
 
   async function laden() {
     setLadend(true);
-    const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }, { data: zieleDaten }] = await Promise.all([
+    const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }, { data: zieleDaten }, { data: mannschaftenDaten }] = await Promise.all([
       supabase.from("umfragen").select("*").eq("aktiv", true).order("erstellt_am", { ascending: false }),
       supabase.from("umfrage_antworten").select("umfrage_id, spieler_id, ausgewaehlte_optionen"),
       supabase.from("profiles").select("id, vorname, nachname"),
       supabase.from("umfrage_ziele").select("umfrage_id, spieler_id"),
+      supabase.from("mannschaften").select("*"),
     ]);
     setUmfragen(umfragenDaten ?? []);
     setSpielerListe(spielerDaten ?? []);
+    setMannschaften(sortiereMannschaften(mannschaftenDaten));
     const antwortenGruppiert = {};
     (antwortenDaten ?? []).forEach((a) => {
       if (!antwortenGruppiert[a.umfrage_id]) antwortenGruppiert[a.umfrage_id] = [];
@@ -2044,6 +2073,7 @@ function Umfragen({ profil, zielUmfrageId }) {
     if (!form.titel.trim()) return setFehler("Bitte einen Titel eingeben.");
     if (optionenBereinigt.length < 2) return setFehler("Bitte mindestens 2 Antwortoptionen angeben.");
     if (form.empfaenger === "einzeln" && form.einzelneIds.length === 0) return setFehler("Bitte mindestens einen Spieler auswählen.");
+    if (form.empfaenger === "mannschaft" && !form.mannschaftId) return setFehler("Bitte eine Mannschaft auswählen.");
 
     setSpeichernLadend(true);
     const { data: neueUmfrage, error } = await supabase
@@ -2054,6 +2084,7 @@ function Umfragen({ profil, zielUmfrageId }) {
         optionen: optionenBereinigt,
         mehrfachauswahl: form.mehrfachauswahl,
         erstellt_von: profil.id,
+        mannschaft_id: form.empfaenger === "mannschaft" ? form.mannschaftId : null,
         endet_am: form.endetAm ? new Date(form.endetAm).toISOString() : null,
       })
       .select()
@@ -2064,16 +2095,24 @@ function Umfragen({ profil, zielUmfrageId }) {
       return setFehler(error.message);
     }
 
+    let empfaengerIds = null;
     if (form.empfaenger === "einzeln") {
-      await supabase.from("umfrage_ziele").insert(form.einzelneIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
+      empfaengerIds = form.einzelneIds;
+    } else if (form.empfaenger === "mannschaft") {
+      const { data: teamSpieler } = await supabase.from("profiles").select("id").eq("mannschaft_id", form.mannschaftId);
+      empfaengerIds = (teamSpieler ?? []).map((s) => s.id);
+    }
+
+    if (empfaengerIds) {
+      await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
     }
 
     supabase.functions.invoke("notify-neue-umfrage", {
-      body: { titel: form.titel.trim(), empfaengerIds: form.empfaenger === "einzeln" ? form.einzelneIds : null },
+      body: { titel: form.titel.trim(), empfaengerIds },
     }); // bewusst nicht awaited
 
     setSpeichernLadend(false);
-    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], endetAm: "" });
+    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
     laden();
   }
 
@@ -2140,7 +2179,25 @@ function Umfragen({ profil, zielUmfrageId }) {
             >
               Einzelne Spieler
             </button>
+            <button
+              onClick={() => setForm({ ...form, empfaenger: "mannschaft" })}
+              className="px-3 py-1.5 rounded-full text-sm font-semibold"
+              style={form.empfaenger === "mannschaft" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+            >
+              Eine Mannschaft
+            </button>
           </div>
+
+          {form.empfaenger === "mannschaft" && (
+            <select
+              value={form.mannschaftId}
+              onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })}
+              className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+            >
+              <option value="">Mannschaft wählen…</option>
+              {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          )}
 
           {form.empfaenger === "einzeln" && (
             <div className="grid sm:grid-cols-2 gap-1 mb-3 max-h-40 overflow-y-auto border rounded-md p-2">
@@ -2735,10 +2792,12 @@ export default function App() {
         style={{ background: COLORS.petrolDark }}
       >
         <div className="p-5 flex items-center gap-3 border-b" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
-          <img src={logo} alt="TTV 97 Kamenz Logo" className="w-10 h-10 rounded-full object-cover shrink-0" style={{ border: `2px solid ${COLORS.orange}` }} />
+          <img src={logoKlein} alt="TTV 97 Kamenz Logo" className="w-10 h-10 rounded-full object-cover shrink-0 bg-white p-1" style={{ border: `2px solid ${COLORS.orange}` }} />
           <div>
             <p className="text-white text-sm font-bold leading-tight" style={{ fontFamily: "Oswald, sans-serif" }}>TTV 97 KAMENZ</p>
-            <p className="text-[10px] uppercase tracking-widest" style={{ color: COLORS.orange }}>3. Mannschaft</p>
+            <p className="text-[10px] uppercase tracking-widest" style={{ color: COLORS.orange }}>
+              {mannschaften.find((m) => m.id === profil.mannschaft_id)?.name ?? "e. V."}
+            </p>
           </div>
         </div>
         <nav className="p-3 space-y-1">
