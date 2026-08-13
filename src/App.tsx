@@ -542,6 +542,7 @@ function Spielerplanung({ saison, profil }) {
   const [spiele, setSpiele] = useState([]);
   const [spieler, setSpieler] = useState([]);
   const [meldungen, setMeldungen] = useState({}); // { [spielId]: { [spielerId]: status } }
+  const [benoetigteSpieler, setBenoetigteSpieler] = useState(4);
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
@@ -559,6 +560,10 @@ function Spielerplanung({ saison, profil }) {
     (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
     (meldungenDaten ?? []).forEach((m) => { if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status; });
     setMeldungen(map);
+    if (saison.mannschaft_id) {
+      const { data: mannschaft } = await supabase.from("mannschaften").select("benoetigte_spieler").eq("id", saison.mannschaft_id).single();
+      setBenoetigteSpieler(mannschaft?.benoetigte_spieler ?? 4);
+    }
     setLadend(false);
   }
 
@@ -590,7 +595,7 @@ function Spielerplanung({ saison, profil }) {
     );
 
     const jaAnzahl = Object.values(aktualisierteMeldungenFuerSpiel).filter((v) => v === "ja").length;
-    if (neuerStatus === "nein" || jaAnzahl < 4) {
+    if (neuerStatus === "nein" || jaAnzahl < benoetigteSpieler) {
       const spielerName = spieler.find((s) => s.id === spielerId);
       supabase.functions.invoke("notify-spielplan-warnung", {
         body: {
@@ -695,7 +700,7 @@ function Spielerplanung({ saison, profil }) {
                   <td className="p-3 text-xs font-semibold text-gray-500 sticky left-0 bg-white">Zusagen</td>
                   {spiele.map((s) => {
                     const ja = countJa(s.id);
-                    const kritisch = ja < 4;
+                    const kritisch = ja < benoetigteSpieler;
                     return (
                       <td key={s.id} className="p-2 text-center">
                         <div
@@ -713,12 +718,11 @@ function Spielerplanung({ saison, profil }) {
             </table>
           </div>
 
-          {spiele.some((s) => countJa(s.id) < 4) && (
+          {spiele.some((s) => countJa(s.id) < benoetigteSpieler) && (
             <div className="flex items-start gap-2 p-3 rounded-md text-sm" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               <span>
-                Mindestens ein Spiel hat aktuell weniger als 4 Zusagen. E-Mail-Benachrichtigung an alle Spieler folgt,
-                sobald der E-Mail-Dienst angebunden ist.
+                Mindestens ein Spiel hat aktuell weniger als {benoetigteSpieler} Zusagen (benötigte Spieleranzahl für diese Liga). Alle Spieler wurden bzw. werden per E-Mail informiert.
               </span>
             </div>
           )}
@@ -1180,10 +1184,12 @@ function Spielerverwaltung() {
 
   const [neueMannschaft, setNeueMannschaft] = useState("");
   const [neueMannschaftVerbandsname, setNeueMannschaftVerbandsname] = useState("");
+  const [neueMannschaftBenoetigteSpieler, setNeueMannschaftBenoetigteSpieler] = useState(4);
   const [mannschaftFehler, setMannschaftFehler] = useState(null);
   const [bearbeiteMannschaftId, setBearbeiteMannschaftId] = useState(null);
   const [bearbeiteMannschaftName, setBearbeiteMannschaftName] = useState("");
   const [bearbeiteMannschaftVerbandsname, setBearbeiteMannschaftVerbandsname] = useState("");
+  const [bearbeiteMannschaftBenoetigteSpieler, setBearbeiteMannschaftBenoetigteSpieler] = useState(4);
 
   const [bearbeiteSpielerId, setBearbeiteSpielerId] = useState(null);
   const [bearbeiteSpielerForm, setBearbeiteSpielerForm] = useState(null);
@@ -1257,10 +1263,12 @@ function Spielerverwaltung() {
     const { error } = await supabase.from("mannschaften").insert({
       name: neueMannschaft.trim(),
       verband_name: neueMannschaftVerbandsname.trim() || null,
+      benoetigte_spieler: Number(neueMannschaftBenoetigteSpieler) || 4,
     });
     if (error) return setMannschaftFehler(error.message);
     setNeueMannschaft("");
     setNeueMannschaftVerbandsname("");
+    setNeueMannschaftBenoetigteSpieler(4);
     ladenAlles();
   }
 
@@ -1268,13 +1276,18 @@ function Spielerverwaltung() {
     setBearbeiteMannschaftId(m.id);
     setBearbeiteMannschaftName(m.name);
     setBearbeiteMannschaftVerbandsname(m.verband_name ?? "");
+    setBearbeiteMannschaftBenoetigteSpieler(m.benoetigte_spieler ?? 4);
   }
 
   async function mannschaftUmbenennen() {
     if (!bearbeiteMannschaftName.trim()) return;
     const { error } = await supabase
       .from("mannschaften")
-      .update({ name: bearbeiteMannschaftName.trim(), verband_name: bearbeiteMannschaftVerbandsname.trim() || null })
+      .update({
+        name: bearbeiteMannschaftName.trim(),
+        verband_name: bearbeiteMannschaftVerbandsname.trim() || null,
+        benoetigte_spieler: Number(bearbeiteMannschaftBenoetigteSpieler) || 4,
+      })
       .eq("id", bearbeiteMannschaftId);
     if (error) return setMannschaftFehler(error.message);
     setBearbeiteMannschaftId(null);
@@ -1346,6 +1359,17 @@ function Spielerverwaltung() {
                     placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 3"
                     className="w-full border rounded-md px-2 py-1 text-sm"
                   />
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Benötigte Spieler pro Spiel (je nach Liga unterschiedlich)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={bearbeiteMannschaftBenoetigteSpieler}
+                      onChange={(e) => setBearbeiteMannschaftBenoetigteSpieler(e.target.value)}
+                      className="w-full border rounded-md px-2 py-1 text-sm"
+                    />
+                  </div>
                   <div className="flex gap-2">
                     <button onClick={mannschaftUmbenennen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orange }}>
                       Speichern
@@ -1362,6 +1386,7 @@ function Spielerverwaltung() {
                     <span className="text-xs text-gray-400 ml-2">{spielerAnzahl(m.id)} Spieler</span>
                     <div className="text-xs text-gray-400">
                       {m.verband_name ? `Verband: ${m.verband_name}` : "Kein Verbands-Name hinterlegt"}
+                      {" · "}{m.benoetigte_spieler ?? 4} Spieler pro Spiel benötigt
                     </div>
                   </div>
                   {mannschaftLoeschenBestaetigung === m.id ? (
@@ -1409,6 +1434,17 @@ function Spielerverwaltung() {
             placeholder="Exakter Name beim Verband, z. B. TTV 97 Kamenz 2"
             className="w-full border rounded-md px-3 py-2 text-sm"
           />
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Benötigte Spieler pro Spiel (je nach Liga unterschiedlich)</label>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={neueMannschaftBenoetigteSpieler}
+              onChange={(e) => setNeueMannschaftBenoetigteSpieler(e.target.value)}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+            />
+          </div>
           <button onClick={mannschaftAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>
             Mannschaft anlegen
           </button>
