@@ -2134,7 +2134,7 @@ function Umfragen({ profil, zielUmfrageId }) {
   const [mannschaften, setMannschaften] = useState([]);
   const [ladend, setLadend] = useState(true);
 
-  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
+  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, anonym: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
   const [fehler, setFehler] = useState(null);
   const [speichernLadend, setSpeichernLadend] = useState(false);
 
@@ -2217,6 +2217,7 @@ function Umfragen({ profil, zielUmfrageId }) {
         beschreibung: form.beschreibung.trim() || null,
         optionen: optionenBereinigt,
         mehrfachauswahl: form.mehrfachauswahl,
+        anonym: form.anonym,
         erstellt_von: profil.id,
         mannschaft_id: form.empfaenger === "mannschaft" ? form.mannschaftId : null,
         endet_am: form.endetAm ? new Date(form.endetAm).toISOString() : null,
@@ -2246,7 +2247,7 @@ function Umfragen({ profil, zielUmfrageId }) {
     }); // bewusst nicht awaited
 
     setSpeichernLadend(false);
-    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
+    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, anonym: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
     laden();
   }
 
@@ -2295,6 +2296,11 @@ function Umfragen({ profil, zielUmfrageId }) {
           <label className="flex items-center gap-2 text-sm mb-4">
             <input type="checkbox" checked={form.mehrfachauswahl} onChange={(e) => setForm({ ...form, mehrfachauswahl: e.target.checked })} />
             Mehrfachauswahl erlauben
+          </label>
+
+          <label className="flex items-center gap-2 text-sm mb-4">
+            <input type="checkbox" checked={form.anonym} onChange={(e) => setForm({ ...form, anonym: e.target.checked })} />
+            Anonym (niemand sieht, wer wie abgestimmt hat — nur das Gesamtergebnis)
           </label>
 
           <label className="block text-xs text-gray-500 mb-1">Empfänger</label>
@@ -2399,6 +2405,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               antworten={antwortenNachUmfrage[u.id] ?? []}
               zielAnzahl={zielAnzahl}
               profil={profil}
+              spielerListe={spielerListe}
               hervorgehoben={u.id === zielUmfrageId}
               onAbstimmen={(gewaehlt) => abstimmen(u.id, u.mehrfachauswahl, gewaehlt)}
               onBeenden={() => beenden(u.id)}
@@ -2411,7 +2418,7 @@ function Umfragen({ profil, zielUmfrageId }) {
   );
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, onAbstimmen, onBeenden, onLoeschen }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [adminWillAbstimmen, setAdminWillAbstimmen] = useState(false);
@@ -2482,12 +2489,25 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, o
         </p>
       )}
 
+      {umfrage.anonym && (
+        <p className="text-xs mb-2 flex items-center gap-1" style={{ color: "#999" }}>
+          <HelpCircle size={12} /> Anonyme Umfrage — niemand sieht, wer wie abgestimmt hat.
+        </p>
+      )}
+
       {zeigeErgebnis ? (
         <div className="space-y-2">
           {umfrage.optionen.map((option, i) => {
-            const stimmenFuerOption = antworten.filter((a) => a.ausgewaehlte_optionen.includes(i)).length;
+            const stimmenderIds = antworten.filter((a) => a.ausgewaehlte_optionen.includes(i)).map((a) => a.spieler_id);
+            const stimmenFuerOption = stimmenderIds.length;
             const prozent = gesamtStimmen === 0 ? 0 : Math.round((stimmenFuerOption / gesamtStimmen) * 100);
             const istEigene = eigeneAntwort?.ausgewaehlte_optionen.includes(i);
+            const namen = !umfrage.anonym
+              ? stimmenderIds
+                  .map((id) => spielerListe.find((s) => s.id === id))
+                  .filter(Boolean)
+                  .map((s) => `${s.vorname} ${s.nachname}`)
+              : [];
             return (
               <div key={i}>
                 <div className="flex justify-between text-xs mb-1">
@@ -2499,6 +2519,7 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, hervorgehoben, o
                 <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${prozent}%`, background: COLORS.petrol }} />
                 </div>
+                {namen.length > 0 && <p className="text-[11px] text-gray-400 mt-1">{namen.join(", ")}</p>}
               </div>
             );
           })}
