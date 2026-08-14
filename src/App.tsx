@@ -3393,9 +3393,9 @@ function Turniere({ profil }) {
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Sätze pro Spiel</label>
                 <select value={form.saetzeProSpiel} onChange={(e) => setForm({ ...form, saetzeProSpiel: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
-                  <option value={3}>Best of 3</option>
-                  <option value={5}>Best of 5</option>
-                  <option value={7}>Best of 7</option>
+                  <option value={3}>2 Gewinnsätze</option>
+                  <option value={5}>3 Gewinnsätze (Standard)</option>
+                  <option value={7}>4 Gewinnsätze</option>
                 </select>
               </div>
 
@@ -3619,7 +3619,7 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
         {turnier.beschreibung && <p className="text-sm text-gray-500 mt-1">{turnier.beschreibung}</p>}
         <p className="text-xs text-gray-400 mt-2">
           {istDoppel ? "Doppel" : turnier.system === "schweizer_system" ? "Einzel · Schweizer System" : "Einzel · Jeder gegen Jeden"}
-          {turnier.datum ? ` · ${formatDatum(turnier.datum)}` : ""} · Best of {turnier.saetze_pro_spiel}
+          {turnier.datum ? ` · ${formatDatum(turnier.datum)}` : ""} · {mehrheitSaetze(turnier.saetze_pro_spiel)} Gewinnsätze
         </p>
         {darfTurniereVerwalten(profil) && turnier.status === "laufend" && (
           <button onClick={turnierAbschliessen} className="text-xs underline mt-2" style={{ color: COLORS.orangeDeep }}>Turnier abschließen</button>
