@@ -37,6 +37,19 @@ const COLORS = {
 /* ---------- Hilfsfunktionen ---------- */
 
 // Sortiert Mannschaften zuverlässig nach Rangstufe (1 = höchste Mannschaft), egal was die DB liefert
+const LEITER_RAENGE = ["Mannschaftsführer", "stellv. Mannschaftsführer"];
+
+// Ist der Nutzer Mannschaftsführer oder stellv. Mannschaftsführer (irgendeiner Mannschaft)?
+function istTeamLeiter(profil) {
+  return LEITER_RAENGE.includes(profil?.rang);
+}
+
+// Darf der Nutzer Inhalte für GENAU diese Mannschaft verwalten (anlegen/bearbeiten/aktualisieren)?
+function darfMannschaftVerwalten(profil, mannschaftId) {
+  if (!mannschaftId) return !!profil?.ist_admin;
+  return !!profil?.ist_admin || (istTeamLeiter(profil) && profil?.mannschaft_id === mannschaftId);
+}
+
 function sortiereMannschaften(liste) {
   return [...(liste ?? [])].sort((a, b) => (a.hierarchie_stufe ?? 999) - (b.hierarchie_stufe ?? 999));
 }
@@ -636,7 +649,7 @@ function Tabelle({ saison, profil }) {
         </span>
         <div className="flex items-center gap-3">
           {aktualisiertAm && <span>Aktualisiert: {new Date(aktualisiertAm).toLocaleString("de-DE")}</span>}
-          {profil.ist_admin && (
+          {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
             <button
               onClick={aktualisieren}
               className="px-3 py-1 rounded-md text-white text-xs font-semibold"
@@ -784,7 +797,7 @@ function Spielerplanung({ saison, profil }) {
             </button>
           ))}
         </div>
-        {profil.ist_admin && (
+        {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
           <button
             onClick={aktualisieren}
             className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
@@ -950,7 +963,7 @@ function Ergebnisse({ saison, profil }) {
             </button>
           ))}
         </div>
-        {profil.ist_admin && (
+        {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
           <button
             onClick={aktualisieren}
             className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
@@ -1077,7 +1090,7 @@ function Kalender({ profil }) {
   const [ereignisse, setEreignisse] = useState([]);
   const [mannschaften, setMannschaften] = useState([]);
   const [ladend, setLadend] = useState(true);
-  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
+  const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
   const [fehler, setFehler] = useState(null);
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
@@ -1122,7 +1135,7 @@ function Kalender({ profil }) {
         body: { titel: form.titel, datum: start.toISOString(), typ: form.typ, mannschaftId: form.mannschaftId || null },
       }); // bewusst nicht awaited
     }
-    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: "" });
+    setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
     laden();
   }
 
@@ -1169,7 +1182,7 @@ function Kalender({ profil }) {
 
   return (
     <div className="space-y-4">
-      {profil.ist_admin && (
+      {(profil.ist_admin || istTeamLeiter(profil)) && (
         <div className="bg-white rounded-lg border p-4">
           <SectionLabel icon={Plus}>Neuen Termin anlegen</SectionLabel>
           <div className="grid sm:grid-cols-2 gap-2 mb-2">
@@ -1235,10 +1248,16 @@ function Kalender({ profil }) {
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Sichtbar für</label>
-              <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
-                <option value="">Alle Mannschaften</option>
-                {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
+              {profil.ist_admin ? (
+                <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                  <option value="">Alle Mannschaften</option>
+                  {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              ) : (
+                <p className="text-sm text-gray-500 border rounded-md px-3 py-2 bg-gray-50">
+                  {mannschaften.find((m) => m.id === profil.mannschaft_id)?.name ?? "Nur deine Mannschaft"}
+                </p>
+              )}
             </div>
 
             <label className="flex items-center gap-2 text-sm sm:col-span-2 mt-1">
@@ -1366,7 +1385,7 @@ function Kalender({ profil }) {
                 ) : (
                   <div className="flex items-center gap-3 shrink-0">
                     <KalenderExportMenu ereignis={e} />
-                    {profil.ist_admin && (
+                    {darfMannschaftVerwalten(profil, e.mannschaft_id) && (
                       <>
                         <button onClick={() => bearbeitenStarten(e)} className="text-gray-400 hover:text-gray-600">
                           <Pencil size={16} />
@@ -1431,7 +1450,7 @@ function Kader({ saison, profil }) {
       <div className="bg-white rounded-lg border p-5">
         <div className="flex items-center justify-between mb-3">
           <SectionLabel icon={Users}>Mannschafts-Infos (Verband)</SectionLabel>
-          {profil.ist_admin && (
+          {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
             <button onClick={aktualisieren} className="text-xs px-3 py-1 rounded-md text-white font-semibold" style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }} disabled={aktualisiertLadend}>
               {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
             </button>
@@ -1585,7 +1604,7 @@ function Mannschaftsverwaltung({ profil, saisons, onSaisonsGeaendert }) {
   const [bearbeiteMannschaftStufe, setBearbeiteMannschaftStufe] = useState("");
   const [mannschaftLoeschenBestaetigung, setMannschaftLoeschenBestaetigung] = useState(null);
 
-  const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState("");
+  const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(profil.ist_admin ? "" : (profil.mannschaft_id ?? ""));
   const [neueBezeichnung, setNeueBezeichnung] = useState("");
   const [saisonFehler, setSaisonFehler] = useState(null);
 
@@ -1598,7 +1617,7 @@ function Mannschaftsverwaltung({ profil, saisons, onSaisonsGeaendert }) {
     const sortiert = sortiereMannschaften(m);
     if (m) setMannschaften(sortiert);
     if (s) setSpielerListe(s);
-    setAusgewaehlteMannschaftId((aktuell) => aktuell || sortiert[0]?.id || "");
+    if (profil.ist_admin) setAusgewaehlteMannschaftId((aktuell) => aktuell || sortiert[0]?.id || "");
     setLadend(false);
   }
 
@@ -1702,6 +1721,7 @@ function Mannschaftsverwaltung({ profil, saisons, onSaisonsGeaendert }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      {profil.ist_admin && (
       <div className="bg-white rounded-lg border p-5">
         <SectionLabel icon={Users}>Mannschaften</SectionLabel>
         <div className="space-y-2 mb-3">
@@ -1775,15 +1795,22 @@ function Mannschaftsverwaltung({ profil, saisons, onSaisonsGeaendert }) {
           <button onClick={mannschaftAnlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>Mannschaft anlegen</button>
         </div>
       </div>
+      )}
 
       <div className="bg-white rounded-lg border p-5">
         <SectionLabel icon={CalendarDays}>Saison-Links</SectionLabel>
-        <select value={ausgewaehlteMannschaftId} onChange={(e) => setAusgewaehlteMannschaftId(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm mb-4">
-          <option value="">Mannschaft wählen…</option>
-          {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-        </select>
+        {profil.ist_admin ? (
+          <select value={ausgewaehlteMannschaftId} onChange={(e) => setAusgewaehlteMannschaftId(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm mb-4">
+            <option value="">Mannschaft wählen…</option>
+            {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        ) : (
+          <p className="text-sm text-gray-500 mb-4">
+            Saison-Links für <strong>{mannschaften.find((m) => m.id === profil.mannschaft_id)?.name}</strong>
+          </p>
+        )}
 
-        {unzugeordneteSaisons.length > 0 && (
+        {unzugeordneteSaisons.length > 0 && profil.ist_admin && (
           <div className="mb-4 p-3 border rounded-md">
             <p className="text-xs text-gray-500 mb-2">Nicht zugeordnete Saisons — bitte der oben gewählten Mannschaft zuweisen:</p>
             {unzugeordneteSaisons.map((s) => (
@@ -1837,11 +1864,11 @@ function Mannschaftsverwaltung({ profil, saisons, onSaisonsGeaendert }) {
 
 /* ---------- Spielerverwaltung (Spieler, Kontakt-Import, Passwort-Reset — nur Admin) ---------- */
 
-function Spielerverwaltung() {
+function Spielerverwaltung({ profil }) {
   const [mannschaften, setMannschaften] = useState([]);
   const [spielerListe, setSpielerListe] = useState([]);
   const [kontakte, setKontakte] = useState([]);
-  const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", rang: "Spieler", mannschaftId: "" });
+  const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", rang: "Spieler", mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
   const [einmalpasswort, setEinmalpasswort] = useState(null);
   const [erstellterSpieler, setErstellterSpieler] = useState(null);
   const [fehler, setFehler] = useState(null);
@@ -1858,6 +1885,9 @@ function Spielerverwaltung() {
   const [zurueckgesetztFuerId, setZurueckgesetztFuerId] = useState(null);
   const [zurueckgesetztesPasswort, setZurueckgesetztesPasswort] = useState(null);
   const [resetLadendId, setResetLadendId] = useState(null);
+
+  const sichtbareSpieler = profil.ist_admin ? spielerListe : spielerListe.filter((s) => s.mannschaft_id === profil.mannschaft_id);
+  const sichtbareMannschaften = profil.ist_admin ? mannschaften : mannschaften.filter((m) => m.id === profil.mannschaft_id);
 
   async function ladenAlles() {
     const [{ data: m }, { data: s }, { data: k }] = await Promise.all([
@@ -1947,7 +1977,7 @@ function Spielerverwaltung() {
       telefonHandy: k.telefon_handy ?? "",
       telefonFestnetz: k.telefon_festnetz ?? "",
       rang: "Spieler",
-      mannschaftId: "",
+      mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? ""),
     });
     setEinmalpasswort(null);
     if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2039,7 +2069,7 @@ function Spielerverwaltung() {
           </select>
           <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
             <option value="">Mannschaft wählen…</option>
-            {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            {sichtbareMannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
         </div>
         <p className="text-xs text-gray-400 mb-3">Hinweis: Ob Telefonnummer und E-Mail für andere Spieler sichtbar sind, entscheidet jeder Spieler selbst in seinen Einstellungen.</p>
@@ -2052,9 +2082,9 @@ function Spielerverwaltung() {
       </div>
 
       <div className="bg-white rounded-lg border p-5">
-        <SectionLabel icon={Users}>Alle Spieler</SectionLabel>
+        <SectionLabel icon={Users}>{profil.ist_admin ? "Alle Spieler" : "Spieler meiner Mannschaft"}</SectionLabel>
         <div className="divide-y">
-          {spielerListe.map((s) => {
+          {sichtbareSpieler.map((s) => {
             if (bearbeiteSpielerId === s.id) {
               return (
                 <div key={s.id} className="py-3 space-y-2">
@@ -2074,7 +2104,7 @@ function Spielerverwaltung() {
                     </select>
                     <select value={bearbeiteSpielerForm.mannschaftId} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, mannschaftId: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
                       <option value="">Mannschaft wählen…</option>
-                      {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      {sichtbareMannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </div>
                   {spielerBearbeitenFehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{spielerBearbeitenFehler}</p>}
@@ -2134,7 +2164,11 @@ function Umfragen({ profil, zielUmfrageId }) {
   const [mannschaften, setMannschaften] = useState([]);
   const [ladend, setLadend] = useState(true);
 
-  const [form, setForm] = useState({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, anonym: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
+  const [form, setForm] = useState({
+    titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, anonym: false,
+    empfaenger: profil.ist_admin ? "alle" : "mannschaft",
+    einzelneIds: [], mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? ""), endetAm: "",
+  });
   const [fehler, setFehler] = useState(null);
   const [speichernLadend, setSpeichernLadend] = useState(false);
 
@@ -2209,6 +2243,13 @@ function Umfragen({ profil, zielUmfrageId }) {
     if (form.empfaenger === "einzeln" && form.einzelneIds.length === 0) return setFehler("Bitte mindestens einen Spieler auswählen.");
     if (form.empfaenger === "mannschaft" && !form.mannschaftId) return setFehler("Bitte eine Mannschaft auswählen.");
 
+    // Team-Leiter müssen (wegen der Datenbank-Berechtigung) immer ihre eigene Mannschaft als
+    // Bezug hinterlegen, auch wenn sie einzelne Spieler auswählen. Die eigentliche Sichtbarkeit
+    // steuern trotzdem weiterhin die einzelnen Ziel-Einträge unten.
+    const mannschaftIdFuerInsert = form.empfaenger === "mannschaft"
+      ? form.mannschaftId
+      : (!profil.ist_admin ? profil.mannschaft_id : null);
+
     setSpeichernLadend(true);
     const { data: neueUmfrage, error } = await supabase
       .from("umfragen")
@@ -2219,7 +2260,7 @@ function Umfragen({ profil, zielUmfrageId }) {
         mehrfachauswahl: form.mehrfachauswahl,
         anonym: form.anonym,
         erstellt_von: profil.id,
-        mannschaft_id: form.empfaenger === "mannschaft" ? form.mannschaftId : null,
+        mannschaft_id: mannschaftIdFuerInsert,
         endet_am: form.endetAm ? new Date(form.endetAm).toISOString() : null,
       })
       .select()
@@ -2247,7 +2288,11 @@ function Umfragen({ profil, zielUmfrageId }) {
     }); // bewusst nicht awaited
 
     setSpeichernLadend(false);
-    setForm({ titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, anonym: false, empfaenger: "alle", einzelneIds: [], mannschaftId: "", endetAm: "" });
+    setForm({
+      titel: "", beschreibung: "", optionen: ["", ""], mehrfachauswahl: false, anonym: false,
+      empfaenger: profil.ist_admin ? "alle" : "mannschaft",
+      einzelneIds: [], mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? ""), endetAm: "",
+    });
     laden();
   }
 
@@ -2255,7 +2300,7 @@ function Umfragen({ profil, zielUmfrageId }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
-      {profil.ist_admin && (
+      {(profil.ist_admin || istTeamLeiter(profil)) && (
         <div className="bg-white rounded-lg border p-5">
           <SectionLabel icon={Vote}>Neue Umfrage erstellen</SectionLabel>
           <input
@@ -2305,13 +2350,15 @@ function Umfragen({ profil, zielUmfrageId }) {
 
           <label className="block text-xs text-gray-500 mb-1">Empfänger</label>
           <div className="flex gap-2 mb-3">
-            <button
-              onClick={() => setForm({ ...form, empfaenger: "alle" })}
-              className="px-3 py-1.5 rounded-full text-sm font-semibold"
-              style={form.empfaenger === "alle" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
-            >
-              Alle Spieler
-            </button>
+            {profil.ist_admin && (
+              <button
+                onClick={() => setForm({ ...form, empfaenger: "alle" })}
+                className="px-3 py-1.5 rounded-full text-sm font-semibold"
+                style={form.empfaenger === "alle" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+              >
+                Alle Spieler
+              </button>
+            )}
             <button
               onClick={() => setForm({ ...form, empfaenger: "einzeln" })}
               className="px-3 py-1.5 rounded-full text-sm font-semibold"
@@ -2320,15 +2367,15 @@ function Umfragen({ profil, zielUmfrageId }) {
               Einzelne Spieler
             </button>
             <button
-              onClick={() => setForm({ ...form, empfaenger: "mannschaft" })}
+              onClick={() => setForm({ ...form, empfaenger: "mannschaft", mannschaftId: profil.ist_admin ? form.mannschaftId : profil.mannschaft_id })}
               className="px-3 py-1.5 rounded-full text-sm font-semibold"
               style={form.empfaenger === "mannschaft" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
             >
-              Eine Mannschaft
+              {profil.ist_admin ? "Eine Mannschaft" : "Meine Mannschaft"}
             </button>
           </div>
 
-          {form.empfaenger === "mannschaft" && (
+          {form.empfaenger === "mannschaft" && profil.ist_admin && (
             <select
               value={form.mannschaftId}
               onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })}
@@ -2341,7 +2388,7 @@ function Umfragen({ profil, zielUmfrageId }) {
 
           {form.empfaenger === "einzeln" && (
             <div className="grid sm:grid-cols-2 gap-1 mb-3 max-h-40 overflow-y-auto border rounded-md p-2">
-              {spielerListe.map((s) => (
+              {spielerListe.filter((s) => profil.ist_admin || s.mannschaft_id === profil.mannschaft_id).map((s) => (
                 <label key={s.id} className="flex items-center gap-2 text-sm py-1">
                   <input
                     type="checkbox"
@@ -2917,7 +2964,7 @@ export default function App() {
     return <ErstesPasswortAendern profil={profil} onFertig={() => setProfil({ ...profil, muss_passwort_aendern: false })} />;
   }
 
-  const nav = profil.ist_admin
+  const nav = (profil.ist_admin || istTeamLeiter(profil))
     ? [...NAV_BASIS, { key: "mannschaften", label: "Mannschaften", icon: Shield }, { key: "spieler", label: "Spieler", icon: UserPlus }]
     : NAV_BASIS;
 
@@ -3005,9 +3052,9 @@ export default function App() {
           ) : tab === "nachrichten" ? (
             <Nachrichten profil={profil} zielSpielerId={zielSpielerId} />
           ) : tab === "mannschaften" ? (
-            profil.ist_admin && <Mannschaftsverwaltung profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
+            (profil.ist_admin || istTeamLeiter(profil)) && <Mannschaftsverwaltung profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
           ) : tab === "spieler" ? (
-            profil.ist_admin && <Spielerverwaltung />
+            (profil.ist_admin || istTeamLeiter(profil)) && <Spielerverwaltung profil={profil} />
           ) : !saisonsGeladen ? (
             <Leerzustand text="Lade Saison…" />
           ) : tab === "dashboard" && !aktiveSaison ? (
