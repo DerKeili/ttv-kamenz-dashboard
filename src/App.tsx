@@ -2016,7 +2016,13 @@ function Spielerverwaltung({ profil }) {
   const [zurueckgesetztesPasswort, setZurueckgesetztesPasswort] = useState(null);
   const [resetLadendId, setResetLadendId] = useState(null);
 
+  const [spielerFilter, setSpielerFilter] = useState("alle"); // "alle" | "unzugeordnet" | mannschaftId
+
   const sichtbareSpieler = profil.ist_admin ? spielerListe : spielerListe.filter((s) => s.mannschaft_id === profil.mannschaft_id);
+  const gefilterteSpieler =
+    spielerFilter === "alle" ? sichtbareSpieler
+    : spielerFilter === "unzugeordnet" ? sichtbareSpieler.filter((s) => !s.mannschaft_id)
+    : sichtbareSpieler.filter((s) => s.mannschaft_id === spielerFilter);
   const sichtbareMannschaften = profil.ist_admin ? mannschaften : mannschaften.filter((m) => m.id === profil.mannschaft_id);
 
   async function ladenAlles() {
@@ -2214,8 +2220,36 @@ function Spielerverwaltung({ profil }) {
 
       <div className="bg-white rounded-lg border p-5">
         <SectionLabel icon={Users}>{profil.ist_admin ? "Alle Spieler" : "Spieler meiner Mannschaft"}</SectionLabel>
+        {profil.ist_admin && (
+          <div className="flex flex-wrap gap-2 mb-4">
+            <button
+              onClick={() => setSpielerFilter("alle")}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold"
+              style={spielerFilter === "alle" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+            >
+              Alle
+            </button>
+            {sichtbareMannschaften.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setSpielerFilter(m.id)}
+                className="px-3 py-1.5 rounded-full text-xs font-semibold"
+                style={spielerFilter === m.id ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+              >
+                {m.name}
+              </button>
+            ))}
+            <button
+              onClick={() => setSpielerFilter("unzugeordnet")}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold"
+              style={spielerFilter === "unzugeordnet" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+            >
+              Nicht zugewiesen
+            </button>
+          </div>
+        )}
         <div className="divide-y">
-          {sichtbareSpieler.map((s) => {
+          {gefilterteSpieler.map((s) => {
             if (bearbeiteSpielerId === s.id) {
               return (
                 <div key={s.id} className="py-3 space-y-2">
@@ -2261,7 +2295,7 @@ function Spielerverwaltung({ profil }) {
 
             return (
               <div key={s.id} className="py-2">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="text-sm">{s.vorname} {s.nachname}</span>
                     <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
