@@ -5,7 +5,7 @@ import logoKlein from "./logo-klein.png";
 import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
-  Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck,
+  Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles
 } from "lucide-react";
 
@@ -48,6 +48,101 @@ function istTeamLeiter(profil) {
 function darfMannschaftVerwalten(profil, mannschaftId) {
   if (!mannschaftId) return !!profil?.ist_admin;
   return !!profil?.ist_admin || (istTeamLeiter(profil) && profil?.mannschaft_id === mannschaftId);
+}
+
+// Turniere sind mannschaftsübergreifend -> Admin oder irgendein Team-Leiter darf verwalten
+function darfTurniereVerwalten(profil) {
+  return !!profil?.ist_admin || istTeamLeiter(profil);
+}
+
+function mehrheitSaetze(saetzeProSpiel) {
+  return Math.ceil(saetzeProSpiel / 2);
+}
+
+function berechneMatchAusSaetzen(saetze) {
+  let a = 0, b = 0;
+  saetze.forEach((s) => {
+    if (Number(s.a) > Number(s.b)) a++;
+    else if (Number(s.b) > Number(s.a)) b++;
+  });
+  return { saetze_a: a, saetze_b: b };
+}
+
+// Vereinfachtes Schweizer System: nach Punkten sortieren, dann von oben nach unten
+// den nächsten noch nicht gespielten Gegner zuweisen. Bei ungerader Anzahl: Freilos
+// an den zuletzt platzierten Teilnehmer ohne bisheriges Freilos.
+function schweizerPaarung(teilnehmerMitStats, bereitsGespielt, bereitsFreilos) {
+  const sortiert = [...teilnehmerMitStats].sort(
+    (a, b) => b.siege - a.siege || b.buchholz - a.buchholz || Math.random() - 0.5
+  );
+
+  let freilos = null;
+  const uebrig = [...sortiert];
+  if (uebrig.length % 2 === 1) {
+    for (let i = uebrig.length - 1; i >= 0; i--) {
+      if (!bereitsFreilos.has(uebrig[i].id)) {
+        freilos = uebrig.splice(i, 1)[0];
+        break;
+      }
+    }
+    if (!freilos) freilos = uebrig.pop();
+  }
+
+  const paarungen = [];
+  while (uebrig.length > 0) {
+    const erster = uebrig.shift();
+    let idx = uebrig.findIndex((p) => !bereitsGespielt.has([erster.id, p.id].sort().join("|")));
+    if (idx === -1) idx = 0;
+    const partner = uebrig.splice(idx, 1)[0];
+    paarungen.push([erster, partner]);
+  }
+  return { paarungen, freilos };
+}
+
+function berechneEinzelTabelle(teilnehmerIds, spiele, spielerNamen) {
+  const stats = {};
+  teilnehmerIds.forEach((id) => {
+    stats[id] = { id, name: spielerNamen[id] ?? "?", siege: 0, niederlagen: 0, saetzeFuer: 0, saetzeGegen: 0, ballFuer: 0, ballGegen: 0, gegner: [] };
+  });
+  spiele.filter((s) => s.gespielt).forEach((s) => {
+    if (s.ist_freilos) {
+      const id = s.spieler_a_id ?? s.spieler_b_id;
+      if (stats[id]) stats[id].siege += 1;
+      return;
+    }
+    const a = stats[s.spieler_a_id], b = stats[s.spieler_b_id];
+    if (!a || !b) return;
+    a.saetzeFuer += s.saetze_a; a.saetzeGegen += s.saetze_b;
+    b.saetzeFuer += s.saetze_b; b.saetzeGegen += s.saetze_a;
+    (s.saetze || []).forEach((set) => { a.ballFuer += Number(set.a); a.ballGegen += Number(set.b); b.ballFuer += Number(set.b); b.ballGegen += Number(set.a); });
+    if (s.saetze_a > s.saetze_b) { a.siege++; b.niederlagen++; } else { b.siege++; a.niederlagen++; }
+    a.gegner.push(s.spieler_b_id); b.gegner.push(s.spieler_a_id);
+  });
+  const liste = Object.values(stats);
+  liste.forEach((sp) => { sp.buchholz = sp.gegner.reduce((sum, gid) => sum + (stats[gid]?.siege ?? 0), 0); });
+  liste.sort((x, y) =>
+    y.siege - x.siege ||
+    y.buchholz - x.buchholz ||
+    (y.saetzeFuer - y.saetzeGegen) - (x.saetzeFuer - x.saetzeGegen) ||
+    (y.ballFuer - y.ballGegen) - (x.ballFuer - x.ballGegen)
+  );
+  return liste;
+}
+
+function berechneDoppelTabelle(paare, spiele) {
+  const stats = {};
+  paare.forEach((p) => { stats[p.id] = { id: p.id, name: p.name, siege: 0, niederlagen: 0, saetzeFuer: 0, saetzeGegen: 0, ballFuer: 0, ballGegen: 0 }; });
+  spiele.filter((s) => s.gespielt && !s.ist_freilos).forEach((s) => {
+    const a = stats[s.paar_a_id], b = stats[s.paar_b_id];
+    if (!a || !b) return;
+    a.saetzeFuer += s.saetze_a; a.saetzeGegen += s.saetze_b;
+    b.saetzeFuer += s.saetze_b; b.saetzeGegen += s.saetze_a;
+    (s.saetze || []).forEach((set) => { a.ballFuer += Number(set.a); a.ballGegen += Number(set.b); b.ballFuer += Number(set.b); b.ballGegen += Number(set.a); });
+    if (s.saetze_a > s.saetze_b) { a.siege++; b.niederlagen++; } else { b.siege++; a.niederlagen++; }
+  });
+  const liste = Object.values(stats);
+  liste.sort((x, y) => y.siege - x.siege || (y.saetzeFuer - y.saetzeGegen) - (x.saetzeFuer - x.saetzeGegen) || (y.ballFuer - y.ballGegen) - (x.ballFuer - x.ballGegen));
+  return liste;
 }
 
 function sortiereMannschaften(liste) {
@@ -2299,6 +2394,11 @@ function Spielerverwaltung({ profil }) {
                   <div>
                     <span className="text-sm">{s.vorname} {s.nachname}</span>
                     <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
+                    {!s.mannschaft_id && (
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ml-2" style={{ background: "#F1F1EF", color: "#999" }}>
+                        Nicht zugewiesen
+                      </span>
+                    )}
                     {s.ist_admin && (
                       <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full text-white ml-2" style={{ background: COLORS.orange }}>
                         Admin
@@ -2327,7 +2427,7 @@ function Spielerverwaltung({ profil }) {
               </div>
             );
           })}
-          {spielerListe.length === 0 && <p className="text-sm text-gray-400">Noch keine Spieler angelegt.</p>}
+          {gefilterteSpieler.length === 0 && <p className="text-sm text-gray-400">Keine Spieler in dieser Auswahl.</p>}
         </div>
       </div>
     </div>
@@ -3100,12 +3200,639 @@ function AenderungsPopup({ profil }) {
   );
 }
 
+/* ---------- Turniere ---------- */
+
+function Turniere({ profil }) {
+  const [turniere, setTurniere] = useState([]);
+  const [mannschaften, setMannschaften] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [ausgewaehlteId, setAusgewaehlteId] = useState(null);
+  const [formOffen, setFormOffen] = useState(false);
+
+  const [form, setForm] = useState({
+    titel: "", beschreibung: "", datum: "", typ: "einzel", system: "schweizer_system",
+    saetzeProSpiel: 5, poolA: [], poolB: [], mitUmfrage: true, mitKalender: true,
+  });
+  const [fehler, setFehler] = useState(null);
+  const [speichernLadend, setSpeichernLadend] = useState(false);
+
+  async function laden() {
+    setLadend(true);
+    const [{ data: t }, { data: m }] = await Promise.all([
+      supabase.from("turniere").select("*").order("erstellt_am", { ascending: false }),
+      supabase.from("mannschaften").select("*"),
+    ]);
+    setTurniere(t ?? []);
+    setMannschaften(sortiereMannschaften(m));
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, []);
+
+  function toggleTeam(feld, mannschaftId) {
+    setForm((f) => ({
+      ...f,
+      [feld]: f[feld].includes(mannschaftId) ? f[feld].filter((id) => id !== mannschaftId) : [...f[feld], mannschaftId],
+    }));
+  }
+
+  async function turnierErstellen() {
+    setFehler(null);
+    if (!form.titel.trim()) return setFehler("Bitte einen Titel eingeben.");
+    if (form.typ === "doppel" && (form.poolA.length === 0 || form.poolB.length === 0)) {
+      return setFehler("Bitte für beide Pools mindestens eine Mannschaft auswählen.");
+    }
+
+    setSpeichernLadend(true);
+
+    const { data: neuesTurnier, error } = await supabase
+      .from("turniere")
+      .insert({
+        titel: form.titel.trim(),
+        beschreibung: form.beschreibung.trim() || null,
+        typ: form.typ,
+        system: form.typ === "doppel" ? "rundenturnier" : form.system,
+        datum: form.datum || null,
+        saetze_pro_spiel: Number(form.saetzeProSpiel),
+        doppel_pool_a: form.typ === "doppel" ? form.poolA : null,
+        doppel_pool_b: form.typ === "doppel" ? form.poolB : null,
+        erstellt_von: profil.id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      setSpeichernLadend(false);
+      return setFehler(error.message);
+    }
+
+    const updates = {};
+
+    if (form.mitUmfrage) {
+      const { data: neueUmfrage } = await supabase
+        .from("umfragen")
+        .insert({
+          titel: `Anmeldung: ${form.titel.trim()}`,
+          beschreibung: form.datum ? `Termin: ${formatDatum(form.datum)}` : null,
+          optionen: ["Ja, ich spiele mit", "Nein"],
+          mehrfachauswahl: false,
+          erstellt_von: profil.id,
+        })
+        .select()
+        .single();
+      if (neueUmfrage) {
+        updates.umfrage_id = neueUmfrage.id;
+        supabase.functions.invoke("notify-neue-umfrage", { body: { titel: neueUmfrage.titel, empfaengerIds: null } });
+      }
+    }
+
+    if (form.mitKalender && form.datum) {
+      const start = new Date(`${form.datum}T09:00`);
+      const ende = new Date(start.getTime() + 4 * 60 * 60000);
+      const { data: neuerTermin } = await supabase
+        .from("kalender_ereignisse")
+        .insert({ titel: form.titel.trim(), datum: start.toISOString(), datum_ende: ende.toISOString(), typ: "turnier", erstellt_von: profil.id })
+        .select()
+        .single();
+      if (neuerTermin) updates.kalender_ereignis_id = neuerTermin.id;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await supabase.from("turniere").update(updates).eq("id", neuesTurnier.id);
+    }
+
+    setSpeichernLadend(false);
+    setFormOffen(false);
+    setForm({ titel: "", beschreibung: "", datum: "", typ: "einzel", system: "schweizer_system", saetzeProSpiel: 5, poolA: [], poolB: [], mitUmfrage: true, mitKalender: true });
+    laden();
+  }
+
+  if (ausgewaehlteId) {
+    return <TurnierDetail turnierId={ausgewaehlteId} profil={profil} onZurueck={() => { setAusgewaehlteId(null); laden(); }} />;
+  }
+
+  const statusLabel = { anmeldung_offen: "Anmeldung offen", laufend: "Läuft", abgeschlossen: "Abgeschlossen" };
+  const statusFarbe = {
+    anmeldung_offen: { background: "#DDF0EA", color: COLORS.petrol },
+    laufend: { background: "#FBE9DA", color: COLORS.orangeDeep },
+    abgeschlossen: { background: "#F1F1EF", color: "#777" },
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      {darfTurniereVerwalten(profil) && (
+        <div className="bg-white rounded-lg border p-5">
+          <div className="flex items-center justify-between mb-2">
+            <SectionLabel icon={Trophy}>Neues Turnier</SectionLabel>
+            <button onClick={() => setFormOffen((v) => !v)} className="text-xs underline" style={{ color: COLORS.petrol }}>
+              {formOffen ? "Einklappen" : "Anlegen"}
+            </button>
+          </div>
+
+          {formOffen && (
+            <div className="space-y-3 mt-3">
+              <input placeholder="Titel, z. B. Vereinsmeisterschaft 2027" value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              <textarea placeholder="Beschreibung (optional)" value={form.beschreibung} onChange={(e) => setForm({ ...form, beschreibung: e.target.value })} rows={2} className="w-full border rounded-md px-3 py-2 text-sm" />
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Datum (optional)</label>
+                <input type="date" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Turnierart</label>
+                <div className="flex gap-2">
+                  <button onClick={() => setForm({ ...form, typ: "einzel" })} className="flex-1 px-3 py-2 rounded-md text-sm font-semibold" style={form.typ === "einzel" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}>
+                    Einzel (alle gegen alle)
+                  </button>
+                  <button onClick={() => setForm({ ...form, typ: "doppel" })} className="flex-1 px-3 py-2 rounded-md text-sm font-semibold" style={form.typ === "doppel" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}>
+                    Doppel (Mannschafts-Mix)
+                  </button>
+                </div>
+              </div>
+
+              {form.typ === "einzel" && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">System</label>
+                  <div className="flex gap-2">
+                    <button onClick={() => setForm({ ...form, system: "schweizer_system" })} className="flex-1 px-3 py-2 rounded-md text-sm font-semibold" style={form.system === "schweizer_system" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}>
+                      Schweizer System
+                    </button>
+                    <button onClick={() => setForm({ ...form, system: "rundenturnier" })} className="flex-1 px-3 py-2 rounded-md text-sm font-semibold" style={form.system === "rundenturnier" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}>
+                      Jeder gegen Jeden
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">Schweizer System empfohlen ab ca. 9 Teilnehmern.</p>
+                </div>
+              )}
+
+              {form.typ === "doppel" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Pool A (ein Partner kommt von hier)</label>
+                    <div className="flex flex-wrap gap-2">
+                      {mannschaften.map((m) => (
+                        <button key={m.id} onClick={() => toggleTeam("poolA", m.id)} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={form.poolA.includes(m.id) ? { background: COLORS.petrol, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}>
+                          {m.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Pool B (der andere Partner kommt von hier)</label>
+                    <div className="flex flex-wrap gap-2">
+                      {mannschaften.map((m) => (
+                        <button key={m.id} onClick={() => toggleTeam("poolB", m.id)} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={form.poolB.includes(m.id) ? { background: COLORS.petrol, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}>
+                          {m.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Sätze pro Spiel</label>
+                <select value={form.saetzeProSpiel} onChange={(e) => setForm({ ...form, saetzeProSpiel: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                  <option value={3}>Best of 3</option>
+                  <option value={5}>Best of 5</option>
+                  <option value={7}>Best of 7</option>
+                </select>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.mitUmfrage} onChange={(e) => setForm({ ...form, mitUmfrage: e.target.checked })} />
+                Umfrage zur Anmeldung erstellen (an alle Spieler)
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.mitKalender} onChange={(e) => setForm({ ...form, mitKalender: e.target.checked })} disabled={!form.datum} />
+                Termin in den Kalender eintragen {!form.datum && <span className="text-xs text-gray-400">(braucht ein Datum)</span>}
+              </label>
+
+              {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+              <button onClick={turnierErstellen} disabled={speichernLadend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: speichernLadend ? 0.6 : 1 }}>
+                {speichernLadend ? "Lege an…" : "Turnier anlegen"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg border divide-y">
+        {ladend ? (
+          <div className="p-5"><Leerzustand text="Lade Turniere…" /></div>
+        ) : turniere.length === 0 ? (
+          <div className="p-5"><Leerzustand text="Noch keine Turniere angelegt." /></div>
+        ) : (
+          turniere.map((t) => (
+            <button key={t.id} onClick={() => setAusgewaehlteId(t.id)} className="w-full text-left p-4 hover:bg-gray-50 flex items-center justify-between gap-3">
+              <div>
+                <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{t.titel}</p>
+                <p className="text-xs text-gray-400">
+                  {t.typ === "doppel" ? "Doppel" : t.system === "schweizer_system" ? "Einzel · Schweizer System" : "Einzel · Jeder gegen Jeden"}
+                  {t.datum ? ` · ${formatDatum(t.datum)}` : ""}
+                </p>
+              </div>
+              <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full shrink-0" style={statusFarbe[t.status]}>{statusLabel[t.status]}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TurnierDetail({ turnierId, profil, onZurueck }) {
+  const [turnier, setTurnier] = useState(null);
+  const [teilnehmer, setTeilnehmer] = useState([]);
+  const [alleSpieler, setAlleSpieler] = useState([]);
+  const [paare, setPaare] = useState([]);
+  const [spiele, setSpiele] = useState([]);
+  const [umfrageJaIds, setUmfrageJaIds] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [aktionLadend, setAktionLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+  const [neuerTeilnehmerId, setNeuerTeilnehmerId] = useState("");
+
+  const darf = darfTurniereVerwalten(profil) && turnier?.status !== "abgeschlossen";
+
+  async function laden() {
+    setLadend(true);
+    const { data: t } = await supabase.from("turniere").select("*").eq("id", turnierId).single();
+    setTurnier(t);
+
+    const [{ data: tn }, { data: sp }, { data: pa }, { data: sl }] = await Promise.all([
+      supabase.from("turnier_teilnehmer").select("*").eq("turnier_id", turnierId),
+      supabase.from("turnier_spiele").select("*").eq("turnier_id", turnierId).order("runde"),
+      supabase.from("turnier_paare").select("*").eq("turnier_id", turnierId),
+      supabase.from("profiles").select("id, vorname, nachname, mannschaft_id"),
+    ]);
+    setTeilnehmer(tn ?? []);
+    setSpiele(sp ?? []);
+    setPaare(pa ?? []);
+    setAlleSpieler(sl ?? []);
+
+    if (t?.umfrage_id) {
+      const { data: antworten } = await supabase.from("umfrage_antworten").select("spieler_id, ausgewaehlte_optionen").eq("umfrage_id", t.umfrage_id);
+      setUmfrageJaIds((antworten ?? []).filter((a) => a.ausgewaehlte_optionen.includes(0)).map((a) => a.spieler_id));
+    } else {
+      setUmfrageJaIds([]);
+    }
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, [turnierId]);
+
+  const spielerNamen = {};
+  alleSpieler.forEach((s) => { spielerNamen[s.id] = `${s.vorname} ${s.nachname}`; });
+
+  const paarNamen = {};
+  paare.forEach((p) => { paarNamen[p.id] = `${spielerNamen[p.spieler_a_id] ?? "?"} / ${spielerNamen[p.spieler_b_id] ?? "?"}`; });
+
+  const teilnehmerIds = teilnehmer.map((t) => t.spieler_id);
+  const nochNichtUebernommen = umfrageJaIds.filter((id) => !teilnehmerIds.includes(id));
+  const nichtTeilnehmer = alleSpieler.filter((s) => !teilnehmerIds.includes(s.id));
+
+  async function teilnehmerAusUmfrageUebernehmen() {
+    if (nochNichtUebernommen.length === 0) return;
+    setAktionLadend(true);
+    await supabase.from("turnier_teilnehmer").insert(nochNichtUebernommen.map((spieler_id) => ({ turnier_id: turnierId, spieler_id })));
+    setAktionLadend(false);
+    laden();
+  }
+
+  async function teilnehmerHinzufuegen() {
+    if (!neuerTeilnehmerId) return;
+    await supabase.from("turnier_teilnehmer").insert({ turnier_id: turnierId, spieler_id: neuerTeilnehmerId });
+    setNeuerTeilnehmerId("");
+    laden();
+  }
+
+  async function teilnehmerEntfernen(id) {
+    await supabase.from("turnier_teilnehmer").delete().eq("id", id);
+    laden();
+  }
+
+  function mischen(liste) {
+    const kopie = [...liste];
+    for (let i = kopie.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [kopie[i], kopie[j]] = [kopie[j], kopie[i]];
+    }
+    return kopie;
+  }
+
+  async function paareAuslosen() {
+    setFehler(null);
+    const poolA = mischen(alleSpieler.filter((s) => teilnehmerIds.includes(s.id) && (turnier.doppel_pool_a ?? []).includes(s.mannschaft_id)));
+    const poolB = mischen(alleSpieler.filter((s) => teilnehmerIds.includes(s.id) && (turnier.doppel_pool_b ?? []).includes(s.mannschaft_id)));
+    const anzahl = Math.min(poolA.length, poolB.length);
+    if (anzahl < 2) return setFehler("Zu wenige Teilnehmer in Pool A oder Pool B für eine Auslosung.");
+
+    setAktionLadend(true);
+    const neuePaare = [];
+    for (let i = 0; i < anzahl; i++) {
+      neuePaare.push({ turnier_id: turnierId, spieler_a_id: poolA[i].id, spieler_b_id: poolB[i].id });
+    }
+    const { data: eingefuegtePaare } = await supabase.from("turnier_paare").insert(neuePaare).select();
+
+    const spieleNeu = [];
+    for (let i = 0; i < eingefuegtePaare.length; i++) {
+      for (let j = i + 1; j < eingefuegtePaare.length; j++) {
+        spieleNeu.push({ turnier_id: turnierId, runde: 1, paar_a_id: eingefuegtePaare[i].id, paar_b_id: eingefuegtePaare[j].id });
+      }
+    }
+    if (spieleNeu.length > 0) await supabase.from("turnier_spiele").insert(spieleNeu);
+
+    await supabase.from("turniere").update({ status: "laufend", aktuelle_runde: 1 }).eq("id", turnierId);
+    setAktionLadend(false);
+    laden();
+  }
+
+  async function alleRundenturnierPaarungenErstellen() {
+    const teilnehmerListe = teilnehmerIds.map((id) => ({ id }));
+    const spieleNeu = [];
+    for (let i = 0; i < teilnehmerListe.length; i++) {
+      for (let j = i + 1; j < teilnehmerListe.length; j++) {
+        spieleNeu.push({ turnier_id: turnierId, runde: 1, spieler_a_id: teilnehmerListe[i].id, spieler_b_id: teilnehmerListe[j].id });
+      }
+    }
+    if (spieleNeu.length === 0) return;
+    setAktionLadend(true);
+    await supabase.from("turnier_spiele").insert(spieleNeu);
+    await supabase.from("turniere").update({ status: "laufend", aktuelle_runde: 1 }).eq("id", turnierId);
+    setAktionLadend(false);
+    laden();
+  }
+
+  async function naechsteRundeAuslosen() {
+    const stats = berechneEinzelTabelle(teilnehmerIds, spiele, spielerNamen);
+    const bereitsGespielt = new Set();
+    spiele.filter((s) => !s.ist_freilos).forEach((s) => bereitsGespielt.add([s.spieler_a_id, s.spieler_b_id].sort().join("|")));
+    const bereitsFreilos = new Set(spiele.filter((s) => s.ist_freilos).map((s) => s.spieler_a_id ?? s.spieler_b_id));
+
+    const { paarungen, freilos } = schweizerPaarung(stats, bereitsGespielt, bereitsFreilos);
+    const naechsteRunde = (turnier.aktuelle_runde || 0) + 1;
+
+    setAktionLadend(true);
+    const spieleNeu = paarungen.map(([a, b]) => ({ turnier_id: turnierId, runde: naechsteRunde, spieler_a_id: a.id, spieler_b_id: b.id }));
+    if (freilos) {
+      spieleNeu.push({
+        turnier_id: turnierId, runde: naechsteRunde, spieler_a_id: freilos.id, ist_freilos: true,
+        gespielt: true, gespielt_am: new Date().toISOString(), saetze_a: mehrheitSaetze(turnier.saetze_pro_spiel), saetze_b: 0,
+      });
+    }
+    await supabase.from("turnier_spiele").insert(spieleNeu);
+    await supabase.from("turniere").update({ status: "laufend", aktuelle_runde: naechsteRunde }).eq("id", turnierId);
+    setAktionLadend(false);
+    laden();
+  }
+
+  async function turnierAbschliessen() {
+    await supabase.from("turniere").update({ status: "abgeschlossen" }).eq("id", turnierId);
+    laden();
+  }
+
+  async function ergebnisSpeichern(spielId, saetzeArray) {
+    const { saetze_a, saetze_b } = berechneMatchAusSaetzen(saetzeArray);
+    await supabase.from("turnier_spiele").update({ saetze: saetzeArray, saetze_a, saetze_b, gespielt: true, gespielt_am: new Date().toISOString() }).eq("id", spielId);
+    laden();
+  }
+
+  if (ladend || !turnier) return <Leerzustand text="Lade Turnier…" />;
+
+  const istDoppel = turnier.typ === "doppel";
+  const rundenNummern = [...new Set(spiele.map((s) => s.runde))].sort((a, b) => a - b);
+  const aktuelleRundeSpiele = spiele.filter((s) => s.runde === turnier.aktuelle_runde);
+  const aktuelleRundeFertig = aktuelleRundeSpiele.length > 0 && aktuelleRundeSpiele.every((s) => s.gespielt);
+  const kannNaechsteRundeAuslosen = darf && !istDoppel && turnier.system === "schweizer_system" && (turnier.aktuelle_runde === 0 || aktuelleRundeFertig) && teilnehmer.length >= 2;
+
+  const tabelle = istDoppel ? berechneDoppelTabelle(paare.map((p) => ({ id: p.id, name: paarNamen[p.id] })), spiele) : berechneEinzelTabelle(teilnehmerIds, spiele, spielerNamen);
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <button onClick={onZurueck} className="text-xs flex items-center gap-1" style={{ color: COLORS.petrol }}>
+        <ArrowLeft size={14} /> Zurück zu allen Turnieren
+      </button>
+
+      <div className="bg-white rounded-lg border p-5">
+        <h2 className="font-bold text-lg" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>{turnier.titel}</h2>
+        {turnier.beschreibung && <p className="text-sm text-gray-500 mt-1">{turnier.beschreibung}</p>}
+        <p className="text-xs text-gray-400 mt-2">
+          {istDoppel ? "Doppel" : turnier.system === "schweizer_system" ? "Einzel · Schweizer System" : "Einzel · Jeder gegen Jeden"}
+          {turnier.datum ? ` · ${formatDatum(turnier.datum)}` : ""} · Best of {turnier.saetze_pro_spiel}
+        </p>
+        {darfTurniereVerwalten(profil) && turnier.status === "laufend" && (
+          <button onClick={turnierAbschliessen} className="text-xs underline mt-2" style={{ color: COLORS.orangeDeep }}>Turnier abschließen</button>
+        )}
+      </div>
+
+      {turnier.umfrage_id && (
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={Vote}>Anmeldung</SectionLabel>
+          <p className="text-sm text-gray-500">{umfrageJaIds.length} Zusagen über die Anmelde-Umfrage.</p>
+          {darf && nochNichtUebernommen.length > 0 && (
+            <button onClick={teilnehmerAusUmfrageUebernehmen} disabled={aktionLadend} className="mt-2 px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange }}>
+              {nochNichtUebernommen.length} neue Zusage(n) übernehmen
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={Users}>Teilnehmer ({teilnehmer.length})</SectionLabel>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {teilnehmer.map((t) => (
+            <span key={t.id} className="text-xs px-2 py-1 rounded-full flex items-center gap-1" style={{ background: "#F1F1EF" }}>
+              {spielerNamen[t.spieler_id] ?? "?"}
+              {darf && turnier.status === "anmeldung_offen" && (
+                <button onClick={() => teilnehmerEntfernen(t.id)} className="text-gray-400 hover:text-gray-600"><X size={12} /></button>
+              )}
+            </span>
+          ))}
+          {teilnehmer.length === 0 && <p className="text-sm text-gray-400">Noch keine Teilnehmer.</p>}
+        </div>
+        {darf && turnier.status === "anmeldung_offen" && nichtTeilnehmer.length > 0 && (
+          <div className="flex gap-2">
+            <select value={neuerTeilnehmerId} onChange={(e) => setNeuerTeilnehmerId(e.target.value)} className="flex-1 border rounded-md px-3 py-2 text-sm">
+              <option value="">Spieler manuell hinzufügen…</option>
+              {nichtTeilnehmer.map((s) => <option key={s.id} value={s.id}>{s.vorname} {s.nachname}</option>)}
+            </select>
+            <button onClick={teilnehmerHinzufuegen} className="px-3 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>+</button>
+          </div>
+        )}
+      </div>
+
+      {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+
+      {istDoppel && paare.length === 0 && darf && (
+        <button onClick={paareAuslosen} disabled={aktionLadend} className="w-full px-4 py-3 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: aktionLadend ? 0.6 : 1 }}>
+          {aktionLadend ? "Lose…" : "Paare auslosen"}
+        </button>
+      )}
+
+      {!istDoppel && turnier.system === "rundenturnier" && spiele.length === 0 && darf && (
+        <button onClick={alleRundenturnierPaarungenErstellen} disabled={aktionLadend} className="w-full px-4 py-3 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: aktionLadend ? 0.6 : 1 }}>
+          {aktionLadend ? "Erstelle…" : "Alle Paarungen erstellen"}
+        </button>
+      )}
+
+      {kannNaechsteRundeAuslosen && (
+        <button onClick={naechsteRundeAuslosen} disabled={aktionLadend} className="w-full px-4 py-3 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: aktionLadend ? 0.6 : 1 }}>
+          {aktionLadend ? "Lose…" : `Runde ${(turnier.aktuelle_runde || 0) + 1} auslosen`}
+        </button>
+      )}
+
+      {istDoppel && paare.length > 0 && (
+        <div className="bg-white rounded-lg border p-5">
+          <SectionLabel icon={Users}>Ausgeloste Paare</SectionLabel>
+          <div className="space-y-1">
+            {paare.map((p) => <p key={p.id} className="text-sm">{paarNamen[p.id]}</p>)}
+          </div>
+        </div>
+      )}
+
+      {spiele.length > 0 && (
+        <div className="space-y-4">
+          {rundenNummern.map((runde) => (
+            <div key={runde} className="bg-white rounded-lg border p-5">
+              <SectionLabel icon={ShieldCheck}>{istDoppel ? "Spiele" : `Runde ${runde}`}</SectionLabel>
+              <div className="divide-y">
+                {spiele.filter((s) => s.runde === runde).map((s) => (
+                  <SpielZeile
+                    key={s.id}
+                    spiel={s}
+                    nameA={istDoppel ? paarNamen[s.paar_a_id] : spielerNamen[s.spieler_a_id]}
+                    nameB={s.ist_freilos ? "Freilos" : istDoppel ? paarNamen[s.paar_b_id] : spielerNamen[s.spieler_b_id]}
+                    saetzeProSpiel={turnier.saetze_pro_spiel}
+                    darf={darf}
+                    onSpeichern={(saetze) => ergebnisSpeichern(s.id, saetze)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tabelle.length > 0 && tabelle.some((r) => r.siege > 0 || r.niederlagen > 0) && (
+        <div className="bg-white rounded-lg border p-5 overflow-x-auto">
+          <SectionLabel icon={Trophy}>Tabelle</SectionLabel>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-400 border-b">
+                <th className="py-2 pr-2">#</th>
+                <th className="py-2 pr-2">Name</th>
+                <th className="py-2 px-2 text-center">Siege</th>
+                <th className="py-2 px-2 text-center">Sätze</th>
+                <th className="py-2 px-2 text-center">Bälle</th>
+                {!istDoppel && turnier.system === "schweizer_system" && <th className="py-2 px-2 text-center">Buchholz</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {tabelle.map((r, i) => (
+                <tr key={r.id} className="border-b last:border-0">
+                  <td className="py-2 pr-2 text-gray-400">{i + 1}</td>
+                  <td className="py-2 pr-2 font-medium">{r.name}</td>
+                  <td className="py-2 px-2 text-center">{r.siege}-{r.niederlagen}</td>
+                  <td className="py-2 px-2 text-center">{r.saetzeFuer}:{r.saetzeGegen}</td>
+                  <td className="py-2 px-2 text-center">{r.ballFuer}:{r.ballGegen}</td>
+                  {!istDoppel && turnier.system === "schweizer_system" && <td className="py-2 px-2 text-center">{r.buchholz}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) {
+  const [bearbeiten, setBearbeiten] = useState(false);
+  const [saetze, setSaetze] = useState([{ a: "", b: "" }]);
+
+  if (spiel.ist_freilos) {
+    return (
+      <div className="py-3 flex items-center justify-between">
+        <span className="text-sm text-gray-400">{nameA} — Freilos</span>
+        <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "#F1F1EF", color: "#999" }}>Freilos</span>
+      </div>
+    );
+  }
+
+  if (spiel.gespielt && !bearbeiten) {
+    const gewinnerA = spiel.saetze_a > spiel.saetze_b;
+    return (
+      <div className="py-3 flex items-center justify-between gap-2">
+        <div className="text-sm">
+          <span style={gewinnerA ? { fontWeight: 700, color: COLORS.petrol } : { color: COLORS.anthracite }}>{nameA}</span>
+          <span className="text-gray-400"> vs </span>
+          <span style={!gewinnerA ? { fontWeight: 700, color: COLORS.petrol } : { color: COLORS.anthracite }}>{nameB}</span>
+          <div className="text-xs text-gray-400">{(spiel.saetze ?? []).map((s, i) => <span key={i} className="mr-2">{s.a}:{s.b}</span>)}</div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-sm font-bold px-2 py-1 rounded-md" style={{ background: "#DDF0EA", color: COLORS.petrol }}>{spiel.saetze_a}:{spiel.saetze_b}</span>
+          {darf && <button onClick={() => { setSaetze(spiel.saetze?.length ? spiel.saetze : [{ a: "", b: "" }]); setBearbeiten(true); }} className="text-gray-400 hover:text-gray-600"><Pencil size={14} /></button>}
+        </div>
+      </div>
+    );
+  }
+
+  if (!darf) {
+    return (
+      <div className="py-3 flex items-center justify-between">
+        <span className="text-sm">{nameA} <span className="text-gray-400">vs</span> {nameB}</span>
+        <span className="text-xs text-gray-400">noch nicht gespielt</span>
+      </div>
+    );
+  }
+
+  const mehrheit = mehrheitSaetze(saetzeProSpiel);
+
+  return (
+    <div className="py-3">
+      <p className="text-sm mb-2">{nameA} <span className="text-gray-400">vs</span> {nameB}</p>
+      <div className="space-y-2">
+        {saetze.map((s, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <span className="text-xs text-gray-400 w-12">Satz {i + 1}</span>
+            <input type="number" min={0} value={s.a} onChange={(e) => setSaetze(saetze.map((x, j) => j === i ? { ...x, a: e.target.value } : x))} className="w-16 border rounded-md px-2 py-1 text-sm text-center" />
+            <span className="text-gray-400">:</span>
+            <input type="number" min={0} value={s.b} onChange={(e) => setSaetze(saetze.map((x, j) => j === i ? { ...x, b: e.target.value } : x))} className="w-16 border rounded-md px-2 py-1 text-sm text-center" />
+            {saetze.length > 1 && <button onClick={() => setSaetze(saetze.filter((_, j) => j !== i))} className="text-gray-300"><X size={14} /></button>}
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2 mt-2">
+        {saetze.length < saetzeProSpiel && (
+          <button onClick={() => setSaetze([...saetze, { a: "", b: "" }])} className="text-xs underline" style={{ color: COLORS.petrol }}>+ Satz</button>
+        )}
+        <button
+          onClick={() => {
+            const gueltig = saetze.filter((s) => s.a !== "" && s.b !== "");
+            if (gueltig.length === 0) return;
+            onSpeichern(gueltig);
+            setBearbeiten(false);
+          }}
+          className="text-xs px-3 py-1 rounded-md text-white font-semibold ml-auto"
+          style={{ background: COLORS.orange }}
+        >
+          Ergebnis speichern
+        </button>
+        {bearbeiten && <button onClick={() => setBearbeiten(false)} className="text-xs px-3 py-1 rounded-md border">Abbrechen</button>}
+      </div>
+      <p className="text-[11px] text-gray-400 mt-1">Wer zuerst {mehrheit} Sätze gewinnt, gewinnt das Spiel.</p>
+    </div>
+  );
+}
+
 /* ---------- App-Shell ---------- */
 
 const NAV_BASIS = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "tabelle", label: "Tabelle", icon: Table2 },
   { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
+  { key: "turniere", label: "Turniere", icon: Award },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
@@ -3176,6 +3903,7 @@ export default function App() {
     dashboard: "Dashboard",
     tabelle: "Aktuelle Tabelle",
     ergebnisse: "Ergebnisse",
+    turniere: "Turniere",
     planung: "Spielerplanung",
     kalender: "Ereigniskalender",
     kader: "Kader",
@@ -3246,6 +3974,8 @@ export default function App() {
             <Umfragen profil={profil} zielUmfrageId={zielUmfrageId} />
           ) : tab === "nachrichten" ? (
             <Nachrichten profil={profil} zielSpielerId={zielSpielerId} />
+          ) : tab === "turniere" ? (
+            <Turniere profil={profil} />
           ) : tab === "mannschaften" ? (
             (profil.ist_admin || istTeamLeiter(profil)) && <Mannschaftsverwaltung profil={profil} saisons={saisons} onSaisonsGeaendert={setSaisons} />
           ) : tab === "spieler" ? (
