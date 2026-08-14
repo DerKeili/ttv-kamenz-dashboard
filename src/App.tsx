@@ -266,7 +266,105 @@ function ErstesPasswortAendern({ profil, onFertig }) {
   );
 }
 
-/* ---------- Passwort ändern (erfordert altes Passwort) ---------- */
+/* ---------- Einführungs-Tour (nur beim allerersten Start) ---------- */
+
+const ONBOARDING_SCHRITTE = [
+  {
+    icon: LayoutDashboard,
+    titel: "Dein Dashboard",
+    text: "Hier siehst du auf einen Blick euren Tabellenplatz, das nächste Spiel, offene Umfragen, ungelesene Nachrichten und anstehende Termine.",
+  },
+  {
+    icon: Table2,
+    titel: "Tabelle & Ergebnisse",
+    text: "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt. Über die Reiter oben kannst du auch die Tabellen der anderen Mannschaften des Vereins ansehen.",
+  },
+  {
+    icon: ShieldCheck,
+    titel: "Spielerplanung",
+    text: "Sag für jedes Spiel Bescheid, ob du Zeit hast: einfach auf dein Feld tippen, um zwischen offen/zugesagt/abgesagt zu wechseln.",
+  },
+  {
+    icon: CalendarDays,
+    titel: "Kalender",
+    text: "Trainings, Spiele und weitere Termine – bei Bedarf auch direkt in deinen eigenen Kalender (Google/Apple) exportierbar.",
+  },
+  {
+    icon: Users,
+    titel: "Kader",
+    text: "Die Mannschaftsaufstellung sowie Kontaktdaten der Mitspieler, sofern sie diese sichtbar gemacht haben. Deine eigene Sichtbarkeit stellst du in den Einstellungen ein.",
+  },
+  {
+    icon: Vote,
+    titel: "Umfragen & Nachrichten",
+    text: "Bei Umfragen einfach abstimmen. Im Nachrichten-Postfach kannst du dich direkt mit anderen Spielern austauschen.",
+  },
+];
+
+function OnboardingTour({ profil, onFertig }) {
+  const [schritt, setSchritt] = useState(0);
+  const [ladend, setLadend] = useState(false);
+  const istLetzterSchritt = schritt === ONBOARDING_SCHRITTE.length - 1;
+
+  async function abschliessen() {
+    setLadend(true);
+    await supabase.from("profiles").update({ onboarding_gesehen: true }).eq("id", profil.id);
+    setLadend(false);
+    onFertig();
+  }
+
+  const aktuell = ONBOARDING_SCHRITTE[schritt];
+  const Icon = aktuell.icon;
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6" style={{ background: COLORS.petrolDark }}>
+      <TiltCard tone="paper" className="p-8 shadow-2xl w-full max-w-sm relative">
+        <button
+          onClick={abschliessen}
+          disabled={ladend}
+          className="absolute top-4 right-4 text-xs text-gray-400 hover:text-gray-600"
+        >
+          Beenden
+        </button>
+
+        <div className="w-12 h-12 rounded-full flex items-center justify-center mb-4" style={{ background: COLORS.orange }}>
+          <Icon size={22} color="white" />
+        </div>
+
+        <h2 className="font-bold text-lg mb-2" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
+          {aktuell.titel}
+        </h2>
+        <p className="text-sm text-gray-500 mb-6 leading-relaxed">{aktuell.text}</p>
+
+        <div className="flex items-center justify-center gap-1.5 mb-6">
+          {ONBOARDING_SCHRITTE.map((_, i) => (
+            <div
+              key={i}
+              className="h-1.5 rounded-full transition-all"
+              style={{ width: i === schritt ? 20 : 6, background: i === schritt ? COLORS.orange : "#E0DED8" }}
+            />
+          ))}
+        </div>
+
+        <div className="flex gap-2">
+          {schritt > 0 && (
+            <button onClick={() => setSchritt((s) => s - 1)} className="flex-1 py-2.5 rounded-md text-sm font-semibold border">
+              Zurück
+            </button>
+          )}
+          <button
+            onClick={istLetzterSchritt ? abschliessen : () => setSchritt((s) => s + 1)}
+            disabled={ladend}
+            className="flex-1 py-2.5 rounded-md text-white text-sm font-semibold"
+            style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}
+          >
+            {ladend ? "…" : istLetzterSchritt ? "Los geht's!" : "Weiter"}
+          </button>
+        </div>
+      </TiltCard>
+    </div>
+  );
+}
 
 function PasswortAendern({ profil }) {
   const [alt, setAlt] = useState("");
@@ -1912,6 +2010,7 @@ function Spielerverwaltung({ profil }) {
       email: s.email,
       rang: s.rang,
       mannschaftId: s.mannschaft_id ?? "",
+      istAdmin: s.ist_admin ?? false,
     });
   }
 
@@ -2107,6 +2206,16 @@ function Spielerverwaltung({ profil }) {
                       {sichtbareMannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </div>
+                  {profil.ist_admin && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={bearbeiteSpielerForm.istAdmin}
+                        onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, istAdmin: e.target.checked })}
+                      />
+                      Administrator-Rechte (voller Zugriff auf alle Mannschaften)
+                    </label>
+                  )}
                   {spielerBearbeitenFehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{spielerBearbeitenFehler}</p>}
                   <div className="flex gap-2">
                     <button onClick={spielerBearbeitenSpeichern} disabled={spielerBearbeitenLadend} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange, opacity: spielerBearbeitenLadend ? 0.6 : 1 }}>
@@ -2124,6 +2233,11 @@ function Spielerverwaltung({ profil }) {
                   <div>
                     <span className="text-sm">{s.vorname} {s.nachname}</span>
                     <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
+                    {s.ist_admin && (
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full text-white ml-2" style={{ background: COLORS.orange }}>
+                        Admin
+                      </span>
+                    )}
                   </div>
                   {spielerLoeschenBestaetigung === s.id ? (
                     <div className="flex items-center gap-2 shrink-0">
@@ -2962,6 +3076,10 @@ export default function App() {
 
   if (profil.muss_passwort_aendern) {
     return <ErstesPasswortAendern profil={profil} onFertig={() => setProfil({ ...profil, muss_passwort_aendern: false })} />;
+  }
+
+  if (!profil.onboarding_gesehen) {
+    return <OnboardingTour profil={profil} onFertig={() => setProfil({ ...profil, onboarding_gesehen: true })} />;
   }
 
   const nav = (profil.ist_admin || istTeamLeiter(profil))
