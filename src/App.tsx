@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import logo from "./logo.jpg";
 import logoKlein from "./logo-klein.png";
@@ -2995,20 +2995,40 @@ function AenderungshinweisVerwaltung() {
 function AenderungsPopup({ profil }) {
   const [updates, setUpdates] = useState([]);
   const [sichtbar, setSichtbar] = useState(false);
+  const letztePruefungRef = useRef(0);
+
+  async function pruefeUpdates() {
+    letztePruefungRef.current = Date.now();
+    const [{ data: alle }, { data: gelesen }] = await Promise.all([
+      supabase.from("app_updates").select("*").order("erstellt_am", { ascending: false }),
+      supabase.from("app_updates_gelesen").select("update_id").eq("spieler_id", profil.id),
+    ]);
+    const gelesenIds = new Set((gelesen ?? []).map((g) => g.update_id));
+    const ungelesen = (alle ?? []).filter((u) => !gelesenIds.has(u.id));
+    if (ungelesen.length > 0) {
+      setUpdates(ungelesen);
+      setSichtbar(true);
+    }
+  }
 
   useEffect(() => {
-    (async () => {
-      const [{ data: alle }, { data: gelesen }] = await Promise.all([
-        supabase.from("app_updates").select("*").order("erstellt_am", { ascending: false }),
-        supabase.from("app_updates_gelesen").select("update_id").eq("spieler_id", profil.id),
-      ]);
-      const gelesenIds = new Set((gelesen ?? []).map((g) => g.update_id));
-      const ungelesen = (alle ?? []).filter((u) => !gelesenIds.has(u.id));
-      if (ungelesen.length > 0) {
-        setUpdates(ungelesen);
-        setSichtbar(true);
-      }
-    })();
+    pruefeUpdates();
+
+    // Erneut prüfen, wenn die Person zur App zurückkehrt (Tab/App wieder sichtbar) —
+    // z. B. nach dem Wechsel zu einer anderen App oder Aufwecken des Bildschirms.
+    // Mindestabstand von 2 Minuten, damit schnelles Hin- und Herwechseln nicht unnötig oft prüft.
+    function beiSichtbarkeitswechsel() {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - letztePruefungRef.current < 2 * 60 * 1000) return;
+      pruefeUpdates();
+    }
+
+    document.addEventListener("visibilitychange", beiSichtbarkeitswechsel);
+    window.addEventListener("focus", beiSichtbarkeitswechsel);
+    return () => {
+      document.removeEventListener("visibilitychange", beiSichtbarkeitswechsel);
+      window.removeEventListener("focus", beiSichtbarkeitswechsel);
+    };
   }, [profil.id]);
 
   async function alsGelesenMarkieren() {
