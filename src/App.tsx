@@ -268,43 +268,74 @@ function ErstesPasswortAendern({ profil, onFertig }) {
 
 /* ---------- Einführungs-Tour (nur beim allerersten Start) ---------- */
 
-const ONBOARDING_SCHRITTE = [
-  {
-    icon: LayoutDashboard,
-    titel: "Dein Dashboard",
-    text: "Hier siehst du auf einen Blick euren Tabellenplatz, das nächste Spiel, offene Umfragen, ungelesene Nachrichten und anstehende Termine.",
-  },
-  {
-    icon: Table2,
-    titel: "Tabelle & Ergebnisse",
-    text: "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt. Über die Reiter oben kannst du auch die Tabellen der anderen Mannschaften des Vereins ansehen.",
-  },
-  {
-    icon: ShieldCheck,
-    titel: "Spielerplanung",
-    text: "Sag für jedes Spiel Bescheid, ob du Zeit hast: einfach auf dein Feld tippen, um zwischen offen/zugesagt/abgesagt zu wechseln.",
-  },
-  {
-    icon: CalendarDays,
-    titel: "Kalender",
-    text: "Trainings, Spiele und weitere Termine – bei Bedarf auch direkt in deinen eigenen Kalender (Google/Apple) exportierbar.",
-  },
-  {
-    icon: Users,
-    titel: "Kader",
-    text: "Die Mannschaftsaufstellung sowie Kontaktdaten der Mitspieler, sofern sie diese sichtbar gemacht haben. Deine eigene Sichtbarkeit stellst du in den Einstellungen ein.",
-  },
-  {
-    icon: Vote,
-    titel: "Umfragen & Nachrichten",
-    text: "Bei Umfragen einfach abstimmen. Im Nachrichten-Postfach kannst du dich direkt mit anderen Spielern austauschen.",
-  },
-];
+function baueOnboardingSchritte(profil) {
+  const admin = profil.ist_admin;
+  const leiter = istTeamLeiter(profil);
+  const verwaltet = admin || leiter; // darf Inhalte pflegen (mind. der eigenen Mannschaft)
+
+  const schritte = [
+    {
+      icon: LayoutDashboard,
+      titel: "Dein Dashboard",
+      text: "Hier siehst du auf einen Blick euren Tabellenplatz, das nächste Spiel, offene Umfragen, ungelesene Nachrichten und anstehende Termine.",
+    },
+    {
+      icon: Table2,
+      titel: "Tabelle & Ergebnisse",
+      text: verwaltet
+        ? "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt. Über \"Jetzt aktualisieren\" holst du dir jederzeit den neuesten Stand. Über die Reiter oben kannst du auch andere Mannschaften des Vereins ansehen."
+        : "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt. Über die Reiter oben kannst du auch die Tabellen der anderen Mannschaften des Vereins ansehen.",
+    },
+    {
+      icon: ShieldCheck,
+      titel: "Spielerplanung",
+      text: "Sag für jedes Spiel Bescheid, ob du Zeit hast: einfach auf dein Feld tippen, um zwischen offen/zugesagt/abgesagt zu wechseln.",
+    },
+    {
+      icon: CalendarDays,
+      titel: "Kalender",
+      text: verwaltet
+        ? "Trainings, Spiele und weitere Termine – bei Bedarf direkt in deinen eigenen Kalender exportierbar. Als " + (admin ? "Admin" : "Mannschaftsführer") + " kannst du hier außerdem selbst neue Termine anlegen."
+        : "Trainings, Spiele und weitere Termine – bei Bedarf auch direkt in deinen eigenen Kalender (Google/Apple) exportierbar.",
+    },
+    {
+      icon: Users,
+      titel: "Kader",
+      text: "Die Mannschaftsaufstellung sowie Kontaktdaten der Mitspieler, sofern sie diese sichtbar gemacht haben. Deine eigene Sichtbarkeit stellst du in den Einstellungen ein.",
+    },
+    {
+      icon: Vote,
+      titel: "Umfragen & Nachrichten",
+      text: verwaltet
+        ? "Bei Umfragen einfach abstimmen — oder als " + (admin ? "Admin" : "Mannschaftsführer") + " selbst welche erstellen. Im Nachrichten-Postfach kannst du dich direkt mit anderen Spielern austauschen."
+        : "Bei Umfragen einfach abstimmen. Im Nachrichten-Postfach kannst du dich direkt mit anderen Spielern austauschen.",
+    },
+  ];
+
+  if (leiter && !admin) {
+    schritte.push({
+      icon: Shield,
+      titel: "Deine Mannschaftsführer-Rechte",
+      text: "Als Mannschaftsführer bzw. Stellvertreter hast du zwei zusätzliche Reiter: \"Mannschaften\" (Saison-Links wie Tabelle/Spielplan für eure Mannschaft pflegen) und \"Spieler\" (Spieler eurer Mannschaft anlegen, bearbeiten, Passwort zurücksetzen). Das gilt jeweils nur für deine eigene Mannschaft.",
+    });
+  }
+
+  if (admin) {
+    schritte.push({
+      icon: Shield,
+      titel: "Deine Admin-Rechte",
+      text: "Als Admin hast du vollen Zugriff auf alle Mannschaften: Teams anlegen, Spieler verwalten, Admin-Rechte vergeben, Saison-Links pflegen sowie Umfragen und Termine für alle oder einzelne Mannschaften erstellen — über die Reiter \"Mannschaften\" und \"Spieler\".",
+    });
+  }
+
+  return schritte;
+}
 
 function OnboardingTour({ profil, onFertig }) {
   const [schritt, setSchritt] = useState(0);
   const [ladend, setLadend] = useState(false);
-  const istLetzterSchritt = schritt === ONBOARDING_SCHRITTE.length - 1;
+  const schritte = baueOnboardingSchritte(profil);
+  const istLetzterSchritt = schritt === schritte.length - 1;
 
   async function abschliessen() {
     setLadend(true);
@@ -313,7 +344,7 @@ function OnboardingTour({ profil, onFertig }) {
     onFertig();
   }
 
-  const aktuell = ONBOARDING_SCHRITTE[schritt];
+  const aktuell = schritte[schritt];
   const Icon = aktuell.icon;
 
   return (
@@ -337,7 +368,7 @@ function OnboardingTour({ profil, onFertig }) {
         <p className="text-sm text-gray-500 mb-6 leading-relaxed">{aktuell.text}</p>
 
         <div className="flex items-center justify-center gap-1.5 mb-6">
-          {ONBOARDING_SCHRITTE.map((_, i) => (
+          {schritte.map((_, i) => (
             <div
               key={i}
               className="h-1.5 rounded-full transition-all"
