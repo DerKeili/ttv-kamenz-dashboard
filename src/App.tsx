@@ -466,7 +466,7 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
         supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).gte("datum", new Date().toISOString()).order("datum").limit(1),
         supabase.from("profiles").select("id, vorname, nachname, geburtstag"),
         supabase.from("kalender_ereignisse").select("*").gte("datum", new Date().toISOString()).order("datum").limit(4),
-        supabase.from("umfragen").select("id, titel").eq("aktiv", true),
+        supabase.from("umfragen").select("id, titel, anonym").eq("aktiv", true),
         supabase.from("umfrage_antworten").select("umfrage_id").eq("spieler_id", profil.id),
         supabase.from("nachrichten").select("id, von_id").eq("an_id", profil.id).eq("gelesen", false),
       ]);
@@ -546,6 +546,7 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
                   >
                     <Vote size={14} style={{ color: COLORS.orange }} />
                     <span className="underline decoration-gray-300">{u.titel}</span>
+                    {u.anonym && <HelpCircle size={12} className="text-gray-400 shrink-0" title="Anonyme Umfrage" />}
                     <ChevronRight size={14} className="text-gray-300 ml-auto" />
                   </button>
                 </li>
@@ -3172,15 +3173,6 @@ export default function App() {
           </button>
         </div>
       </aside>
-
-      <button
-        onClick={abmelden}
-        className="fixed bottom-4 left-4 z-30 md:hidden w-11 h-11 rounded-full flex items-center justify-center shadow-lg"
-        style={{ background: COLORS.petrolDark, color: "white" }}
-        title="Abmelden"
-      >
-        <LogOut size={18} />
-      </button>
 
       <div className="flex-1 flex flex-col min-w-0">
         <header className="flex items-center justify-between px-6 py-4 bg-white border-b">
