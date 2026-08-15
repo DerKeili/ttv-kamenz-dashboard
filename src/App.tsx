@@ -3789,6 +3789,7 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
 function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) {
   const [bearbeiten, setBearbeiten] = useState(false);
   const [saetze, setSaetze] = useState([{ a: "", b: "" }]);
+  const [validierungsFehler, setValidierungsFehler] = useState(null);
 
   if (spiel.ist_freilos) {
     return (
@@ -3811,7 +3812,7 @@ function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) 
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-sm font-bold px-2 py-1 rounded-md" style={{ background: "#DDF0EA", color: COLORS.petrol }}>{spiel.saetze_a}:{spiel.saetze_b}</span>
-          {darf && <button onClick={() => { setSaetze(spiel.saetze?.length ? spiel.saetze : [{ a: "", b: "" }]); setBearbeiten(true); }} className="text-gray-400 hover:text-gray-600"><Pencil size={14} /></button>}
+          {darf && <button onClick={() => { setSaetze(spiel.saetze?.length ? spiel.saetze : [{ a: "", b: "" }]); setValidierungsFehler(null); setBearbeiten(true); }} className="text-gray-400 hover:text-gray-600"><Pencil size={14} /></button>}
         </div>
       </div>
     );
@@ -3828,6 +3829,33 @@ function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) 
 
   const mehrheit = mehrheitSaetze(saetzeProSpiel);
 
+  function ergebnisPruefenUndSpeichern() {
+    setValidierungsFehler(null);
+    const gueltig = saetze.filter((s) => s.a !== "" && s.b !== "");
+    if (gueltig.length === 0) return;
+
+    // 1) Jeder einzelne Satz muss einer echten Tischtennis-Satzendung entsprechen:
+    // mindestens 11 Punkte UND mindestens 2 Punkte Vorsprung (bei 10:10 geht's weiter).
+    for (let i = 0; i < gueltig.length; i++) {
+      const a = Number(gueltig[i].a), b = Number(gueltig[i].b);
+      if (Number.isNaN(a) || Number.isNaN(b) || Math.max(a, b) < 11 || Math.abs(a - b) < 2) {
+        setValidierungsFehler(`Satz ${i + 1}: Ein Satz endet erst, wenn eine Seite mindestens 11 Punkte UND 2 Punkte Vorsprung hat (z. B. 11:7 oder bei Verlängerung 13:11).`);
+        return;
+      }
+    }
+
+    // 2) Das Spiel darf erst als beendet gespeichert werden, wenn eine Seite wirklich
+    // die nötige Mehrheit der Sätze erreicht hat (z. B. bei Best of 5 wirklich 3 Sätze).
+    const { saetze_a, saetze_b } = berechneMatchAusSaetzen(gueltig);
+    if (Math.max(saetze_a, saetze_b) !== mehrheit) {
+      setValidierungsFehler(`Das Spiel ist erst entschieden, wenn eine Seite ${mehrheit} Sätze gewonnen hat (aktuell ${saetze_a}:${saetze_b}).`);
+      return;
+    }
+
+    onSpeichern(gueltig);
+    setBearbeiten(false);
+  }
+
   return (
     <div className="py-3">
       <p className="text-sm mb-2">{nameA} <span className="text-gray-400">vs</span> {nameB}</p>
@@ -3842,25 +3870,17 @@ function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) 
           </div>
         ))}
       </div>
+      {validierungsFehler && <p className="text-xs mt-2" style={{ color: COLORS.orangeDeep }}>{validierungsFehler}</p>}
       <div className="flex gap-2 mt-2">
         {saetze.length < saetzeProSpiel && (
           <button onClick={() => setSaetze([...saetze, { a: "", b: "" }])} className="text-xs underline" style={{ color: COLORS.petrol }}>+ Satz</button>
         )}
-        <button
-          onClick={() => {
-            const gueltig = saetze.filter((s) => s.a !== "" && s.b !== "");
-            if (gueltig.length === 0) return;
-            onSpeichern(gueltig);
-            setBearbeiten(false);
-          }}
-          className="text-xs px-3 py-1 rounded-md text-white font-semibold ml-auto"
-          style={{ background: COLORS.orange }}
-        >
+        <button onClick={ergebnisPruefenUndSpeichern} className="text-xs px-3 py-1 rounded-md text-white font-semibold ml-auto" style={{ background: COLORS.orange }}>
           Ergebnis speichern
         </button>
-        {bearbeiten && <button onClick={() => setBearbeiten(false)} className="text-xs px-3 py-1 rounded-md border">Abbrechen</button>}
+        {bearbeiten && <button onClick={() => { setBearbeiten(false); setValidierungsFehler(null); }} className="text-xs px-3 py-1 rounded-md border">Abbrechen</button>}
       </div>
-      <p className="text-[11px] text-gray-400 mt-1">Wer zuerst {mehrheit} Sätze gewinnt, gewinnt das Spiel.</p>
+      <p className="text-[11px] text-gray-400 mt-1">Wer zuerst {mehrheit} Sätze gewinnt (je Satz mind. 11 Punkte, mind. 2 Punkte Vorsprung), gewinnt das Spiel.</p>
     </div>
   );
 }
