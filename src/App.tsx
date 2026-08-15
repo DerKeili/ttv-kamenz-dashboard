@@ -6,7 +6,8 @@ import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
-  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles
+  UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
+  CalendarClock, Clock
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -32,6 +33,11 @@ const COLORS = {
   orangeDeep: "#B84A1C",
   anthracite: "#26251F",
   paper: "#F8F6F1",
+  // Eigene Farbwelt für Terminkonflikte — bewusst NICHT orange,
+  // damit "Terminüberschneidung" nie mit "zu wenige Zusagen" verwechselt wird.
+  konflikt: "#5B4B9E",
+  konfliktDunkel: "#3D3272",
+  konfliktHell: "#ECE9F7",
 };
 
 /* ---------- Hilfsfunktionen ---------- */
@@ -156,9 +162,72 @@ function sortiereMannschaften(liste) {
   return [...(liste ?? [])].sort((a, b) => (a.hierarchie_stufe ?? 999) - (b.hierarchie_stufe ?? 999));
 }
 
+/* ---------- Automatische Aktualisierung (Tabelle & Ergebnisse) ----------
+   Beim Öffnen des Reiters bzw. beim Wechsel der Mannschaft/Runde wird automatisch
+   beim Verband nachgeschaut. Damit nicht bei jedem Tab-Wechsel neu gescrapt wird,
+   merken wir uns pro Saison/Runde den Zeitpunkt des letzten Abrufs (nur im Speicher,
+   gilt also für die aktuelle Sitzung). Der Button erzwingt weiterhin sofort. */
+const AUTO_AKTUALISIEREN_INTERVALL_MS = 10 * 60 * 1000; // 10 Minuten
+const letzteAutoAktualisierung = new Map();
+
+function autoAktualisierungFaellig(schluessel) {
+  const zuletzt = letzteAutoAktualisierung.get(schluessel);
+  return !zuletzt || Date.now() - zuletzt > AUTO_AKTUALISIEREN_INTERVALL_MS;
+}
+
+function autoAktualisierungMerken(schluessel) {
+  letzteAutoAktualisierung.set(schluessel, Date.now());
+}
+
+function letzterAbrufZeitpunkt(schluessel) {
+  const zuletzt = letzteAutoAktualisierung.get(schluessel);
+  return zuletzt ? new Date(zuletzt) : null;
+}
+
 function formatDatum(iso) {
   if (!iso) return "–";
   return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+/* ---------- Schichtplan ----------
+   Spieler können eine wiederkehrende Schichtrotation hinterlegen (z. B. Woche 1 Früh,
+   Woche 2 Spät, Woche 3 Nacht). Aus der Startwoche und der Rotationslänge lässt sich
+   für jedes beliebige Datum die Schicht ausrechnen. */
+const SCHICHT_OPTIONEN = ["Frühschicht", "Spätschicht", "Nachtschicht", "Tagschicht", "Frei"];
+
+const SCHICHT_STIL = {
+  "Frühschicht": { background: "#FFF1D6", color: "#8A6100", kuerzel: "Früh" },
+  "Spätschicht": { background: "#FBE2DA", color: COLORS.orangeDeep, kuerzel: "Spät" },
+  "Nachtschicht": { background: "#E3E0F3", color: COLORS.konfliktDunkel, kuerzel: "Nacht" },
+  "Tagschicht": { background: "#E4F2EE", color: COLORS.petrol, kuerzel: "Tag" },
+  "Frei": { background: "#F1F1EF", color: "#777", kuerzel: "Frei" },
+};
+
+// Montag 00:00 der Woche, in der das Datum liegt
+function wochenStart(datum) {
+  const d = new Date(datum);
+  if (isNaN(d)) return null;
+  const versatz = (d.getDay() + 6) % 7; // Montag = 0
+  d.setDate(d.getDate() - versatz);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function schichtFuerDatum(spieler, datum) {
+  const rotation = spieler?.schicht_rotation;
+  if (!Array.isArray(rotation) || rotation.length === 0) return null;
+  if (!spieler?.schicht_referenzwoche || !datum) return null;
+  const start = wochenStart(spieler.schicht_referenzwoche);
+  const ziel = wochenStart(datum);
+  if (!start || !ziel) return null;
+  const wochen = Math.round((ziel.getTime() - start.getTime()) / (7 * 24 * 60 * 60 * 1000));
+  const index = ((wochen % rotation.length) + rotation.length) % rotation.length;
+  return rotation[index] ?? null;
+}
+
+// Darf ich die Schicht dieses Spielers sehen? (eigene immer, fremde nur bei Freigabe)
+function schichtSichtbarFuer(spieler, profil) {
+  return spieler?.id === profil?.id || spieler?.schicht_sichtbar === true;
 }
 
 function naechsterGeburtstag(spielerListe) {
@@ -696,6 +765,187 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
   );
 }
 
+/* ---------- Automatische Eskalation: Aushilfe-Umfrage → Verlegungs-Umfrage ----------
+
+   Ablauf:
+   1. Eine Mannschaft bittet die darunter liegende Mannschaft per Umfrage um Aushilfe.
+   2. Meldet sich innerhalb von 3 Tagen niemand mit "Ja" (oder haben vorher schon alle
+      Angefragten abgesagt), wird die Umfrage automatisch beendet.
+   3. Sofort danach entsteht eine neue Umfrage für die eigene Mannschaft mit konkreten
+      Ausweichterminen, auf die das Spiel verlegt werden könnte (Mehrfachauswahl).
+
+   Die Terminvorschläge berechnet die App selbst: gleicher Wochentag wie der reguläre
+   Spieltag, und nur Tage, an denen keine Vereinsmannschaft ein Spiel und die eigene
+   Mannschaft keinen Kalendertermin hat.
+
+   Geprüft wird beim Start der App durch Admins und Mannschaftsführer — nur sie haben
+   die nötigen Schreibrechte. */
+
+const AUSHILFE_FRIST_TAGE = 3;
+const VERLEGUNG_MAX_VORSCHLAEGE = 5;
+
+function tagesSchluessel(datum) {
+  const d = new Date(datum);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function wochentagKurz(datum) {
+  return new Date(datum).toLocaleDateString("de-DE", { weekday: "short" });
+}
+
+// Freie Ausweichtermine für ein zu verlegendes Spiel finden
+async function verlegungsTermineFinden(spiel, mannschaftId) {
+  const original = new Date(spiel.datum);
+  if (isNaN(original)) return [];
+
+  // Alle Spiele aller Mannschaften in den aktiven Saisons = belegte Tage
+  const { data: aktiveSaisons } = await supabase.from("saisons").select("id, mannschaft_id").eq("aktiv", true);
+  const saisonIds = (aktiveSaisons ?? []).map((s) => s.id);
+  const belegt = new Set();
+
+  if (saisonIds.length > 0) {
+    const { data: alleSpiele } = await supabase.from("verbands_spiele").select("datum").in("saison_id", saisonIds);
+    (alleSpiele ?? []).forEach((s) => { if (s.datum) belegt.add(tagesSchluessel(s.datum)); });
+  }
+
+  // Kalendertermine der eigenen Mannschaft (und vereinsweite Termine) ebenfalls meiden
+  const { data: termine } = await supabase.from("kalender_ereignisse").select("datum, mannschaft_id");
+  (termine ?? []).forEach((t) => {
+    if (!t.datum) return;
+    if (t.mannschaft_id && t.mannschaft_id !== mannschaftId) return;
+    belegt.add(tagesSchluessel(t.datum));
+  });
+
+  const wochentagSpieltag = original.getDay();
+  const fruehestens = new Date();
+  fruehestens.setDate(fruehestens.getDate() + 7); // mindestens eine Woche Vorlauf
+  const von = new Date(Math.max(fruehestens.getTime(), original.getTime() - 28 * 24 * 60 * 60 * 1000));
+  const bis = new Date(original.getTime() + 70 * 24 * 60 * 60 * 1000);
+
+  const kandidaten = [];
+  for (let tag = new Date(von); tag <= bis; tag.setDate(tag.getDate() + 1)) {
+    const wochentag = tag.getDay();
+    // Erste Wahl: regulärer Spieltag. Zweite Wahl: Wochenende.
+    const rang = wochentag === wochentagSpieltag ? 0 : (wochentag === 6 || wochentag === 0) ? 1 : null;
+    if (rang === null) continue;
+    if (belegt.has(tagesSchluessel(tag))) continue;
+    const kandidat = new Date(tag);
+    kandidat.setHours(original.getHours(), original.getMinutes(), 0, 0);
+    kandidaten.push({ datum: kandidat, rang, abstand: Math.abs(kandidat.getTime() - original.getTime()) });
+  }
+
+  kandidaten.sort((a, b) => a.rang - b.rang || a.abstand - b.abstand);
+  return kandidaten
+    .slice(0, VERLEGUNG_MAX_VORSCHLAEGE)
+    .sort((a, b) => a.datum.getTime() - b.datum.getTime())
+    .map((k) => k.datum);
+}
+
+function UmfrageEskalation({ profil }) {
+  useEffect(() => {
+    if (!profil?.ist_admin && !istTeamLeiter(profil)) return;
+    let abgebrochen = false;
+
+    (async () => {
+      const grenze = new Date(Date.now() - AUSHILFE_FRIST_TAGE * 24 * 60 * 60 * 1000).toISOString();
+      const { data: aushilfen } = await supabase
+        .from("umfragen")
+        .select("*")
+        .eq("art", "aushilfe")
+        .eq("eskalation_erledigt", false);
+      if (abgebrochen || !aushilfen || aushilfen.length === 0) return;
+
+      for (const umfrage of aushilfen) {
+        const [{ data: antworten }, { data: ziele }] = await Promise.all([
+          supabase.from("umfrage_antworten").select("spieler_id, ausgewaehlte_optionen").eq("umfrage_id", umfrage.id),
+          supabase.from("umfrage_ziele").select("spieler_id").eq("umfrage_id", umfrage.id),
+        ]);
+
+        const zusagen = (antworten ?? []).filter((a) =>
+          (a.ausgewaehlte_optionen ?? []).some((o) => String(o).toLowerCase().startsWith("ja"))
+        );
+
+        // Es hat jemand zugesagt → alles gut, keine Eskalation nötig.
+        if (zusagen.length > 0) {
+          await supabase.from("umfragen").update({ eskalation_erledigt: true }).eq("id", umfrage.id);
+          continue;
+        }
+
+        const fristAbgelaufen = umfrage.erstellt_am <= grenze;
+        const alleHabenAbgesagt =
+          (ziele ?? []).length > 0 && (antworten ?? []).length >= (ziele ?? []).length;
+        if (!fristAbgelaufen && !alleHabenAbgesagt) continue;
+
+        // Wettlauf vermeiden: nur wer die Markierung setzt, legt die Folge-Umfrage an.
+        const { data: markiert } = await supabase
+          .from("umfragen")
+          .update({ eskalation_erledigt: true, endet_am: new Date().toISOString() })
+          .eq("id", umfrage.id)
+          .eq("eskalation_erledigt", false)
+          .select("id");
+        if (!markiert || markiert.length === 0) continue;
+
+        if (!umfrage.bezug_spiel_id || !umfrage.ziel_mannschaft_id) continue;
+
+        const { data: spiel } = await supabase
+          .from("verbands_spiele")
+          .select("*")
+          .eq("id", umfrage.bezug_spiel_id)
+          .maybeSingle();
+        if (!spiel || !spiel.datum) continue;
+        if (new Date(spiel.datum) < new Date()) continue; // Spiel liegt schon in der Vergangenheit
+
+        const termine = await verlegungsTermineFinden(spiel, umfrage.ziel_mannschaft_id);
+        const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+        const optionen = [
+          ...termine.map((t) => `${wochentagKurz(t)}, ${formatDatum(t.toISOString())}`),
+          "Keiner der Termine passt mir",
+        ];
+
+        const { data: verlegung } = await supabase
+          .from("umfragen")
+          .insert({
+            titel: `Spielverlegung nötig: ${gegner} am ${formatDatum(spiel.datum)}`,
+            beschreibung:
+              `Für dieses Spiel hat sich aus der darunter liegenden Mannschaft niemand als Aushilfe gemeldet. ` +
+              `Deshalb soll das Spiel verlegt werden. ` +
+              (termine.length > 0
+                ? `Die folgenden Termine sind laut Spielplan und Vereinskalender frei — bitte alle Termine ankreuzen, an denen du kannst (Mehrfachauswahl möglich).`
+                : `Es konnten automatisch keine freien Ausweichtermine gefunden werden — bitte meldet euch direkt beim Mannschaftsführer.`),
+            optionen,
+            mehrfachauswahl: true,
+            erstellt_von: profil.id,
+            mannschaft_id: umfrage.ziel_mannschaft_id,
+            art: "verlegung",
+            bezug_spiel_id: spiel.id,
+            ziel_mannschaft_id: umfrage.ziel_mannschaft_id,
+            eskalation_erledigt: true,
+          })
+          .select()
+          .single();
+
+        if (!verlegung) continue;
+
+        const { data: eigeneSpieler } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("mannschaft_id", umfrage.ziel_mannschaft_id);
+        const empfaengerIds = (eigeneSpieler ?? []).map((s) => s.id);
+        if (empfaengerIds.length > 0) {
+          await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: verlegung.id, spieler_id })));
+          supabase.functions.invoke("notify-neue-umfrage", {
+            body: { titel: verlegung.titel, empfaengerIds },
+          }); // bewusst nicht awaited
+        }
+      }
+    })();
+
+    return () => { abgebrochen = true; };
+  }, [profil?.id]);
+
+  return null;
+}
+
 /* ---------- Mannschaftsübersicht: nächstes Spiel & Zusagen aller Mannschaften ---------- */
 
 function MannschaftsUebersicht({ profil }) {
@@ -748,15 +998,20 @@ function MannschaftsUebersicht({ profil }) {
     setSendenLadendId(eintrag.mannschaft.id);
     const gegner = eintrag.spiel.ist_heimspiel ? eintrag.spiel.gastteam : eintrag.spiel.heimteam;
     const datumText = formatDatum(eintrag.spiel.datum);
+    const frist = new Date(Date.now() + AUSHILFE_FRIST_TAGE * 24 * 60 * 60 * 1000);
 
     const { data: neueUmfrage, error } = await supabase
       .from("umfragen")
       .insert({
         titel: `Aushilfe gesucht: ${eintrag.mannschaft.name} braucht Spieler`,
-        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText} werden noch Spieler gebraucht. Hast du an dem Tag Zeit auszuhelfen?`,
+        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText} werden noch Spieler gebraucht. Hast du an dem Tag Zeit auszuhelfen? (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
         optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
         mehrfachauswahl: false,
         erstellt_von: profil.id,
+        art: "aushilfe",
+        bezug_spiel_id: eintrag.spiel.id,
+        ziel_mannschaft_id: eintrag.mannschaft.id,
+        endet_am: frist.toISOString(),
       })
       .select()
       .single();
@@ -844,26 +1099,38 @@ function Tabelle({ saison, profil }) {
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
 
-  async function laden() {
-    setLadend(true);
+  async function laden(still = false) {
+    if (!still) setLadend(true);
     const { data } = await supabase.from("tabelle").select("*").eq("saison_id", saison.id).order("platz");
     setZeilen(data ?? []);
     setLadend(false);
   }
 
-  useEffect(() => { if (saison) laden(); }, [saison]);
-
-  async function aktualisieren() {
-    setFehler(null);
+  async function aktualisieren({ automatisch = false } = {}) {
+    if (!automatisch) setFehler(null);
+    autoAktualisierungMerken(`tabelle-${saison.id}`);
     setAktualisiertLadend(true);
     const { data, error } = await supabase.functions.invoke("fetch-tabelle", { body: { saisonId: saison.id } });
     setAktualisiertLadend(false);
     if (error || data?.error) {
-      setFehler(await echteFehlermeldung(error, data));
+      // Beim automatischen Abruf im Hintergrund keine Fehlermeldung zeigen —
+      // die bereits vorhandenen Daten bleiben einfach stehen.
+      if (!automatisch) setFehler(await echteFehlermeldung(error, data));
       return;
     }
-    laden();
+    laden(true);
   }
+
+  useEffect(() => {
+    if (!saison) return;
+    let abgebrochen = false;
+    (async () => {
+      await laden();
+      if (abgebrochen) return;
+      if (autoAktualisierungFaellig(`tabelle-${saison.id}`)) aktualisieren({ automatisch: true });
+    })();
+    return () => { abgebrochen = true; };
+  }, [saison]);
 
   const aktualisiertAm = zeilen[0]?.aktualisiert_am;
 
@@ -880,10 +1147,14 @@ function Tabelle({ saison, profil }) {
           )}
         </span>
         <div className="flex items-center gap-3">
-          {aktualisiertAm && <span>Aktualisiert: {new Date(aktualisiertAm).toLocaleString("de-DE")}</span>}
+          {aktualisiertLadend ? (
+            <span>Aktualisiere…</span>
+          ) : (
+            aktualisiertAm && <span>Aktualisiert: {new Date(aktualisiertAm).toLocaleString("de-DE")}</span>
+          )}
           {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
             <button
-              onClick={aktualisieren}
+              onClick={() => aktualisieren()}
               className="px-3 py-1 rounded-md text-white text-xs font-semibold"
               style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
               disabled={aktualisiertLadend}
@@ -1094,14 +1365,24 @@ function Spielerplanung({ saison, profil }) {
                   <th className="p-3 text-left font-medium sticky left-0" style={{ background: COLORS.petrolDark }}>Spieler</th>
                   {spiele.map((s) => {
                     const tag = s.datum?.slice(0, 10);
-                    const hatUeberschneidung = tag && ueberschneidungen[tag]?.length > 0;
+                    const parallel = (tag && ueberschneidungen[tag]) || [];
+                    const hatUeberschneidung = parallel.length > 0;
                     return (
-                      <th key={s.id} className="p-3 text-center font-medium min-w-[110px]">
+                      <th
+                        key={s.id}
+                        className="p-3 text-center font-medium min-w-[110px]"
+                        style={hatUeberschneidung ? { background: COLORS.konflikt, borderBottom: `3px solid ${COLORS.konfliktHell}` } : {}}
+                      >
                         <div className="flex items-center justify-center gap-1">
                           {formatDatum(s.datum)}
-                          {hatUeberschneidung && <AlertTriangle size={12} style={{ color: COLORS.orange }} />}
+                          {hatUeberschneidung && <CalendarClock size={13} />}
                         </div>
                         <div className="text-[11px] font-normal opacity-80">{s.ist_heimspiel ? s.gastteam : s.heimteam}</div>
+                        {hatUeberschneidung && (
+                          <div className="text-[10px] font-semibold mt-1 leading-tight">
+                            parallel: {parallel.map((u) => u.mannschaftName).join(", ")}
+                          </div>
+                        )}
                       </th>
                     );
                   })}
@@ -1114,6 +1395,10 @@ function Spielerplanung({ saison, profil }) {
                     {spiele.map((s) => {
                       const status = meldungen[s.id]?.[sp.id] ?? "offen";
                       const eigeneZeile = sp.id === profil.id || profil.ist_admin;
+                      const tag = s.datum?.slice(0, 10);
+                      const hatUeberschneidung = tag && ueberschneidungen[tag]?.length > 0;
+                      const schicht = schichtSichtbarFuer(sp, profil) ? schichtFuerDatum(sp, s.datum) : null;
+                      const schichtStil = schicht ? SCHICHT_STIL[schicht] : null;
                       const style =
                         status === "ja"
                           ? { background: "#DDF0EA", color: COLORS.petrol }
@@ -1121,7 +1406,11 @@ function Spielerplanung({ saison, profil }) {
                           ? { background: "#FBE2DA", color: COLORS.orangeDeep }
                           : { background: "#F1F1EF", color: "#999" };
                       return (
-                        <td key={s.id} className="p-2 text-center">
+                        <td
+                          key={s.id}
+                          className="p-2 text-center"
+                          style={hatUeberschneidung ? { background: COLORS.konfliktHell } : {}}
+                        >
                           <button
                             onClick={() => toggle(s.id, sp.id)}
                             disabled={!eigeneZeile}
@@ -1133,6 +1422,15 @@ function Spielerplanung({ saison, profil }) {
                             {status === "offen" && <HelpCircle size={13} />}
                             {status === "ja" ? "Kann" : status === "nein" ? "Kann nicht" : "Offen"}
                           </button>
+                          {schichtStil && (
+                            <span
+                              className="mt-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                              style={{ background: schichtStil.background, color: schichtStil.color }}
+                              title={`${sp.vorname} hat in dieser Woche ${schicht}`}
+                            >
+                              <Clock size={9} /> {schichtStil.kuerzel}
+                            </span>
+                          )}
                         </td>
                       );
                     })}
@@ -1145,8 +1443,10 @@ function Spielerplanung({ saison, profil }) {
                   {spiele.map((s) => {
                     const ja = countJa(s.id);
                     const kritisch = ja < benoetigteSpieler;
+                    const tag = s.datum?.slice(0, 10);
+                    const hatUeberschneidung = tag && ueberschneidungen[tag]?.length > 0;
                     return (
-                      <td key={s.id} className="p-2 text-center">
+                      <td key={s.id} className="p-2 text-center" style={hatUeberschneidung ? { background: COLORS.konfliktHell } : {}}>
                         <div
                           className="mx-auto w-fit px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1"
                           style={kritisch ? { background: COLORS.orange, color: "white" } : { background: "#E4F2EE", color: COLORS.petrol }}
@@ -1165,31 +1465,63 @@ function Spielerplanung({ saison, profil }) {
           {spiele.some((s) => countJa(s.id) < benoetigteSpieler) && (
             <div className="flex items-start gap-2 p-3 rounded-md text-sm" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-              <span>
-                Mindestens ein Spiel hat aktuell weniger als {benoetigteSpieler} Zusagen (benötigte Spieleranzahl für diese Liga). Alle Spieler wurden bzw. werden per E-Mail informiert.
-              </span>
+              <div>
+                <p className="font-semibold">Zu wenige Zusagen</p>
+                <p className="text-xs mt-0.5">
+                  Mindestens ein Spiel hat aktuell weniger als {benoetigteSpieler} Zusagen (benötigte Spieleranzahl für diese Liga). Alle Spieler wurden bzw. werden per E-Mail informiert.
+                </p>
+              </div>
             </div>
           )}
 
           {spiele.some((s) => s.datum && ueberschneidungen[s.datum.slice(0, 10)]?.length > 0) && (
-            <div className="p-3 rounded-md text-sm space-y-2" style={{ background: "#FCEEE7", color: COLORS.orangeDeep }}>
-              <div className="flex items-center gap-2 font-semibold">
-                <AlertTriangle size={16} className="shrink-0" />
-                Terminüberschneidung mit einer Nachbar-Mannschaft
+            <div
+              className="rounded-md text-sm overflow-hidden"
+              style={{ background: COLORS.konfliktHell, color: COLORS.konfliktDunkel, border: `1px solid ${COLORS.konflikt}` }}
+            >
+              <div className="flex items-center gap-2 px-3 py-2 font-semibold text-white" style={{ background: COLORS.konflikt }}>
+                <CalendarClock size={16} className="shrink-0" />
+                Terminüberschneidung mit Nachbar-Mannschaft
               </div>
-              {spiele
-                .filter((s) => s.datum && ueberschneidungen[s.datum.slice(0, 10)]?.length > 0)
-                .map((s) => (
-                  <div key={s.id} className="text-xs pl-6">
-                    <span className="font-medium">{formatDatum(s.datum)}:</span>{" "}
-                    Eigenes Spiel {s.ist_heimspiel ? "(Heimspiel)" : "(Auswärtsspiel)"} gegen {s.ist_heimspiel ? s.gastteam : s.heimteam}
-                    {ueberschneidungen[s.datum.slice(0, 10)].map((u, i) => (
-                      <span key={i}> · {u.mannschaftName} spielt ebenfalls, {u.istHeimspiel ? "Heimspiel" : "Auswärtsspiel"} gegen {u.gegner}</span>
-                    ))}
-                  </div>
-                ))}
+              <div className="p-3 space-y-2">
+                <p className="text-xs opacity-80">
+                  An diesen Tagen spielt eine Nachbar-Mannschaft gleichzeitig — Aushilfen von dort stehen euch also nicht zur Verfügung.
+                  Die betroffenen Spalten in der Tabelle sind violett hinterlegt.
+                </p>
+                {spiele
+                  .filter((s) => s.datum && ueberschneidungen[s.datum.slice(0, 10)]?.length > 0)
+                  .map((s) => (
+                    <div key={s.id} className="text-xs rounded-md bg-white/70 p-2">
+                      <p className="font-semibold">{formatDatum(s.datum)}</p>
+                      <p className="mt-0.5">
+                        Eigenes Spiel {s.ist_heimspiel ? "(Heimspiel)" : "(Auswärtsspiel)"} gegen {s.ist_heimspiel ? s.gastteam : s.heimteam}
+                      </p>
+                      {ueberschneidungen[s.datum.slice(0, 10)].map((u, i) => (
+                        <p key={i} className="mt-0.5 flex items-start gap-1">
+                          <CalendarClock size={11} className="mt-0.5 shrink-0" />
+                          <span>
+                            <span className="font-semibold">{u.mannschaftName}</span> spielt ebenfalls —{" "}
+                            {u.istHeimspiel ? "Heimspiel" : "Auswärtsspiel"} gegen {u.gegner}
+                          </span>
+                        </p>
+                      ))}
+                    </div>
+                  ))}
+              </div>
             </div>
           )}
+
+          <div className="flex flex-wrap items-center gap-4 text-[11px] text-gray-400">
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-sm inline-block" style={{ background: COLORS.orange }} /> zu wenige Zusagen
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-sm inline-block" style={{ background: COLORS.konflikt }} /> Terminüberschneidung
+            </span>
+            <span className="flex items-center gap-1">
+              <Clock size={11} /> Schicht des Spielers in dieser Woche
+            </span>
+          </div>
         </>
       )}
     </div>
@@ -1205,26 +1537,42 @@ function Ergebnisse({ saison, profil }) {
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
 
-  async function laden() {
-    setLadend(true);
+  const [zuletztAktualisiert, setZuletztAktualisiert] = useState(null);
+  const autoSchluessel = saison ? `spielplan-${saison.id}-${runde}` : null;
+
+  async function laden(still = false) {
+    if (!still) setLadend(true);
     const { data } = await supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum");
     setSpiele(data ?? []);
     setLadend(false);
   }
 
-  useEffect(() => { if (saison) laden(); }, [saison, runde]);
-
-  async function aktualisieren() {
-    setFehler(null);
+  async function aktualisieren({ automatisch = false } = {}) {
+    if (!automatisch) setFehler(null);
+    autoAktualisierungMerken(autoSchluessel);
     setAktualisiertLadend(true);
     const { data, error } = await supabase.functions.invoke("fetch-spielplan", { body: { saisonId: saison.id, runde } });
     setAktualisiertLadend(false);
+    setZuletztAktualisiert(letzterAbrufZeitpunkt(autoSchluessel));
     if (error || data?.error) {
-      setFehler(await echteFehlermeldung(error, data));
+      // Beim automatischen Abruf im Hintergrund bewusst still bleiben.
+      if (!automatisch) setFehler(await echteFehlermeldung(error, data));
       return;
     }
-    laden();
+    laden(true);
   }
+
+  useEffect(() => {
+    if (!saison) return;
+    let abgebrochen = false;
+    setZuletztAktualisiert(letzterAbrufZeitpunkt(autoSchluessel));
+    (async () => {
+      await laden();
+      if (abgebrochen) return;
+      if (autoAktualisierungFaellig(autoSchluessel)) aktualisieren({ automatisch: true });
+    })();
+    return () => { abgebrochen = true; };
+  }, [saison, runde]);
 
   function ergebnisInfo(spiel) {
     if (!spiel.ergebnis) return { text: "noch nicht gespielt", ton: "offen" };
@@ -1263,16 +1611,23 @@ function Ergebnisse({ saison, profil }) {
             </button>
           ))}
         </div>
-        {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
-          <button
-            onClick={aktualisieren}
-            className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
-            style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
-            disabled={aktualisiertLadend}
-          >
-            {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
-          </button>
-        )}
+        <div className="flex items-center gap-3 text-xs text-gray-500">
+          {aktualisiertLadend ? (
+            <span>Aktualisiere…</span>
+          ) : (
+            zuletztAktualisiert && <span>Aktualisiert: {zuletztAktualisiert.toLocaleString("de-DE")}</span>
+          )}
+          {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
+            <button
+              onClick={() => aktualisieren()}
+              className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
+              style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
+              disabled={aktualisiertLadend}
+            >
+              {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
+            </button>
+          )}
+        </div>
       </div>
       {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
 
@@ -2866,6 +3221,16 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
         <div className="flex items-center gap-2">
           <Vote size={16} style={{ color: COLORS.orange }} />
           <h3 className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
+          {umfrage.art === "verlegung" && (
+            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white flex items-center gap-1" style={{ background: COLORS.konflikt }}>
+              <CalendarClock size={10} /> Verlegung
+            </span>
+          )}
+          {umfrage.art === "aushilfe" && (
+            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+              Aushilfe
+            </span>
+          )}
           {istBeendet && (
             <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.anthracite }}>
               Beendet
@@ -2975,20 +3340,24 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
 
 function Nachrichten({ profil, zielSpielerId }) {
   const [spielerListe, setSpielerListe] = useState([]);
+  const [mannschaften, setMannschaften] = useState([]);
   const [nachrichten, setNachrichten] = useState([]);
   const [ladend, setLadend] = useState(true);
   const [partnerId, setPartnerId] = useState(zielSpielerId ?? null);
   const [entwurf, setEntwurf] = useState("");
   const [sendenLadend, setSendenLadend] = useState(false);
+  const [mannschaftsFilter, setMannschaftsFilter] = useState("alle"); // "alle" | "unzugeordnet" | mannschaftId
 
   async function laden() {
     setLadend(true);
-    const [{ data: spielerDaten }, { data: nachrichtenDaten }] = await Promise.all([
-      supabase.from("profiles").select("id, vorname, nachname").neq("id", profil.id).order("nachname"),
+    const [{ data: spielerDaten }, { data: nachrichtenDaten }, { data: mannschaftenDaten }] = await Promise.all([
+      supabase.from("profiles").select("id, vorname, nachname, mannschaft_id").neq("id", profil.id).order("nachname"),
       supabase.from("nachrichten").select("*").or(`von_id.eq.${profil.id},an_id.eq.${profil.id}`).order("gesendet_am"),
+      supabase.from("mannschaften").select("id, name, hierarchie_stufe"),
     ]);
     setSpielerListe(spielerDaten ?? []);
     setNachrichten(nachrichtenDaten ?? []);
+    setMannschaften(sortiereMannschaften(mannschaftenDaten));
     setLadend(false);
   }
 
@@ -3097,38 +3466,88 @@ function Nachrichten({ profil, zielSpielerId }) {
     );
   }
 
-  // Übersicht aller Spieler / Unterhaltungen
+  // Übersicht aller Spieler / Unterhaltungen — nach Mannschaften gruppiert
+  function spielerZeile(s) {
+    const letzte = konversationMit(s.id).at(-1);
+    const ungelesen = ungeleseneVon(s.id);
+    return (
+      <button
+        key={s.id}
+        onClick={() => setPartnerId(s.id)}
+        className="w-full flex items-center gap-3 p-4 text-left hover:bg-gray-50"
+      >
+        <div
+          className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
+          style={{ background: COLORS.petrol, fontFamily: "Oswald, sans-serif" }}
+        >
+          {s.vorname?.[0]}{s.nachname?.[0]}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
+          <p className="text-xs text-gray-400 truncate">{letzte ? letzte.inhalt : "Noch keine Nachrichten"}</p>
+        </div>
+        {ungelesen > 0 && (
+          <span className="text-white text-[10px] px-1.5 py-0.5 rounded-full shrink-0" style={{ background: COLORS.orange }}>
+            {ungelesen}
+          </span>
+        )}
+      </button>
+    );
+  }
+
+  const gefilterteSpieler =
+    mannschaftsFilter === "alle" ? sortiertNachAktivitaet
+    : mannschaftsFilter === "unzugeordnet" ? sortiertNachAktivitaet.filter((s) => !s.mannschaft_id)
+    : sortiertNachAktivitaet.filter((s) => s.mannschaft_id === mannschaftsFilter);
+
+  // Bei "Alle" zusätzlich mit Zwischenüberschriften je Mannschaft gruppieren
+  const gruppen =
+    mannschaftsFilter === "alle"
+      ? [
+          ...mannschaften.map((m) => ({
+            id: m.id,
+            name: m.name,
+            spieler: sortiertNachAktivitaet.filter((s) => s.mannschaft_id === m.id),
+          })),
+          { id: "unzugeordnet", name: "Nicht zugewiesen", spieler: sortiertNachAktivitaet.filter((s) => !s.mannschaft_id) },
+        ].filter((g) => g.spieler.length > 0)
+      : null;
+
+  const filterKnopf = (wert, beschriftung) => (
+    <button
+      key={wert}
+      onClick={() => setMannschaftsFilter(wert)}
+      className="px-3 py-1.5 rounded-full text-xs font-semibold"
+      style={mannschaftsFilter === wert ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
+    >
+      {beschriftung}
+    </button>
+  );
+
   return (
-    <div className="bg-white rounded-lg border divide-y max-w-xl">
-      {sortiertNachAktivitaet.map((s) => {
-        const verlauf = konversationMit(s.id);
-        const letzte = verlauf.at(-1);
-        const ungelesen = ungeleseneVon(s.id);
-        return (
-          <button
-            key={s.id}
-            onClick={() => setPartnerId(s.id)}
-            className="w-full flex items-center gap-3 p-4 text-left hover:bg-gray-50"
-          >
-            <div
-              className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
-              style={{ background: COLORS.petrol, fontFamily: "Oswald, sans-serif" }}
-            >
-              {s.vorname?.[0]}{s.nachname?.[0]}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
-              <p className="text-xs text-gray-400 truncate">{letzte ? letzte.inhalt : "Noch keine Nachrichten"}</p>
-            </div>
-            {ungelesen > 0 && (
-              <span className="text-white text-[10px] px-1.5 py-0.5 rounded-full shrink-0" style={{ background: COLORS.orange }}>
-                {ungelesen}
-              </span>
-            )}
-          </button>
-        );
-      })}
-      {spielerListe.length === 0 && <Leerzustand text="Keine anderen Spieler vorhanden." />}
+    <div className="max-w-xl space-y-3">
+      {mannschaften.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {filterKnopf("alle", "Alle")}
+          {mannschaften.map((m) => filterKnopf(m.id, m.name))}
+          {spielerListe.some((s) => !s.mannschaft_id) && filterKnopf("unzugeordnet", "Nicht zugewiesen")}
+        </div>
+      )}
+
+      {spielerListe.length === 0 ? (
+        <Leerzustand text="Keine anderen Spieler vorhanden." />
+      ) : gruppen ? (
+        gruppen.map((g) => (
+          <div key={g.id}>
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1 px-1">{g.name}</p>
+            <div className="bg-white rounded-lg border divide-y">{g.spieler.map(spielerZeile)}</div>
+          </div>
+        ))
+      ) : gefilterteSpieler.length === 0 ? (
+        <Leerzustand text="Keine Spieler in dieser Mannschaft." />
+      ) : (
+        <div className="bg-white rounded-lg border divide-y">{gefilterteSpieler.map(spielerZeile)}</div>
+      )}
     </div>
   );
 }
@@ -3174,9 +3593,159 @@ function Einstellungen({ profil, onProfilGeaendert }) {
         </button>
       </div>
 
+      <SchichtplanEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
+
       <PasswortAendern profil={profil} />
 
       {profil.ist_admin && <AenderungshinweisVerwaltung />}
+    </div>
+  );
+}
+
+/* ---------- Schichtplan im eigenen Profil ---------- */
+
+function SchichtplanEinstellungen({ profil, onProfilGeaendert }) {
+  const [aktiv, setAktiv] = useState(Array.isArray(profil.schicht_rotation) && profil.schicht_rotation.length > 0);
+  const [rotation, setRotation] = useState(
+    Array.isArray(profil.schicht_rotation) && profil.schicht_rotation.length > 0
+      ? profil.schicht_rotation
+      : ["Frühschicht", "Spätschicht", "Nachtschicht"]
+  );
+  const [referenzwoche, setReferenzwoche] = useState(profil.schicht_referenzwoche ?? "");
+  const [sichtbar, setSichtbar] = useState(profil.schicht_sichtbar ?? false);
+  const [hinweis, setHinweis] = useState(profil.schicht_hinweis ?? "");
+  const [gespeichert, setGespeichert] = useState(false);
+  const [ladend, setLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  // Vorschau: welche Schicht habe ich in den nächsten Wochen?
+  const vorschau = (() => {
+    if (!aktiv || !referenzwoche || rotation.length === 0) return [];
+    const start = wochenStart(new Date());
+    if (!start) return [];
+    return Array.from({ length: Math.min(rotation.length, 6) }, (_, i) => {
+      const tag = new Date(start);
+      tag.setDate(tag.getDate() + i * 7);
+      return { tag, schicht: schichtFuerDatum({ schicht_rotation: rotation, schicht_referenzwoche: referenzwoche }, tag) };
+    });
+  })();
+
+  async function speichern() {
+    setFehler(null);
+    if (aktiv && !referenzwoche) return setFehler("Bitte die Startwoche angeben, damit die Rotation berechnet werden kann.");
+    setLadend(true);
+    const werte = aktiv
+      ? { schicht_rotation: rotation, schicht_referenzwoche: referenzwoche, schicht_sichtbar: sichtbar, schicht_hinweis: hinweis.trim() || null }
+      : { schicht_rotation: null, schicht_referenzwoche: null, schicht_sichtbar: false, schicht_hinweis: null };
+    const { error } = await supabase.from("profiles").update(werte).eq("id", profil.id);
+    setLadend(false);
+    if (error) return setFehler(error.message);
+    onProfilGeaendert?.({ ...profil, ...werte });
+    setGespeichert(true);
+    setTimeout(() => setGespeichert(false), 2000);
+  }
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={Clock}>Mein Schichtplan</SectionLabel>
+      <p className="text-xs text-gray-500 mb-3">
+        Wenn du im Schichtsystem arbeitest, kannst du deine Rotation hier hinterlegen. In der Spielerplanung
+        sieht deine Mannschaft dann direkt bei jedem Spieltag, welche Schicht du in der Woche hast.
+      </p>
+
+      <label className="flex items-center gap-2 text-sm mb-3">
+        <input type="checkbox" checked={aktiv} onChange={(e) => setAktiv(e.target.checked)} />
+        Ich arbeite im Schichtsystem
+      </label>
+
+      {aktiv && (
+        <>
+          <label className="block text-xs text-gray-500 mb-1">Rotation (eine Zeile = eine Woche, danach beginnt sie von vorn)</label>
+          <div className="space-y-2 mb-3">
+            {rotation.map((wert, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 w-16 shrink-0">Woche {i + 1}</span>
+                <select
+                  value={wert}
+                  onChange={(e) => setRotation(rotation.map((r, idx) => (idx === i ? e.target.value : r)))}
+                  className="flex-1 border rounded-md px-3 py-2 text-sm"
+                >
+                  {SCHICHT_OPTIONEN.map((o) => <option key={o}>{o}</option>)}
+                </select>
+                {rotation.length > 1 && (
+                  <button
+                    onClick={() => setRotation(rotation.filter((_, idx) => idx !== i))}
+                    className="text-gray-400 hover:text-gray-600 shrink-0"
+                    title="Woche entfernen"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => setRotation([...rotation, "Frühschicht"])}
+            className="text-xs mb-4 flex items-center gap-1"
+            style={{ color: COLORS.petrol }}
+          >
+            <Plus size={13} /> Woche hinzufügen
+          </button>
+
+          <label className="block text-xs text-gray-500 mb-1">
+            Startwoche — in dieser Kalenderwoche gilt „Woche 1" ({rotation[0]})
+          </label>
+          <input
+            type="date"
+            value={referenzwoche}
+            onChange={(e) => setReferenzwoche(e.target.value)}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-1"
+          />
+          <p className="text-[11px] text-gray-400 mb-3">
+            Ein beliebiger Tag aus dieser Woche genügt — gerechnet wird immer ab Montag.
+          </p>
+
+          <label className="block text-xs text-gray-500 mb-1">Zusatzhinweis (optional)</label>
+          <input
+            value={hinweis}
+            onChange={(e) => setHinweis(e.target.value)}
+            placeholder="z. B. Nachtschicht endet Freitag früh, abends spielbereit"
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          />
+
+          {vorschau.length > 0 && (
+            <div className="mb-3">
+              <p className="text-xs text-gray-500 mb-1">Vorschau der nächsten Wochen:</p>
+              <div className="flex flex-wrap gap-2">
+                {vorschau.map(({ tag, schicht }, i) => {
+                  const stil = SCHICHT_STIL[schicht] ?? SCHICHT_STIL["Frei"];
+                  return (
+                    <span key={i} className="px-2 py-1 rounded-md text-[11px] font-semibold" style={{ background: stil.background, color: stil.color }}>
+                      ab {tag.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}: {schicht}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <label className="flex items-center gap-2 text-sm mb-4">
+            <input type="checkbox" checked={sichtbar} onChange={(e) => setSichtbar(e.target.checked)} />
+            Meinen Schichtplan für meine Mannschaft sichtbar machen
+          </label>
+        </>
+      )}
+
+      {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+      {gespeichert && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>Gespeichert ✓</p>}
+      <button
+        onClick={speichern}
+        disabled={ladend}
+        className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+        style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}
+      >
+        {ladend ? "Speichere…" : "Schichtplan speichern"}
+      </button>
     </div>
   );
 }
@@ -4123,6 +4692,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
       <AenderungsPopup profil={profil} />
+      <UmfrageEskalation profil={profil} />
       <aside
         className={`fixed md:static z-20 h-full md:h-auto w-64 transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
         style={{ background: COLORS.petrolDark }}
