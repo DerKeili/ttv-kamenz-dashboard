@@ -454,13 +454,18 @@ function baueOnboardingSchritte(profil) {
       icon: Table2,
       titel: "Tabelle & Ergebnisse",
       text: verwaltet
-        ? "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt. Über \"Jetzt aktualisieren\" holst du dir jederzeit den neuesten Stand. Über die Reiter oben kannst du auch andere Mannschaften des Vereins ansehen."
-        : "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt. Über die Reiter oben kannst du auch die Tabellen der anderen Mannschaften des Vereins ansehen.",
+        ? "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt. Beim Öffnen aktualisiert sich beides von selbst; über \"Jetzt aktualisieren\" holst du dir zusätzlich jederzeit sofort den neuesten Stand. Über die Reiter oben kannst du auch andere Mannschaften des Vereins ansehen."
+        : "Die aktuelle Tabelle und alle Spielergebnisse eurer Liga — automatisch vom Verband geholt und beim Öffnen von selbst aktualisiert. Über die Reiter oben kannst du auch die Tabellen der anderen Mannschaften des Vereins ansehen.",
     },
     {
       icon: ShieldCheck,
       titel: "Spielerplanung",
-      text: "Sag für jedes Spiel Bescheid, ob du Zeit hast: einfach auf dein Feld tippen, um zwischen offen/zugesagt/abgesagt zu wechseln.",
+      text: "Sag für jedes Spiel Bescheid, ob du Zeit hast: einfach auf dein Feld tippen, um zwischen offen/zugesagt/abgesagt zu wechseln. Unten siehst du je Spieltag die Zahl der Zusagen — orange bedeutet, dass noch Spieler fehlen. Violett markierte Spalten heißen: Eine Nachbar-Mannschaft spielt am selben Tag, von dort kann also niemand aushelfen.",
+    },
+    {
+      icon: Clock,
+      titel: "Schichtplan & Kontaktdaten",
+      text: "Wenn du im Schichtsystem arbeitest, kannst du deine Rotation in den Einstellungen hinterlegen (z. B. Woche 1 Früh, Woche 2 Spät, Woche 3 Nacht). In der Spielerplanung sieht deine Mannschaft dann bei jedem Spieltag, welche Schicht du hast — das erspart viel Nachfragen. Ob Schichtplan und Telefonnummer für andere sichtbar sind, entscheidest du selbst.",
     },
     {
       icon: CalendarDays,
@@ -478,8 +483,15 @@ function baueOnboardingSchritte(profil) {
       icon: Vote,
       titel: "Umfragen & Nachrichten",
       text: verwaltet
-        ? "Bei Umfragen einfach abstimmen — oder als " + (admin ? "Admin" : "Mannschaftsführer") + " selbst welche erstellen. Im Nachrichten-Postfach kannst du dich direkt mit anderen Spielern austauschen."
-        : "Bei Umfragen einfach abstimmen. Im Nachrichten-Postfach kannst du dich direkt mit anderen Spielern austauschen.",
+        ? "Bei Umfragen einfach abstimmen — oder als " + (admin ? "Admin" : "Mannschaftsführer") + " selbst welche erstellen. Fehlen einer Mannschaft Spieler, fragt die App automatisch bei der darunter liegenden Mannschaft nach; meldet sich dort in drei Tagen niemand, schlägt sie von allein freie Ausweichtermine für eine Spielverlegung zur Abstimmung vor. Im Nachrichten-Postfach schreibst du direkt mit anderen Spielern, nach Mannschaften sortiert."
+        : "Bei Umfragen einfach abstimmen — manchmal fragt eine andere Mannschaft nach Aushilfe, manchmal geht es um einen Ausweichtermin für ein Spiel. Im Nachrichten-Postfach schreibst du direkt mit anderen Spielern, nach Mannschaften sortiert.",
+    },
+    {
+      icon: Trophy,
+      titel: "Vereinsturniere",
+      text: verwaltet
+        ? "Interne Turniere im Einzel (Schweizer System oder Jeder-gegen-jeden) oder Doppel. Zu jedem Turnier entsteht automatisch eine Anmelde-Umfrage und auf Wunsch ein Kalendertermin. Ergebnisse werden satzweise eingetragen, die Tabelle rechnet live mit."
+        : "Interne Turniere im Einzel oder Doppel: Über die Anmelde-Umfrage sagst du zu, während des Turniers siehst du Spielplan, deine Partien und die Live-Tabelle.",
     },
   ];
 
@@ -487,7 +499,7 @@ function baueOnboardingSchritte(profil) {
     schritte.push({
       icon: Shield,
       titel: "Deine Mannschaftsführer-Rechte",
-      text: "Als Mannschaftsführer bzw. Stellvertreter hast du zwei zusätzliche Reiter: \"Mannschaften\" (Saison-Links wie Tabelle/Spielplan für eure Mannschaft pflegen) und \"Spieler\" (Spieler eurer Mannschaft anlegen, bearbeiten, Passwort zurücksetzen). Das gilt jeweils nur für deine eigene Mannschaft.",
+      text: "Als Mannschaftsführer bzw. Stellvertreter hast du zwei zusätzliche Reiter: \"Mannschaften\" (Saison-Links wie Tabelle/Spielplan für eure Mannschaft pflegen) und \"Spieler\" (Spieler eurer Mannschaft anlegen, bearbeiten, Passwort zurücksetzen). Das gilt jeweils nur für deine eigene Mannschaft. Außerdem kannst du Umfragen und Turniere erstellen und im Dashboard bei Spielermangel eine Aushilfe-Anfrage an die darunter liegende Mannschaft starten.",
     });
   }
 
@@ -495,7 +507,7 @@ function baueOnboardingSchritte(profil) {
     schritte.push({
       icon: Shield,
       titel: "Deine Admin-Rechte",
-      text: "Als Admin hast du vollen Zugriff auf alle Mannschaften: Teams anlegen, Spieler verwalten, Admin-Rechte vergeben, Saison-Links pflegen sowie Umfragen und Termine für alle oder einzelne Mannschaften erstellen — über die Reiter \"Mannschaften\" und \"Spieler\".",
+      text: "Als Admin hast du vollen Zugriff auf alle Mannschaften: Teams anlegen, Spieler verwalten, Admin-Rechte vergeben, Saison-Links pflegen sowie Umfragen, Turniere und Termine für alle oder einzelne Mannschaften erstellen — über die Reiter \"Mannschaften\" und \"Spieler\". In den Einstellungen kannst du außerdem Neuigkeiten verfassen, die allen Spielern beim nächsten Öffnen der App angezeigt werden.",
     });
   }
 
@@ -3594,6 +3606,20 @@ function Einstellungen({ profil, onProfilGeaendert }) {
       </div>
 
       <SchichtplanEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
+
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={GraduationCap}>Einführung</SectionLabel>
+        <p className="text-xs text-gray-500 mb-3">
+          Die Einführung wird laufend erweitert, wenn neue Funktionen dazukommen. Du kannst sie dir jederzeit noch einmal ansehen.
+        </p>
+        <button
+          onClick={() => onProfilGeaendert?.({ ...profil, onboarding_gesehen: false })}
+          className="px-4 py-2 rounded-md text-sm font-semibold border"
+          style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+        >
+          Einführung noch einmal ansehen
+        </button>
+      </div>
 
       <PasswortAendern profil={profil} />
 
