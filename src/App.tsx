@@ -2909,9 +2909,13 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
         </p>
       )}
 
-      {umfrage.anonym && (
+      {umfrage.anonym ? (
         <p className="text-xs mb-2 flex items-center gap-1" style={{ color: "#999" }}>
           <HelpCircle size={12} /> Anonyme Umfrage — niemand sieht, wer wie abgestimmt hat.
+        </p>
+      ) : (
+        <p className="text-xs mb-2 flex items-center gap-1" style={{ color: "#999" }}>
+          <HelpCircle size={12} /> Nicht anonym — dein Name wird bei deiner Antwort angezeigt.
         </p>
       )}
 
@@ -3297,7 +3301,7 @@ function Turniere({ profil }) {
 
   const [form, setForm] = useState({
     titel: "", beschreibung: "", datum: "", typ: "einzel", system: "schweizer_system",
-    saetzeProSpiel: 5, poolA: [], poolB: [], mitUmfrage: true, mitKalender: true,
+    saetzeProSpiel: 5, poolA: [], poolB: [], mitUmfrage: true, mitKalender: true, mitRueckspiel: false,
   });
   const [fehler, setFehler] = useState(null);
   const [speichernLadend, setSpeichernLadend] = useState(false);
@@ -3342,6 +3346,7 @@ function Turniere({ profil }) {
         saetze_pro_spiel: Number(form.saetzeProSpiel),
         doppel_pool_a: form.typ === "doppel" ? form.poolA : null,
         doppel_pool_b: form.typ === "doppel" ? form.poolB : null,
+        mit_rueckspiel: form.typ === "doppel" || form.system === "rundenturnier" ? form.mitRueckspiel : false,
         erstellt_von: profil.id,
       })
       .select()
@@ -3389,7 +3394,7 @@ function Turniere({ profil }) {
 
     setSpeichernLadend(false);
     setFormOffen(false);
-    setForm({ titel: "", beschreibung: "", datum: "", typ: "einzel", system: "schweizer_system", saetzeProSpiel: 5, poolA: [], poolB: [], mitUmfrage: true, mitKalender: true });
+    setForm({ titel: "", beschreibung: "", datum: "", typ: "einzel", system: "schweizer_system", saetzeProSpiel: 5, poolA: [], poolB: [], mitUmfrage: true, mitKalender: true, mitRueckspiel: false });
     laden();
   }
 
@@ -3484,6 +3489,13 @@ function Turniere({ profil }) {
                   <option value={5}>3 Gewinnsätze (Standard)</option>
                 </select>
               </div>
+
+              {(form.typ === "doppel" || form.system === "rundenturnier") && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={form.mitRueckspiel} onChange={(e) => setForm({ ...form, mitRueckspiel: e.target.checked })} />
+                  Hin- und Rückspiel (jede Paarung spielt zweimal, mit vertauschten Seiten)
+                </label>
+              )}
 
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={form.mitUmfrage} onChange={(e) => setForm({ ...form, mitUmfrage: e.target.checked })} />
@@ -3633,11 +3645,14 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
     for (let i = 0; i < eingefuegtePaare.length; i++) {
       for (let j = i + 1; j < eingefuegtePaare.length; j++) {
         spieleNeu.push({ turnier_id: turnierId, runde: 1, paar_a_id: eingefuegtePaare[i].id, paar_b_id: eingefuegtePaare[j].id });
+        if (turnier.mit_rueckspiel) {
+          spieleNeu.push({ turnier_id: turnierId, runde: 2, paar_a_id: eingefuegtePaare[j].id, paar_b_id: eingefuegtePaare[i].id });
+        }
       }
     }
     if (spieleNeu.length > 0) await supabase.from("turnier_spiele").insert(spieleNeu);
 
-    await supabase.from("turniere").update({ status: "laufend", aktuelle_runde: 1 }).eq("id", turnierId);
+    await supabase.from("turniere").update({ status: "laufend", aktuelle_runde: turnier.mit_rueckspiel ? 2 : 1 }).eq("id", turnierId);
     setAktionLadend(false);
     laden();
   }
@@ -3648,12 +3663,15 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
     for (let i = 0; i < teilnehmerListe.length; i++) {
       for (let j = i + 1; j < teilnehmerListe.length; j++) {
         spieleNeu.push({ turnier_id: turnierId, runde: 1, spieler_a_id: teilnehmerListe[i].id, spieler_b_id: teilnehmerListe[j].id });
+        if (turnier.mit_rueckspiel) {
+          spieleNeu.push({ turnier_id: turnierId, runde: 2, spieler_a_id: teilnehmerListe[j].id, spieler_b_id: teilnehmerListe[i].id });
+        }
       }
     }
     if (spieleNeu.length === 0) return;
     setAktionLadend(true);
     await supabase.from("turnier_spiele").insert(spieleNeu);
-    await supabase.from("turniere").update({ status: "laufend", aktuelle_runde: 1 }).eq("id", turnierId);
+    await supabase.from("turniere").update({ status: "laufend", aktuelle_runde: turnier.mit_rueckspiel ? 2 : 1 }).eq("id", turnierId);
     setAktionLadend(false);
     laden();
   }
@@ -3714,6 +3732,7 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
         <p className="text-xs text-gray-400 mt-2">
           {istDoppel ? "Doppel" : turnier.system === "schweizer_system" ? "Einzel · Schweizer System" : "Einzel · Jeder gegen Jeden"}
           {turnier.datum ? ` · ${formatDatum(turnier.datum)}` : ""} · {mehrheitSaetze(turnier.saetze_pro_spiel)} Gewinnsätze
+          {turnier.mit_rueckspiel ? " · Hin- und Rückspiel" : ""}
         </p>
         {darfTurniereVerwalten(profil) && turnier.status === "laufend" && (
           <button onClick={turnierAbschliessen} className="text-xs underline mt-2" style={{ color: COLORS.orangeDeep }}>Turnier abschließen</button>
@@ -3795,7 +3814,11 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
           <div className="space-y-4">
             {rundenNummern.map((runde) => (
               <div key={runde} className="bg-white rounded-lg border p-5">
-                <SectionLabel icon={ShieldCheck}>{istDoppel ? "Spiele" : `Runde ${runde}`}</SectionLabel>
+                <SectionLabel icon={ShieldCheck}>
+                  {turnier.mit_rueckspiel && (istDoppel || turnier.system === "rundenturnier")
+                    ? (runde === 1 ? "Hinspiel" : runde === 2 ? "Rückspiel" : `Runde ${runde}`)
+                    : istDoppel ? "Spiele" : `Runde ${runde}`}
+                </SectionLabel>
                 <div className="divide-y">
                   {spiele.filter((s) => s.runde === runde).map((s) => (
                     <SpielZeile
@@ -3943,7 +3966,16 @@ function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) 
           className="w-14 border rounded-md px-1 py-1 text-sm text-center"
         />
         <button type="button" onClick={() => punktAendern(index, seite, 1)} className="w-7 h-7 rounded-md border text-gray-500 shrink-0 flex items-center justify-center">+</button>
-        <button type="button" onClick={() => setSaetze(saetze.map((x, j) => (j === index ? { ...x, [seite]: "11" } : x)))} className="text-[10px] px-1.5 py-1 rounded-md border text-gray-500 shrink-0">11</button>
+        <button
+          type="button"
+          onClick={() => {
+            const gegnerseite = seite === "a" ? "b" : "a";
+            setSaetze(saetze.map((x, j) => (j === index ? { ...x, [seite]: "11", [gegnerseite]: "9" } : x)));
+          }}
+          className="text-[10px] px-1.5 py-1 rounded-md border text-gray-500 shrink-0"
+        >
+          11
+        </button>
       </div>
     );
   }
@@ -4000,8 +4032,8 @@ const NAV_BASIS = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "tabelle", label: "Tabelle", icon: Table2 },
   { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
-  { key: "turniere", label: "Vereinsturniere", icon: Award },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
+  { key: "turniere", label: "Vereinsturniere", icon: Award },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
   { key: "umfragen", label: "Umfragen", icon: Vote },
