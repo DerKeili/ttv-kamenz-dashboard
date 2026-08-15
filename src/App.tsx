@@ -1857,7 +1857,7 @@ function Kalender({ profil }) {
 
             <div>
               <label className="block text-xs text-gray-400 mb-1">Datum</label>
-              <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              <input type="date" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Uhrzeit</label>
@@ -2745,9 +2745,9 @@ function Spielerverwaltung({ profil }) {
             <label className="block text-xs text-gray-400 mb-1">Nachname *</label>
             <input placeholder="Nachname" value={form.nachname} onChange={(e) => setForm({ ...form, nachname: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 overflow-hidden">
             <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
-            <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+            <input type="date" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
           <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">E-Mail *</label>
@@ -2839,9 +2839,9 @@ function Spielerverwaltung({ profil }) {
                       <label className="block text-xs text-gray-400 mb-1">Nachname</label>
                       <input value={bearbeiteSpielerForm.nachname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, nachname: e.target.value })} placeholder="Nachname" className="w-full border rounded-md px-3 py-2 text-sm" />
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 overflow-hidden">
                       <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
-                      <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+                      <input type="date" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
                     </div>
                     <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">E-Mail</label>
@@ -4136,7 +4136,7 @@ function Turniere({ profil }) {
               <textarea placeholder="Beschreibung (optional)" value={form.beschreibung} onChange={(e) => setForm({ ...form, beschreibung: e.target.value })} rows={2} className="w-full border rounded-md px-3 py-2 text-sm" />
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Datum (optional)</label>
-                <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+                <input type="date" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
               </div>
 
               <div>
