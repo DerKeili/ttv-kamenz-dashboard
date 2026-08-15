@@ -1035,6 +1035,11 @@ function Spielerplanung({ saison, profil }) {
       </div>
       {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
 
+      <p className="text-xs text-gray-400 flex items-center gap-1 landscape:hidden md:hidden">
+        <HelpCircle size={12} className="shrink-0" />
+        Tipp: Im Querformat siehst du mehr Spieltage gleichzeitig — dreh dein Handy zum Planen am besten quer.
+      </p>
+
       {spiele.length === 0 ? (
         <Leerzustand text={`Noch keine Spiele für die ${runde} hinterlegt.`} />
       ) : (
@@ -3412,9 +3417,9 @@ function Turniere({ profil }) {
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Sätze pro Spiel</label>
                 <select value={form.saetzeProSpiel} onChange={(e) => setForm({ ...form, saetzeProSpiel: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                  <option value={1}>1 Gewinnsatz (schnelles Spiel)</option>
                   <option value={3}>2 Gewinnsätze</option>
                   <option value={5}>3 Gewinnsätze (Standard)</option>
-                  <option value={7}>4 Gewinnsätze</option>
                 </select>
               </div>
 
@@ -3526,6 +3531,14 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
     laden();
   }
 
+  async function alleSpielerHinzufuegen() {
+    if (nichtTeilnehmer.length === 0) return;
+    setAktionLadend(true);
+    await supabase.from("turnier_teilnehmer").insert(nichtTeilnehmer.map((s) => ({ turnier_id: turnierId, spieler_id: s.id })));
+    setAktionLadend(false);
+    laden();
+  }
+
   async function teilnehmerEntfernen(id) {
     await supabase.from("turnier_teilnehmer").delete().eq("id", id);
     laden();
@@ -3628,7 +3641,7 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
   const tabelle = istDoppel ? berechneDoppelTabelle(paare.map((p) => ({ id: p.id, name: paarNamen[p.id] })), spiele) : berechneEinzelTabelle(teilnehmerIds, spiele, spielerNamen);
 
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-4 max-w-5xl">
       <button onClick={onZurueck} className="text-xs flex items-center gap-1" style={{ color: COLORS.petrol }}>
         <ArrowLeft size={14} /> Zurück zu allen Turnieren
       </button>
@@ -3671,12 +3684,17 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
           {teilnehmer.length === 0 && <p className="text-sm text-gray-400">Noch keine Teilnehmer.</p>}
         </div>
         {darf && turnier.status === "anmeldung_offen" && nichtTeilnehmer.length > 0 && (
-          <div className="flex gap-2">
-            <select value={neuerTeilnehmerId} onChange={(e) => setNeuerTeilnehmerId(e.target.value)} className="flex-1 border rounded-md px-3 py-2 text-sm">
-              <option value="">Spieler manuell hinzufügen…</option>
-              {nichtTeilnehmer.map((s) => <option key={s.id} value={s.id}>{s.vorname} {s.nachname}</option>)}
-            </select>
-            <button onClick={teilnehmerHinzufuegen} className="px-3 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>+</button>
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <select value={neuerTeilnehmerId} onChange={(e) => setNeuerTeilnehmerId(e.target.value)} className="flex-1 border rounded-md px-3 py-2 text-sm">
+                <option value="">Spieler manuell hinzufügen…</option>
+                {nichtTeilnehmer.map((s) => <option key={s.id} value={s.id}>{s.vorname} {s.nachname}</option>)}
+              </select>
+              <button onClick={teilnehmerHinzufuegen} className="px-3 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.petrol }}>+</button>
+            </div>
+            <button onClick={alleSpielerHinzufuegen} className="text-xs underline" style={{ color: COLORS.petrol }}>
+              Alle {nichtTeilnehmer.length} verbleibenden Vereinsspieler auf einmal hinzufügen
+            </button>
           </div>
         )}
       </div>
@@ -3710,58 +3728,60 @@ function TurnierDetail({ turnierId, profil, onZurueck }) {
         </div>
       )}
 
-      {spiele.length > 0 && (
-        <div className="space-y-4">
-          {rundenNummern.map((runde) => (
-            <div key={runde} className="bg-white rounded-lg border p-5">
-              <SectionLabel icon={ShieldCheck}>{istDoppel ? "Spiele" : `Runde ${runde}`}</SectionLabel>
-              <div className="divide-y">
-                {spiele.filter((s) => s.runde === runde).map((s) => (
-                  <SpielZeile
-                    key={s.id}
-                    spiel={s}
-                    nameA={istDoppel ? paarNamen[s.paar_a_id] : spielerNamen[s.spieler_a_id]}
-                    nameB={s.ist_freilos ? "Freilos" : istDoppel ? paarNamen[s.paar_b_id] : spielerNamen[s.spieler_b_id]}
-                    saetzeProSpiel={turnier.saetze_pro_spiel}
-                    darf={darf}
-                    onSpeichern={(saetze) => ergebnisSpeichern(s.id, saetze)}
-                  />
-                ))}
+      <div className="md:grid md:grid-cols-2 md:gap-4 md:items-start space-y-4 md:space-y-0">
+        {spiele.length > 0 && (
+          <div className="space-y-4">
+            {rundenNummern.map((runde) => (
+              <div key={runde} className="bg-white rounded-lg border p-5">
+                <SectionLabel icon={ShieldCheck}>{istDoppel ? "Spiele" : `Runde ${runde}`}</SectionLabel>
+                <div className="divide-y">
+                  {spiele.filter((s) => s.runde === runde).map((s) => (
+                    <SpielZeile
+                      key={s.id}
+                      spiel={s}
+                      nameA={istDoppel ? paarNamen[s.paar_a_id] : spielerNamen[s.spieler_a_id]}
+                      nameB={s.ist_freilos ? "Freilos" : istDoppel ? paarNamen[s.paar_b_id] : spielerNamen[s.spieler_b_id]}
+                      saetzeProSpiel={turnier.saetze_pro_spiel}
+                      darf={darf}
+                      onSpeichern={(saetze) => ergebnisSpeichern(s.id, saetze)}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
 
-      {tabelle.length > 0 && tabelle.some((r) => r.siege > 0 || r.niederlagen > 0) && (
-        <div className="bg-white rounded-lg border p-5 overflow-x-auto">
-          <SectionLabel icon={Trophy}>Tabelle</SectionLabel>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-gray-400 border-b">
-                <th className="py-2 pr-2">#</th>
-                <th className="py-2 pr-2">Name</th>
-                <th className="py-2 px-2 text-center">Siege</th>
-                <th className="py-2 px-2 text-center">Sätze</th>
-                <th className="py-2 px-2 text-center">Bälle</th>
-                {!istDoppel && turnier.system === "schweizer_system" && <th className="py-2 px-2 text-center">Buchholz</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {tabelle.map((r, i) => (
-                <tr key={r.id} className="border-b last:border-0">
-                  <td className="py-2 pr-2 text-gray-400">{i + 1}</td>
-                  <td className="py-2 pr-2 font-medium">{r.name}</td>
-                  <td className="py-2 px-2 text-center">{r.siege}-{r.niederlagen}</td>
-                  <td className="py-2 px-2 text-center">{r.saetzeFuer}:{r.saetzeGegen}</td>
-                  <td className="py-2 px-2 text-center">{r.ballFuer}:{r.ballGegen}</td>
-                  {!istDoppel && turnier.system === "schweizer_system" && <td className="py-2 px-2 text-center">{r.buchholz}</td>}
+        {tabelle.length > 0 && tabelle.some((r) => r.siege > 0 || r.niederlagen > 0) && (
+          <div className="bg-white rounded-lg border p-5 overflow-x-auto md:sticky md:top-4">
+            <SectionLabel icon={Trophy}>Tabelle {turnier.status !== "abgeschlossen" && <span className="text-xs font-normal text-gray-400">(live)</span>}</SectionLabel>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-gray-400 border-b">
+                  <th className="py-2 pr-2">#</th>
+                  <th className="py-2 pr-2">Name</th>
+                  <th className="py-2 px-2 text-center">Siege</th>
+                  <th className="py-2 px-2 text-center">Sätze</th>
+                  <th className="py-2 px-2 text-center">Bälle</th>
+                  {!istDoppel && turnier.system === "schweizer_system" && <th className="py-2 px-2 text-center">Buchholz</th>}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {tabelle.map((r, i) => (
+                  <tr key={r.id} className="border-b last:border-0">
+                    <td className="py-2 pr-2 text-gray-400">{i + 1}</td>
+                    <td className="py-2 pr-2 font-medium">{r.name}</td>
+                    <td className="py-2 px-2 text-center">{r.siege}-{r.niederlagen}</td>
+                    <td className="py-2 px-2 text-center">{r.saetzeFuer}:{r.saetzeGegen}</td>
+                    <td className="py-2 px-2 text-center">{r.ballFuer}:{r.ballGegen}</td>
+                    {!istDoppel && turnier.system === "schweizer_system" && <td className="py-2 px-2 text-center">{r.buchholz}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3851,7 +3871,7 @@ const NAV_BASIS = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "tabelle", label: "Tabelle", icon: Table2 },
   { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
-  { key: "turniere", label: "Turniere", icon: Award },
+  { key: "turniere", label: "Vereinsturniere", icon: Award },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
@@ -3922,7 +3942,7 @@ export default function App() {
     dashboard: "Dashboard",
     tabelle: "Aktuelle Tabelle",
     ergebnisse: "Ergebnisse",
-    turniere: "Turniere",
+    turniere: "Vereinsturniere",
     planung: "Spielerplanung",
     kalender: "Ereigniskalender",
     kader: "Kader",
