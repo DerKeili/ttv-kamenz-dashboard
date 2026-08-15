@@ -2589,7 +2589,9 @@ function Spielerverwaltung({ profil }) {
       geburtstag: s.geburtstag ?? "",
       email: s.email,
       rang: s.rang,
-      mannschaftId: s.mannschaft_id ?? "",
+      // Bereits vorhandene "keine Mannschaft" als bewusste Auswahl darstellen,
+      // damit sie sich von "noch nichts gewählt" unterscheidet
+      mannschaftId: s.mannschaft_id ?? (profil.ist_admin ? "ohne" : ""),
       istAdmin: s.ist_admin ?? false,
     });
   }
@@ -2598,7 +2600,11 @@ function Spielerverwaltung({ profil }) {
     setSpielerBearbeitenFehler(null);
     setSpielerBearbeitenLadend(true);
     const { data, error } = await supabase.functions.invoke("update-spieler", {
-      body: { spielerId: bearbeiteSpielerId, ...bearbeiteSpielerForm },
+      body: {
+        spielerId: bearbeiteSpielerId,
+        ...bearbeiteSpielerForm,
+        mannschaftId: bearbeiteSpielerForm.mannschaftId === "ohne" ? null : bearbeiteSpielerForm.mannschaftId,
+      },
     });
     setSpielerBearbeitenLadend(false);
     if (error || data?.error) {
@@ -2665,7 +2671,7 @@ function Spielerverwaltung({ profil }) {
   async function spielerAnlegen() {
     setFehler(null);
     if (!form.vorname || !form.nachname || !form.email || !form.mannschaftId) {
-      return setFehler("Bitte alle Pflichtfelder ausfüllen (Vorname, Nachname, E-Mail, Mannschaft).");
+      return setFehler("Bitte alle Pflichtfelder ausfüllen (Vorname, Nachname, E-Mail, Mannschaft — „Nicht zugewiesen" ist ebenfalls eine gültige Auswahl).");
     }
     setLadend(true);
     const einmalig = generierePasswort();
@@ -2679,7 +2685,7 @@ function Spielerverwaltung({ profil }) {
         telefonHandy: form.telefonHandy,
         telefonFestnetz: form.telefonFestnetz,
         rang: form.rang,
-        mannschaftId: form.mannschaftId,
+        mannschaftId: form.mannschaftId === "ohne" ? null : form.mannschaftId,
         einmalpasswort: einmalig,
       },
     });
@@ -2731,25 +2737,47 @@ function Spielerverwaltung({ profil }) {
           </p>
         )}
         <div className="grid sm:grid-cols-2 gap-3 mb-3">
-          <input placeholder="Vorname" value={form.vorname} onChange={(e) => setForm({ ...form, vorname: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
-          <input placeholder="Nachname" value={form.nachname} onChange={(e) => setForm({ ...form, nachname: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Vorname *</label>
+            <input placeholder="Vorname" value={form.vorname} onChange={(e) => setForm({ ...form, vorname: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Nachname *</label>
+            <input placeholder="Nachname" value={form.nachname} onChange={(e) => setForm({ ...form, nachname: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+          </div>
           <div>
             <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
             <input type="date" value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <input placeholder="E-Mail" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
-          <input placeholder="Handynummer (optional)" value={form.telefonHandy} onChange={(e) => setForm({ ...form, telefonHandy: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
-          <input placeholder="Festnetznummer (optional)" value={form.telefonFestnetz} onChange={(e) => setForm({ ...form, telefonFestnetz: e.target.value })} className="border rounded-md px-3 py-2 text-sm" />
-          <select value={form.rang} onChange={(e) => setForm({ ...form, rang: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
-            <option>Mannschaftsführer</option>
-            <option>stellv. Mannschaftsführer</option>
-            <option>Spieler</option>
-            <option>Ersatz</option>
-          </select>
-          <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
-            <option value="">Mannschaft wählen…</option>
-            {sichtbareMannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">E-Mail *</label>
+            <input placeholder="E-Mail" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Handynummer</label>
+            <input placeholder="optional" value={form.telefonHandy} onChange={(e) => setForm({ ...form, telefonHandy: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Festnetznummer</label>
+            <input placeholder="optional" value={form.telefonFestnetz} onChange={(e) => setForm({ ...form, telefonFestnetz: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Rolle</label>
+            <select value={form.rang} onChange={(e) => setForm({ ...form, rang: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+              <option>Mannschaftsführer</option>
+              <option>stellv. Mannschaftsführer</option>
+              <option>Spieler</option>
+              <option>Ersatz</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Mannschaft *</label>
+            <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+              <option value="">Mannschaft wählen…</option>
+              {sichtbareMannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {profil.ist_admin && <option value="ohne">Nicht zugewiesen</option>}
+            </select>
+          </div>
         </div>
         <p className="text-xs text-gray-400 mb-3">Hinweis: Ob Telefonnummer und E-Mail für andere Spieler sichtbar sind, entscheidet jeder Spieler selbst in seinen Einstellungen.</p>
         {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
@@ -2803,23 +2831,39 @@ function Spielerverwaltung({ profil }) {
               return (
                 <div key={s.id} className="py-3 space-y-2">
                   <div className="grid sm:grid-cols-2 gap-2">
-                    <input value={bearbeiteSpielerForm.vorname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, vorname: e.target.value })} placeholder="Vorname" className="border rounded-md px-3 py-2 text-sm" />
-                    <input value={bearbeiteSpielerForm.nachname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, nachname: e.target.value })} placeholder="Nachname" className="border rounded-md px-3 py-2 text-sm" />
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Vorname</label>
+                      <input value={bearbeiteSpielerForm.vorname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, vorname: e.target.value })} placeholder="Vorname" className="w-full border rounded-md px-3 py-2 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Nachname</label>
+                      <input value={bearbeiteSpielerForm.nachname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, nachname: e.target.value })} placeholder="Nachname" className="w-full border rounded-md px-3 py-2 text-sm" />
+                    </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
                       <input type="date" value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
                     </div>
-                    <input value={bearbeiteSpielerForm.email} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, email: e.target.value })} placeholder="E-Mail" className="border rounded-md px-3 py-2 text-sm" />
-                    <select value={bearbeiteSpielerForm.rang} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, rang: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
-                      <option>Mannschaftsführer</option>
-                      <option>stellv. Mannschaftsführer</option>
-                      <option>Spieler</option>
-                      <option>Ersatz</option>
-                    </select>
-                    <select value={bearbeiteSpielerForm.mannschaftId} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, mannschaftId: e.target.value })} className="border rounded-md px-3 py-2 text-sm">
-                      <option value="">Mannschaft wählen…</option>
-                      {sichtbareMannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                    </select>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">E-Mail</label>
+                      <input value={bearbeiteSpielerForm.email} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, email: e.target.value })} placeholder="E-Mail" className="w-full border rounded-md px-3 py-2 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Rolle</label>
+                      <select value={bearbeiteSpielerForm.rang} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, rang: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                        <option>Mannschaftsführer</option>
+                        <option>stellv. Mannschaftsführer</option>
+                        <option>Spieler</option>
+                        <option>Ersatz</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Mannschaft</label>
+                      <select value={bearbeiteSpielerForm.mannschaftId} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                        <option value="">Mannschaft wählen…</option>
+                        {sichtbareMannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        {profil.ist_admin && <option value="ohne">Nicht zugewiesen</option>}
+                      </select>
+                    </div>
                   </div>
                   {profil.ist_admin && (
                     <label className="flex items-center gap-2 text-sm">
