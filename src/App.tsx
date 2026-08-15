@@ -946,7 +946,7 @@ function UmfrageEskalation({ profil }) {
         if (empfaengerIds.length > 0) {
           await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: verlegung.id, spieler_id })));
           supabase.functions.invoke("notify-neue-umfrage", {
-            body: { titel: verlegung.titel, empfaengerIds },
+            body: { titel: verlegung.titel, beschreibung: verlegung.beschreibung, empfaengerIds },
           }); // bewusst nicht awaited
         }
       }
@@ -3025,7 +3025,7 @@ function Umfragen({ profil, zielUmfrageId }) {
     }
 
     supabase.functions.invoke("notify-neue-umfrage", {
-      body: { titel: form.titel.trim(), empfaengerIds },
+      body: { titel: form.titel.trim(), beschreibung: form.beschreibung.trim() || null, empfaengerIds },
     }); // bewusst nicht awaited
 
     setSpeichernLadend(false);
@@ -3605,6 +3605,8 @@ function Einstellungen({ profil, onProfilGeaendert }) {
         </button>
       </div>
 
+      <EmailEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
+
       <SchichtplanEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
 
       <div className="bg-white rounded-lg border p-5">
@@ -3624,6 +3626,74 @@ function Einstellungen({ profil, onProfilGeaendert }) {
       <PasswortAendern profil={profil} />
 
       {profil.ist_admin && <AenderungshinweisVerwaltung />}
+    </div>
+  );
+}
+
+/* ---------- E-Mail-Benachrichtigungen ---------- */
+
+const EMAIL_ARTEN = [
+  { feld: "email_umfragen", titel: "Neue Umfragen", text: "Wenn eine Umfrage startet, die dich betrifft — auch Aushilfe-Anfragen und Terminvorschläge zur Spielverlegung." },
+  { feld: "email_nachrichten", titel: "Neue Nachrichten", text: "Wenn dir jemand im Postfach schreibt. Höchstens eine Mail pro Stunde und Absender." },
+  { feld: "email_termine", titel: "Neue Termine", text: "Wenn ein Training, Spiel oder anderer Termin für deine Mannschaft angelegt wird." },
+  { feld: "email_spielplan", titel: "Warnung bei zu wenigen Zusagen", text: "Nur für Mannschaftsführer: Hinweis, wenn für ein Spiel zu wenige Spieler zugesagt haben." },
+];
+
+function EmailEinstellungen({ profil, onProfilGeaendert }) {
+  const [werte, setWerte] = useState(() =>
+    Object.fromEntries(EMAIL_ARTEN.map((a) => [a.feld, profil[a.feld] ?? true]))
+  );
+  const [gespeichert, setGespeichert] = useState(false);
+  const [ladend, setLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  const relevanteArten = EMAIL_ARTEN.filter(
+    (a) => a.feld !== "email_spielplan" || profil.ist_admin || istTeamLeiter(profil)
+  );
+
+  async function speichern() {
+    setFehler(null);
+    setLadend(true);
+    const { error } = await supabase.from("profiles").update(werte).eq("id", profil.id);
+    setLadend(false);
+    if (error) return setFehler(error.message);
+    onProfilGeaendert?.({ ...profil, ...werte });
+    setGespeichert(true);
+    setTimeout(() => setGespeichert(false), 2000);
+  }
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={Bell}>E-Mail-Benachrichtigungen</SectionLabel>
+      <p className="text-xs text-gray-500 mb-3">
+        Die Mails gehen an <span className="font-medium">{profil.email}</span>. Du entscheidest selbst, worüber du informiert wirst.
+      </p>
+      <div className="space-y-3 mb-4">
+        {relevanteArten.map((a) => (
+          <label key={a.feld} className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={werte[a.feld]}
+              onChange={(e) => setWerte({ ...werte, [a.feld]: e.target.checked })}
+              className="mt-1"
+            />
+            <span>
+              <span className="font-medium">{a.titel}</span>
+              <span className="block text-xs text-gray-500">{a.text}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+      {gespeichert && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>Gespeichert ✓</p>}
+      <button
+        onClick={speichern}
+        disabled={ladend}
+        className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+        style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}
+      >
+        {ladend ? "Speichere…" : "Speichern"}
+      </button>
     </div>
   );
 }
