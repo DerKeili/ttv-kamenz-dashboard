@@ -1857,7 +1857,7 @@ function Kalender({ profil }) {
 
             <div>
               <label className="block text-xs text-gray-400 mb-1">Datum</label>
-              <input type="date" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Uhrzeit</label>
@@ -2671,7 +2671,7 @@ function Spielerverwaltung({ profil }) {
   async function spielerAnlegen() {
     setFehler(null);
     if (!form.vorname || !form.nachname || !form.email || !form.mannschaftId) {
-      return setFehler("Bitte alle Pflichtfelder ausfüllen (Vorname, Nachname, E-Mail, Mannschaft \u201eNicht zugewiesen\u201c ist dabei ebenfalls eine gültige Auswahl).");
+      return setFehler("Bitte alle Pflichtfelder ausfüllen: Vorname, Nachname, E-Mail und Mannschaft. Auch 'Nicht zugewiesen' ist eine gültige Auswahl.");
     }
     setLadend(true);
     const einmalig = generierePasswort();
@@ -2737,31 +2737,31 @@ function Spielerverwaltung({ profil }) {
           </p>
         )}
         <div className="grid sm:grid-cols-2 gap-3 mb-3">
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Vorname *</label>
             <input placeholder="Vorname" value={form.vorname} onChange={(e) => setForm({ ...form, vorname: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Nachname *</label>
             <input placeholder="Nachname" value={form.nachname} onChange={(e) => setForm({ ...form, nachname: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
-            <input type="date" value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+            <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={form.geburtstag} onChange={(e) => setForm({ ...form, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">E-Mail *</label>
             <input placeholder="E-Mail" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Handynummer</label>
             <input placeholder="optional" value={form.telefonHandy} onChange={(e) => setForm({ ...form, telefonHandy: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Festnetznummer</label>
             <input placeholder="optional" value={form.telefonFestnetz} onChange={(e) => setForm({ ...form, telefonFestnetz: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Rolle</label>
             <select value={form.rang} onChange={(e) => setForm({ ...form, rang: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
               <option>Mannschaftsführer</option>
@@ -2770,7 +2770,7 @@ function Spielerverwaltung({ profil }) {
               <option>Ersatz</option>
             </select>
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Mannschaft *</label>
             <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
               <option value="">Mannschaft wählen…</option>
@@ -2831,23 +2831,23 @@ function Spielerverwaltung({ profil }) {
               return (
                 <div key={s.id} className="py-3 space-y-2">
                   <div className="grid sm:grid-cols-2 gap-2">
-                    <div>
+                    <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">Vorname</label>
                       <input value={bearbeiteSpielerForm.vorname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, vorname: e.target.value })} placeholder="Vorname" className="w-full border rounded-md px-3 py-2 text-sm" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">Nachname</label>
                       <input value={bearbeiteSpielerForm.nachname} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, nachname: e.target.value })} placeholder="Nachname" className="w-full border rounded-md px-3 py-2 text-sm" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">Geburtsdatum</label>
-                      <input type="date" value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+                      <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={bearbeiteSpielerForm.geburtstag} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, geburtstag: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">E-Mail</label>
                       <input value={bearbeiteSpielerForm.email} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, email: e.target.value })} placeholder="E-Mail" className="w-full border rounded-md px-3 py-2 text-sm" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">Rolle</label>
                       <select value={bearbeiteSpielerForm.rang} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, rang: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
                         <option>Mannschaftsführer</option>
@@ -2856,7 +2856,7 @@ function Spielerverwaltung({ profil }) {
                         <option>Ersatz</option>
                       </select>
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">Mannschaft</label>
                       <select value={bearbeiteSpielerForm.mannschaftId} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
                         <option value="">Mannschaft wählen…</option>
@@ -3837,6 +3837,7 @@ function SchichtplanEinstellungen({ profil, onProfilGeaendert }) {
           </label>
           <input
             type="date"
+            style={{ minWidth: 0 }}
             value={referenzwoche}
             onChange={(e) => setReferenzwoche(e.target.value)}
             className="w-full border rounded-md px-3 py-2 text-sm mb-1"
@@ -4135,7 +4136,7 @@ function Turniere({ profil }) {
               <textarea placeholder="Beschreibung (optional)" value={form.beschreibung} onChange={(e) => setForm({ ...form, beschreibung: e.target.value })} rows={2} className="w-full border rounded-md px-3 py-2 text-sm" />
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Datum (optional)</label>
-                <input type="date" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+                <input type="date" style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
               </div>
 
               <div>
