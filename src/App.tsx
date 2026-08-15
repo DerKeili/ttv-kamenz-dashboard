@@ -2671,7 +2671,7 @@ function Spielerverwaltung({ profil }) {
   async function spielerAnlegen() {
     setFehler(null);
     if (!form.vorname || !form.nachname || !form.email || !form.mannschaftId) {
-      return setFehler("Bitte alle Pflichtfelder ausfüllen (Vorname, Nachname, E-Mail, Mannschaft — „Nicht zugewiesen" ist ebenfalls eine gültige Auswahl).");
+      return setFehler("Bitte alle Pflichtfelder ausfüllen (Vorname, Nachname, E-Mail, Mannschaft \u201eNicht zugewiesen\u201c ist dabei ebenfalls eine gültige Auswahl).");
     }
     setLadend(true);
     const einmalig = generierePasswort();
