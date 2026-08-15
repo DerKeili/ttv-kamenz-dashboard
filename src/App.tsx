@@ -68,6 +68,13 @@ function berechneMatchAusSaetzen(saetze) {
   return { saetze_a: a, saetze_b: b };
 }
 
+// Ein Satz ist erst abgeschlossen, wenn eine Seite mind. 11 Punkte UND mind. 2 Punkte Vorsprung hat
+function istSatzGueltig(satz) {
+  const a = Number(satz.a), b = Number(satz.b);
+  if (satz.a === "" || satz.b === "" || Number.isNaN(a) || Number.isNaN(b)) return false;
+  return Math.max(a, b) >= 11 && Math.abs(a - b) >= 2;
+}
+
 // Vereinfachtes Schweizer System: nach Punkten sortieren, dann von oben nach unten
 // den nächsten noch nicht gespielten Gegner zuweisen. Bei ungerader Anzahl: Freilos
 // an den zuletzt platzierten Teilnehmer ohne bisheriges Freilos.
@@ -929,6 +936,7 @@ function Spielerplanung({ saison, profil }) {
   const [spieler, setSpieler] = useState([]);
   const [meldungen, setMeldungen] = useState({}); // { [spielId]: { [spielerId]: status } }
   const [benoetigteSpieler, setBenoetigteSpieler] = useState(4);
+  const [ueberschneidungen, setUeberschneidungen] = useState({}); // { [datumTag]: [{mannschaftName, gegner, istHeimspiel}] }
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
@@ -949,10 +957,45 @@ function Spielerplanung({ saison, profil }) {
     (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
     (meldungenDaten ?? []).forEach((m) => { if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status; });
     setMeldungen(map);
+
     if (saison.mannschaft_id) {
-      const { data: mannschaft } = await supabase.from("mannschaften").select("benoetigte_spieler").eq("id", saison.mannschaft_id).single();
+      const { data: mannschaft } = await supabase.from("mannschaften").select("benoetigte_spieler, hierarchie_stufe").eq("id", saison.mannschaft_id).single();
       setBenoetigteSpieler(mannschaft?.benoetigte_spieler ?? 4);
+
+      // Terminüberschneidungen mit direkten Nachbar-Mannschaften prüfen (1.↔2., 2.↔3. usw.) —
+      // wichtig, weil Mannschaften bei Spielermangel oft bei der Nachbar-Mannschaft aushelfen.
+      if (mannschaft?.hierarchie_stufe != null) {
+        const { data: alleMannschaften } = await supabase.from("mannschaften").select("id, name, hierarchie_stufe");
+        const nachbarn = (alleMannschaften ?? []).filter(
+          (m) => m.hierarchie_stufe != null && Math.abs(m.hierarchie_stufe - mannschaft.hierarchie_stufe) === 1
+        );
+
+        const eintraege = {};
+        for (const nachbar of nachbarn) {
+          const { data: nachbarSaison } = await supabase.from("saisons").select("id").eq("mannschaft_id", nachbar.id).eq("aktiv", true).maybeSingle();
+          if (!nachbarSaison) continue;
+          const { data: nachbarSpiele } = await supabase
+            .from("verbands_spiele")
+            .select("datum, heimteam, gastteam, ist_heimspiel")
+            .eq("saison_id", nachbarSaison.id)
+            .eq("runde", runde);
+          (nachbarSpiele ?? []).forEach((s) => {
+            if (!s.datum) return;
+            const tag = s.datum.slice(0, 10);
+            if (!eintraege[tag]) eintraege[tag] = [];
+            eintraege[tag].push({
+              mannschaftName: nachbar.name,
+              gegner: s.ist_heimspiel ? s.gastteam : s.heimteam,
+              istHeimspiel: s.ist_heimspiel,
+            });
+          });
+        }
+        setUeberschneidungen(eintraege);
+      } else {
+        setUeberschneidungen({});
+      }
     }
+
     setLadend(false);
   }
 
@@ -1049,12 +1092,19 @@ function Spielerplanung({ saison, profil }) {
               <thead>
                 <tr style={{ background: COLORS.petrolDark }} className="text-white">
                   <th className="p-3 text-left font-medium sticky left-0" style={{ background: COLORS.petrolDark }}>Spieler</th>
-                  {spiele.map((s) => (
-                    <th key={s.id} className="p-3 text-center font-medium min-w-[110px]">
-                      <div>{formatDatum(s.datum)}</div>
-                      <div className="text-[11px] font-normal opacity-80">{s.ist_heimspiel ? s.gastteam : s.heimteam}</div>
-                    </th>
-                  ))}
+                  {spiele.map((s) => {
+                    const tag = s.datum?.slice(0, 10);
+                    const hatUeberschneidung = tag && ueberschneidungen[tag]?.length > 0;
+                    return (
+                      <th key={s.id} className="p-3 text-center font-medium min-w-[110px]">
+                        <div className="flex items-center justify-center gap-1">
+                          {formatDatum(s.datum)}
+                          {hatUeberschneidung && <AlertTriangle size={12} style={{ color: COLORS.orange }} />}
+                        </div>
+                        <div className="text-[11px] font-normal opacity-80">{s.ist_heimspiel ? s.gastteam : s.heimteam}</div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -1118,6 +1168,26 @@ function Spielerplanung({ saison, profil }) {
               <span>
                 Mindestens ein Spiel hat aktuell weniger als {benoetigteSpieler} Zusagen (benötigte Spieleranzahl für diese Liga). Alle Spieler wurden bzw. werden per E-Mail informiert.
               </span>
+            </div>
+          )}
+
+          {spiele.some((s) => s.datum && ueberschneidungen[s.datum.slice(0, 10)]?.length > 0) && (
+            <div className="p-3 rounded-md text-sm space-y-2" style={{ background: "#FCEEE7", color: COLORS.orangeDeep }}>
+              <div className="flex items-center gap-2 font-semibold">
+                <AlertTriangle size={16} className="shrink-0" />
+                Terminüberschneidung mit einer Nachbar-Mannschaft
+              </div>
+              {spiele
+                .filter((s) => s.datum && ueberschneidungen[s.datum.slice(0, 10)]?.length > 0)
+                .map((s) => (
+                  <div key={s.id} className="text-xs pl-6">
+                    <span className="font-medium">{formatDatum(s.datum)}:</span>{" "}
+                    Eigenes Spiel {s.ist_heimspiel ? "(Heimspiel)" : "(Auswärtsspiel)"} gegen {s.ist_heimspiel ? s.gastteam : s.heimteam}
+                    {ueberschneidungen[s.datum.slice(0, 10)].map((u, i) => (
+                      <span key={i}> · {u.mannschaftName} spielt ebenfalls, {u.istHeimspiel ? "Heimspiel" : "Auswärtsspiel"} gegen {u.gegner}</span>
+                    ))}
+                  </div>
+                ))}
             </div>
           )}
         </>
@@ -2772,14 +2842,13 @@ function Umfragen({ profil, zielUmfrageId }) {
 function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
-  const [adminWillAbstimmen, setAdminWillAbstimmen] = useState(false);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
 
   const zeitAbgelaufen = Boolean(umfrage.endet_am) && new Date(umfrage.endet_am) <= new Date();
   const alleAbgestimmt = zielAnzahl > 0 && antworten.length >= zielAnzahl;
   const istBeendet = zeitAbgelaufen || alleAbgestimmt;
 
-  const zeigeErgebnis = istBeendet || Boolean(eigeneAntwort) || (profil.ist_admin && !adminWillAbstimmen);
+  const zeigeErgebnis = istBeendet || Boolean(eigeneAntwort);
 
   function toggle(index) {
     if (umfrage.mehrfachauswahl) {
@@ -2874,14 +2943,7 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
               </div>
             );
           })}
-          <p className="text-xs text-gray-400 pt-1">
-            {gesamtStimmen} Stimme(n) insgesamt{!eigeneAntwort && !istBeendet && profil.ist_admin ? " · du hast noch nicht abgestimmt" : ""}
-          </p>
-          {profil.ist_admin && !eigeneAntwort && !istBeendet && (
-            <button onClick={() => setAdminWillAbstimmen(true)} className="text-xs underline" style={{ color: COLORS.petrol }}>
-              Trotzdem abstimmen
-            </button>
-          )}
+          <p className="text-xs text-gray-400 pt-1">{gesamtStimmen} Stimme(n) insgesamt</p>
         </div>
       ) : (
         <div className="space-y-2">
@@ -3828,6 +3890,19 @@ function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) 
   }
 
   const mehrheit = mehrheitSaetze(saetzeProSpiel);
+  const letzterSatz = saetze[saetze.length - 1];
+  const letzterSatzGueltig = istSatzGueltig(letzterSatz);
+  const { saetze_a: bisherA, saetze_b: bisherB } = berechneMatchAusSaetzen(saetze.filter(istSatzGueltig));
+  const spielBereitsEntschieden = Math.max(bisherA, bisherB) >= mehrheit;
+  const darfNeuenSatzHinzufuegen = saetze.length < saetzeProSpiel && letzterSatzGueltig && !spielBereitsEntschieden;
+
+  function punktAendern(index, seite, delta) {
+    setSaetze(saetze.map((x, j) => {
+      if (j !== index) return x;
+      const aktuell = Number(x[seite]) || 0;
+      return { ...x, [seite]: String(Math.max(0, aktuell + delta)) };
+    }));
+  }
 
   function ergebnisPruefenUndSpeichern() {
     setValidierungsFehler(null);
@@ -3837,8 +3912,7 @@ function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) 
     // 1) Jeder einzelne Satz muss einer echten Tischtennis-Satzendung entsprechen:
     // mindestens 11 Punkte UND mindestens 2 Punkte Vorsprung (bei 10:10 geht's weiter).
     for (let i = 0; i < gueltig.length; i++) {
-      const a = Number(gueltig[i].a), b = Number(gueltig[i].b);
-      if (Number.isNaN(a) || Number.isNaN(b) || Math.max(a, b) < 11 || Math.abs(a - b) < 2) {
+      if (!istSatzGueltig(gueltig[i])) {
         setValidierungsFehler(`Satz ${i + 1}: Ein Satz endet erst, wenn eine Seite mindestens 11 Punkte UND 2 Punkte Vorsprung hat (z. B. 11:7 oder bei Verlängerung 13:11).`);
         return;
       }
@@ -3856,24 +3930,59 @@ function SpielZeile({ spiel, nameA, nameB, saetzeProSpiel, darf, onSpeichern }) 
     setBearbeiten(false);
   }
 
+  function zahlFeld(index, seite) {
+    const wert = saetze[index][seite];
+    return (
+      <div className="flex items-center gap-1">
+        <button type="button" onClick={() => punktAendern(index, seite, -1)} className="w-7 h-7 rounded-md border text-gray-500 shrink-0 flex items-center justify-center">−</button>
+        <input
+          type="number"
+          min={0}
+          value={wert}
+          onChange={(e) => setSaetze(saetze.map((x, j) => (j === index ? { ...x, [seite]: e.target.value } : x)))}
+          className="w-14 border rounded-md px-1 py-1 text-sm text-center"
+        />
+        <button type="button" onClick={() => punktAendern(index, seite, 1)} className="w-7 h-7 rounded-md border text-gray-500 shrink-0 flex items-center justify-center">+</button>
+        <button type="button" onClick={() => setSaetze(saetze.map((x, j) => (j === index ? { ...x, [seite]: "11" } : x)))} className="text-[10px] px-1.5 py-1 rounded-md border text-gray-500 shrink-0">11</button>
+      </div>
+    );
+  }
+
   return (
     <div className="py-3">
       <p className="text-sm mb-2">{nameA} <span className="text-gray-400">vs</span> {nameB}</p>
       <div className="space-y-2">
-        {saetze.map((s, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <span className="text-xs text-gray-400 w-12">Satz {i + 1}</span>
-            <input type="number" min={0} value={s.a} onChange={(e) => setSaetze(saetze.map((x, j) => j === i ? { ...x, a: e.target.value } : x))} className="w-16 border rounded-md px-2 py-1 text-sm text-center" />
-            <span className="text-gray-400">:</span>
-            <input type="number" min={0} value={s.b} onChange={(e) => setSaetze(saetze.map((x, j) => j === i ? { ...x, b: e.target.value } : x))} className="w-16 border rounded-md px-2 py-1 text-sm text-center" />
-            {saetze.length > 1 && <button onClick={() => setSaetze(saetze.filter((_, j) => j !== i))} className="text-gray-300"><X size={14} /></button>}
-          </div>
-        ))}
+        {saetze.map((s, i) => {
+          const istLetzter = i === saetze.length - 1;
+          const gueltig = istSatzGueltig(s);
+          return (
+            <div key={i} className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-400 w-12">Satz {i + 1}</span>
+              {zahlFeld(i, "a")}
+              <span className="text-gray-400">:</span>
+              {zahlFeld(i, "b")}
+              {istLetzter && (
+                <span className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={gueltig ? { background: COLORS.petrol } : { background: "#E5E3DD" }}>
+                  {gueltig && <Check size={12} color="white" />}
+                </span>
+              )}
+              {saetze.length > 1 && <button onClick={() => setSaetze(saetze.filter((_, j) => j !== i))} className="text-gray-300"><X size={14} /></button>}
+            </div>
+          );
+        })}
       </div>
       {validierungsFehler && <p className="text-xs mt-2" style={{ color: COLORS.orangeDeep }}>{validierungsFehler}</p>}
-      <div className="flex gap-2 mt-2">
-        {saetze.length < saetzeProSpiel && (
-          <button onClick={() => setSaetze([...saetze, { a: "", b: "" }])} className="text-xs underline" style={{ color: COLORS.petrol }}>+ Satz</button>
+      <div className="flex gap-2 mt-2 items-center">
+        {saetze.length < saetzeProSpiel && !spielBereitsEntschieden && (
+          <button
+            onClick={() => darfNeuenSatzHinzufuegen && setSaetze([...saetze, { a: "", b: "" }])}
+            disabled={!darfNeuenSatzHinzufuegen}
+            className="text-xs underline"
+            style={darfNeuenSatzHinzufuegen ? { color: COLORS.petrol } : { color: "#C7C5BE", textDecoration: "none", cursor: "not-allowed" }}
+            title={darfNeuenSatzHinzufuegen ? "" : "Erst den aktuellen Satz gültig abschließen"}
+          >
+            + Satz
+          </button>
         )}
         <button onClick={ergebnisPruefenUndSpeichern} className="text-xs px-3 py-1 rounded-md text-white font-semibold ml-auto" style={{ background: COLORS.orange }}>
           Ergebnis speichern
