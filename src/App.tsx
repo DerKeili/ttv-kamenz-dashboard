@@ -1769,7 +1769,7 @@ Sportliche Grüße
 TTV 97 Kamenz e.V.`;
 }
 
-function ZugangsNachricht({ vorname, email, passwort }) {
+function ZugangsNachricht({ vorname, email, passwort, onAbschliessen }) {
   const [kopiert, setKopiert] = useState(false);
   const text = zugangsNachrichtText(vorname, email, passwort);
 
@@ -1785,7 +1785,7 @@ function ZugangsNachricht({ vorname, email, passwort }) {
         Einmalpasswort: <strong className="font-mono">{passwort}</strong>
       </p>
       <textarea readOnly value={text} rows={8} className="w-full border rounded-md px-2 py-2 text-xs font-mono bg-white text-gray-700" />
-      <div className="flex gap-2 mt-2">
+      <div className="flex flex-wrap gap-2 mt-2">
         <button onClick={kopieren} className="text-xs px-3 py-1.5 rounded-md text-white font-semibold" style={{ background: COLORS.orange }}>
           {kopiert ? "Kopiert ✓" : "Text kopieren"}
         </button>
@@ -1805,6 +1805,11 @@ function ZugangsNachricht({ vorname, email, passwort }) {
         >
           Per E-Mail öffnen
         </a>
+        {onAbschliessen && (
+          <button onClick={onAbschliessen} className="text-xs px-3 py-1.5 rounded-md font-semibold ml-auto" style={{ color: COLORS.petrol, textDecoration: "underline" }}>
+            Anlegen abschließen
+          </button>
+        )}
       </div>
     </div>
   );
@@ -2310,7 +2315,14 @@ function Spielerverwaltung({ profil }) {
           {ladend ? "Lege an…" : "Spieler anlegen"}
         </button>
 
-        {einmalpasswort && erstellterSpieler && <ZugangsNachricht vorname={erstellterSpieler.vorname} email={erstellterSpieler.email} passwort={einmalpasswort} />}
+        {einmalpasswort && erstellterSpieler && (
+          <ZugangsNachricht
+            vorname={erstellterSpieler.vorname}
+            email={erstellterSpieler.email}
+            passwort={einmalpasswort}
+            onAbschliessen={() => { setEinmalpasswort(null); setErstellterSpieler(null); }}
+          />
+        )}
       </div>
 
       <div className="bg-white rounded-lg border p-5">
@@ -2423,7 +2435,14 @@ function Spielerverwaltung({ profil }) {
                     </div>
                   )}
                 </div>
-                {zurueckgesetztFuerId === s.id && <ZugangsNachricht vorname={s.vorname} email={s.email} passwort={zurueckgesetztesPasswort} />}
+                {zurueckgesetztFuerId === s.id && (
+                  <ZugangsNachricht
+                    vorname={s.vorname}
+                    email={s.email}
+                    passwort={zurueckgesetztesPasswort}
+                    onAbschliessen={() => { setZurueckgesetztFuerId(null); setZurueckgesetztesPasswort(null); }}
+                  />
+                )}
               </div>
             );
           })}
