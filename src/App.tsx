@@ -299,12 +299,172 @@ async function echteFehlermeldung(error, data) {
 
 /* ---------- Login ---------- */
 
+const APP_ADRESSE = "https://derkeili.github.io/ttv-kamenz-dashboard/";
+
+function PasswortVergessen({ onZurueck }) {
+  const [email, setEmail] = useState("");
+  const [gesendet, setGesendet] = useState(false);
+  const [ladend, setLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  async function anfordern() {
+    setFehler(null);
+    if (!email.trim()) return setFehler("Bitte deine E-Mail-Adresse eingeben.");
+    setLadend(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: APP_ADRESSE });
+    setLadend(false);
+    // Aus Datenschutzgründen bestätigen wir immer gleich — sonst ließe sich hier
+    // durchprobieren, welche E-Mail-Adressen im Verein hinterlegt sind.
+    if (error && !error.message.toLowerCase().includes("user")) {
+      setFehler(error.message);
+      return;
+    }
+    setGesendet(true);
+  }
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{ background: `radial-gradient(circle at 30% 20%, ${COLORS.petrol}, ${COLORS.petrolDark})`, fontFamily: "Inter, sans-serif" }}
+    >
+      <div className="w-full max-w-sm">
+        <TiltCard tone="paper" className="p-8 shadow-2xl">
+          <h1 className="text-lg font-bold text-center mb-2" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
+            PASSWORT VERGESSEN
+          </h1>
+
+          {gesendet ? (
+            <>
+              <p className="text-sm text-gray-600 mb-4">
+                Wenn für diese Adresse ein Zugang besteht, ist die E-Mail unterwegs. Darin findest du einen Link,
+                über den du dir ein neues Passwort vergeben kannst. Der Link gilt eine Stunde.
+              </p>
+              <p className="text-xs text-gray-500 mb-4">
+                Nichts angekommen? Schau bitte im Spam-Ordner nach oder wende dich an deinen Mannschaftsführer —
+                er kann dir ein neues Passwort einrichten.
+              </p>
+              <button onClick={onZurueck} className="w-full py-2.5 rounded-md text-white font-semibold text-sm" style={{ background: COLORS.orange, fontFamily: "Oswald, sans-serif" }}>
+                ZURÜCK ZUR ANMELDUNG
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-gray-600 mb-4">
+                Gib die E-Mail-Adresse ein, mit der du in der App angemeldet bist. Du bekommst dann einen Link zum Zurücksetzen.
+              </p>
+              <label className="block text-xs font-medium mb-1" style={{ color: COLORS.anthracite }}>E-Mail</label>
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && anfordern()}
+                className="w-full border rounded-md px-3 py-2 mb-3 text-sm"
+                placeholder="deine@adresse.de"
+              />
+              {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+              <button
+                onClick={anfordern}
+                disabled={ladend}
+                className="w-full py-2.5 rounded-md text-white font-semibold text-sm"
+                style={{ background: COLORS.orange, fontFamily: "Oswald, sans-serif", opacity: ladend ? 0.6 : 1 }}
+              >
+                {ladend ? "SENDE…" : "LINK ANFORDERN"}
+              </button>
+              <button onClick={onZurueck} className="w-full text-xs text-center mt-4 text-gray-500 underline">
+                Zurück zur Anmeldung
+              </button>
+            </>
+          )}
+        </TiltCard>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Neues Passwort nach Klick auf den Rücksetz-Link ---------- */
+
+function PasswortNeuVergeben({ onFertig }) {
+  const [neu, setNeu] = useState("");
+  const [wiederholung, setWiederholung] = useState("");
+  const [zeigen, setZeigen] = useState(false);
+  const [fehler, setFehler] = useState(null);
+  const [ladend, setLadend] = useState(false);
+
+  async function speichern() {
+    setFehler(null);
+    if (neu.length < 8) return setFehler("Das neue Passwort muss mindestens 8 Zeichen haben.");
+    if (neu !== wiederholung) return setFehler("Die beiden Passwörter stimmen nicht überein.");
+    setLadend(true);
+    const { error } = await supabase.auth.updateUser({ password: neu });
+    if (error) {
+      setLadend(false);
+      setFehler(error.message);
+      return;
+    }
+    // Der Spieler hat sich selbst ein Passwort gesetzt — die erzwungene Änderung entfällt.
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) await supabase.from("profiles").update({ muss_passwort_aendern: false }).eq("id", user.id);
+    setLadend(false);
+    onFertig();
+  }
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{ background: `radial-gradient(circle at 30% 20%, ${COLORS.petrol}, ${COLORS.petrolDark})`, fontFamily: "Inter, sans-serif" }}
+    >
+      <div className="w-full max-w-sm">
+        <TiltCard tone="paper" className="p-8 shadow-2xl">
+          <h1 className="text-lg font-bold text-center mb-4" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
+            NEUES PASSWORT
+          </h1>
+          <p className="text-sm text-gray-600 mb-4">Vergib jetzt dein neues Passwort — mindestens 8 Zeichen.</p>
+
+          <label className="block text-xs font-medium mb-1" style={{ color: COLORS.anthracite }}>Neues Passwort</label>
+          <div className="relative mb-3">
+            <input
+              type={zeigen ? "text" : "password"}
+              value={neu}
+              onChange={(e) => setNeu(e.target.value)}
+              className="w-full border rounded-md px-3 py-2 pr-9 text-sm"
+            />
+            <button type="button" onClick={() => setZeigen(!zeigen)} className="absolute right-2 top-2.5 text-gray-400">
+              {zeigen ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+
+          <label className="block text-xs font-medium mb-1" style={{ color: COLORS.anthracite }}>Wiederholen</label>
+          <input
+            type={zeigen ? "text" : "password"}
+            value={wiederholung}
+            onChange={(e) => setWiederholung(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && speichern()}
+            className="w-full border rounded-md px-3 py-2 mb-3 text-sm"
+          />
+
+          {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <button
+            onClick={speichern}
+            disabled={ladend}
+            className="w-full py-2.5 rounded-md text-white font-semibold text-sm"
+            style={{ background: COLORS.orange, fontFamily: "Oswald, sans-serif", opacity: ladend ? 0.6 : 1 }}
+          >
+            {ladend ? "SPEICHERE…" : "PASSWORT SPEICHERN"}
+          </button>
+        </TiltCard>
+      </div>
+    </div>
+  );
+}
+
 function Login({ onLogin }) {
   const [email, setEmail] = useState("");
   const [passwort, setPasswort] = useState("");
   const [zeigen, setZeigen] = useState(false);
   const [fehler, setFehler] = useState(null);
   const [ladend, setLadend] = useState(false);
+  const [vergessenOffen, setVergessenOffen] = useState(false);
+
+  if (vergessenOffen) return <PasswortVergessen onZurueck={() => setVergessenOffen(false)} />;
 
   async function anmelden() {
     setFehler(null);
@@ -370,6 +530,13 @@ function Login({ onLogin }) {
             style={{ background: COLORS.orange, fontFamily: "Oswald, sans-serif", opacity: ladend ? 0.6 : 1 }}
           >
             {ladend ? "MELDE AN…" : "ANMELDEN"}
+          </button>
+          <button
+            onClick={() => setVergessenOffen(true)}
+            className="w-full text-xs text-center mt-3 underline"
+            style={{ color: COLORS.petrol }}
+          >
+            Passwort vergessen?
           </button>
           <p className="text-[11px] text-center mt-4 text-gray-500">
             Erstanmeldung? Nutze das Einmalpasswort vom Admin – du wirst danach direkt zur Passwortänderung geführt.
@@ -4762,6 +4929,21 @@ export default function App() {
   const [saisonsGeladen, setSaisonsGeladen] = useState(false);
   const [mannschaften, setMannschaften] = useState([]);
   const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(null);
+  const [passwortZuruecksetzen, setPasswortZuruecksetzen] = useState(false);
+
+  useEffect(() => {
+    // Kommt jemand über den Link aus der "Passwort vergessen"-Mail, meldet Supabase
+    // das als PASSWORD_RECOVERY. Dann zeigen wir die Maske für ein neues Passwort,
+    // statt ihn direkt ins Dashboard zu lassen.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((ereignis) => {
+      if (ereignis === "PASSWORD_RECOVERY") setPasswortZuruecksetzen(true);
+    });
+    // Falls das Ereignis schon vor dem Registrieren durchgelaufen ist, zusätzlich die Adresse prüfen
+    if (typeof window !== "undefined" && window.location.hash.includes("type=recovery")) {
+      setPasswortZuruecksetzen(true);
+    }
+    return () => subscription?.unsubscribe();
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
@@ -4793,6 +4975,22 @@ export default function App() {
 
   if (!sessionGeprueft) {
     return <div className="min-h-screen flex items-center justify-center text-gray-400 text-sm">Lade…</div>;
+  }
+
+  if (passwortZuruecksetzen) {
+    return (
+      <PasswortNeuVergeben
+        onFertig={async () => {
+          if (typeof window !== "undefined") window.history.replaceState(null, "", window.location.pathname);
+          setPasswortZuruecksetzen(false);
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session) {
+            const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+            if (data) setProfil(data);
+          }
+        }}
+      />
+    );
   }
 
   if (!profil) return <Login onLogin={setProfil} />;
