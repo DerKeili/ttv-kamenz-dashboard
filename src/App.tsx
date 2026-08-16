@@ -1,7 +1,17 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
-import logo from "./logo.jpg";
 import logoKlein from "./logo-klein.png";
+import logoM1 from "./logo-m1.png";
+import logoM2 from "./logo-m2.png";
+import logoM3 from "./logo-m3.png";
+
+// Jede Mannschaft hat ihr eigenes Logo. Zugeordnet wird über die Rangstufe,
+// damit es auch stimmt, wenn eine Mannschaft mal umbenannt wird.
+const MANNSCHAFTS_LOGOS = { 1: logoM1, 2: logoM2, 3: logoM3 };
+
+function logoFuerMannschaft(mannschaft) {
+  return MANNSCHAFTS_LOGOS[mannschaft?.hierarchie_stufe] ?? null;
+}
 import {
   LayoutDashboard, Table2, CalendarDays, Users, MessageSquare,
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
@@ -497,6 +507,7 @@ function Login({ onLogin }) {
       <div className="w-full max-w-sm">
         <TiltCard tone="paper" className="p-8 shadow-2xl">
           <div className="flex flex-col items-center mb-6">
+            <img src={logoKlein} alt="TTV 97 Kamenz e.V." className="w-20 h-20 rounded-2xl mb-3" />
             <h1 className="text-xl font-bold text-center" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
               TTV 97 KAMENZ e.V.
             </h1>
@@ -652,6 +663,11 @@ function baueOnboardingSchritte(profil) {
       text: verwaltet
         ? "Bei Umfragen einfach abstimmen — oder als " + (admin ? "Admin" : "Mannschaftsführer") + " selbst welche erstellen. Fehlen einer Mannschaft Spieler, fragt die App automatisch bei der darunter liegenden Mannschaft nach; meldet sich dort in drei Tagen niemand, schlägt sie von allein freie Ausweichtermine für eine Spielverlegung zur Abstimmung vor. Im Nachrichten-Postfach schreibst du direkt mit anderen Spielern, nach Mannschaften sortiert."
         : "Bei Umfragen einfach abstimmen — manchmal fragt eine andere Mannschaft nach Aushilfe, manchmal geht es um einen Ausweichtermin für ein Spiel. Im Nachrichten-Postfach schreibst du direkt mit anderen Spielern, nach Mannschaften sortiert.",
+    },
+    {
+      icon: Bell,
+      titel: "Benachrichtigungen",
+      text: "Über die Glocke oben rechts siehst du auf einen Blick, was neu für dich ist: ungelesene Nachrichten, Umfragen, bei denen deine Stimme noch fehlt, und die nächsten Termine. Zusätzlich schickt dir die App eine E-Mail bei neuen Umfragen, Nachrichten und Terminen — in den Einstellungen legst du selbst fest, worüber du informiert werden möchtest.",
     },
     {
       icon: Trophy,
@@ -4918,6 +4934,161 @@ const NAV_BASIS = [
   { key: "einstellungen", label: "Einstellungen", icon: Settings },
 ];
 
+/* ---------- Benachrichtigungen (Glocke in der Kopfzeile) ---------- */
+
+function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender }) {
+  const [offen, setOffen] = useState(false);
+  const [eintraege, setEintraege] = useState([]);
+  const [ladend, setLadend] = useState(true);
+
+  async function laden() {
+    setLadend(true);
+    const inSiebenTagen = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const [{ data: nachrichten }, { data: umfragen }, { data: ziele }, { data: antworten }, { data: termine }] = await Promise.all([
+      supabase.from("nachrichten").select("id, von_id, inhalt, gesendet_am").eq("an_id", profil.id).eq("gelesen", false),
+      supabase.from("umfragen").select("id, titel, endet_am, mannschaft_id").eq("aktiv", true),
+      supabase.from("umfrage_ziele").select("umfrage_id, spieler_id"),
+      supabase.from("umfrage_antworten").select("umfrage_id").eq("spieler_id", profil.id),
+      supabase.from("kalender_ereignisse").select("id, titel, datum, mannschaft_id")
+        .gte("datum", new Date().toISOString()).lte("datum", inSiebenTagen).order("datum"),
+    ]);
+
+    const liste = [];
+
+    // Ungelesene Nachrichten je Absender zusammenfassen
+    const nachSender = {};
+    (nachrichten ?? []).forEach((n) => {
+      if (!nachSender[n.von_id]) nachSender[n.von_id] = [];
+      nachSender[n.von_id].push(n);
+    });
+    const senderIds = Object.keys(nachSender);
+    if (senderIds.length > 0) {
+      const { data: absender } = await supabase.from("profiles").select("id, vorname, nachname").in("id", senderIds);
+      senderIds.forEach((id) => {
+        const person = (absender ?? []).find((a) => a.id === id);
+        const anzahl = nachSender[id].length;
+        liste.push({
+          art: "nachricht",
+          id: `n-${id}`,
+          titel: person ? `${person.vorname} ${person.nachname}` : "Neue Nachricht",
+          text: anzahl === 1 ? nachSender[id][0].inhalt : `${anzahl} ungelesene Nachrichten`,
+          zeit: nachSender[id].at(-1)?.gesendet_am,
+          aktion: () => onOeffneNachricht(id),
+        });
+      });
+    }
+
+    // Umfragen, bei denen meine Stimme noch fehlt
+    const beantwortet = new Set((antworten ?? []).map((a) => a.umfrage_id));
+    const zielMap = {};
+    (ziele ?? []).forEach((z) => {
+      if (!zielMap[z.umfrage_id]) zielMap[z.umfrage_id] = [];
+      zielMap[z.umfrage_id].push(z.spieler_id);
+    });
+    (umfragen ?? []).forEach((u) => {
+      if (beantwortet.has(u.id)) return;
+      if (u.endet_am && new Date(u.endet_am) <= new Date()) return;
+      const zieleDerUmfrage = zielMap[u.id];
+      const betrifftMich = !zieleDerUmfrage || zieleDerUmfrage.includes(profil.id);
+      if (!betrifftMich) return;
+      liste.push({
+        art: "umfrage",
+        id: `u-${u.id}`,
+        titel: u.titel,
+        text: u.endet_am ? `Abstimmung läuft bis ${formatDatum(u.endet_am)}` : "Deine Stimme fehlt noch",
+        zeit: u.endet_am,
+        aktion: () => onOeffneUmfrage(u.id),
+      });
+    });
+
+    // Termine der nächsten sieben Tage
+    (termine ?? []).forEach((t) => {
+      if (t.mannschaft_id && t.mannschaft_id !== profil.mannschaft_id) return;
+      liste.push({
+        art: "termin",
+        id: `t-${t.id}`,
+        titel: t.titel,
+        text: new Date(t.datum).toLocaleString("de-DE", { weekday: "long", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) + " Uhr",
+        zeit: t.datum,
+        aktion: () => onOeffneKalender(),
+      });
+    });
+
+    setEintraege(liste);
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, [profil.id]);
+
+  // Beim Zurückkehren zur App neu prüfen
+  useEffect(() => {
+    function beiRueckkehr() {
+      if (document.visibilityState === "visible") laden();
+    }
+    document.addEventListener("visibilitychange", beiRueckkehr);
+    return () => document.removeEventListener("visibilitychange", beiRueckkehr);
+  }, [profil.id]);
+
+  const zuErledigen = eintraege.filter((e) => e.art !== "termin").length;
+  const symbole = { nachricht: MessageSquare, umfrage: Vote, termin: CalendarDays };
+
+  return (
+    <div className="relative">
+      <button onClick={() => { setOffen(!offen); if (!offen) laden(); }} className="relative flex items-center" title="Benachrichtigungen">
+        <Bell size={18} className={zuErledigen > 0 ? "" : "text-gray-400"} style={zuErledigen > 0 ? { color: COLORS.orange } : {}} />
+        {zuErledigen > 0 && (
+          <span
+            className="absolute -top-1.5 -right-1.5 text-white text-[9px] font-bold rounded-full min-w-[15px] h-[15px] flex items-center justify-center px-1"
+            style={{ background: COLORS.orange }}
+          >
+            {zuErledigen}
+          </span>
+        )}
+      </button>
+
+      {offen && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOffen(false)} />
+          <div className="absolute right-0 mt-3 w-80 max-w-[85vw] bg-white rounded-lg border shadow-xl z-40 overflow-hidden">
+            <div className="px-4 py-2.5 border-b flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.anthracite }}>Neu für dich</span>
+              {ladend && <span className="text-[10px] text-gray-400">lädt…</span>}
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto divide-y">
+              {eintraege.length === 0 && !ladend ? (
+                <p className="px-4 py-6 text-sm text-gray-400 text-center">Alles erledigt — nichts Neues.</p>
+              ) : (
+                eintraege.map((e) => {
+                  const Symbol = symbole[e.art];
+                  return (
+                    <button
+                      key={e.id}
+                      onClick={() => { setOffen(false); e.aktion(); }}
+                      className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-gray-50"
+                    >
+                      <span
+                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+                        style={e.art === "termin" ? { background: "#E4F2EE", color: COLORS.petrol } : { background: "#FBE2DA", color: COLORS.orangeDeep }}
+                      >
+                        <Symbol size={13} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium truncate" style={{ color: COLORS.anthracite }}>{e.titel}</span>
+                        <span className="block text-xs text-gray-500 truncate">{e.text}</span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [profil, setProfil] = useState(null);
   const [sessionGeprueft, setSessionGeprueft] = useState(false);
@@ -5027,6 +5198,8 @@ export default function App() {
   const mannschaftsAbhaengigeTabs = ["tabelle", "ergebnisse", "planung", "kader"];
   const effektiveMannschaftId = mannschaftsAbhaengigeTabs.includes(tab) ? (ausgewaehlteMannschaftId ?? profil.mannschaft_id) : profil.mannschaft_id;
   const angezeigteSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === effektiveMannschaftId) ?? null;
+  const eigeneMannschaft = mannschaften.find((m) => m.id === profil.mannschaft_id) ?? null;
+  const eigenesMannschaftsLogo = logoFuerMannschaft(eigeneMannschaft);
 
   return (
     <div className="min-h-screen flex" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
@@ -5036,14 +5209,21 @@ export default function App() {
         className={`fixed md:static z-20 h-full md:h-auto w-64 transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
         style={{ background: COLORS.petrolDark }}
       >
-        <div className="p-5 flex items-center gap-3 border-b" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
-          <img src={logoKlein} alt="TTV 97 Kamenz Logo" className="w-10 h-10 rounded-full object-cover shrink-0 bg-white p-1" style={{ border: `2px solid ${COLORS.orange}` }} />
-          <div>
-            <p className="text-white text-sm font-bold leading-tight" style={{ fontFamily: "Oswald, sans-serif" }}>TTV 97 KAMENZ</p>
-            <p className="text-[10px] uppercase tracking-widest" style={{ color: COLORS.orange }}>
-              {mannschaften.find((m) => m.id === profil.mannschaft_id)?.name ?? "e. V."}
-            </p>
-          </div>
+        <div className="p-5 border-b" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+          {eigenesMannschaftsLogo ? (
+            // Das Mannschaftslogo trägt Vereinsname und Mannschaft bereits in sich
+            <img src={eigenesMannschaftsLogo} alt={`TTV 97 Kamenz — ${eigeneMannschaft?.name ?? ""}`} className="w-full max-w-[190px]" />
+          ) : (
+            <div className="flex items-center gap-3">
+              <img src={logoKlein} alt="TTV 97 Kamenz Logo" className="w-10 h-10 rounded-lg object-cover shrink-0" />
+              <div>
+                <p className="text-white text-sm font-bold leading-tight" style={{ fontFamily: "Oswald, sans-serif" }}>TTV 97 KAMENZ</p>
+                <p className="text-[10px] uppercase tracking-widest" style={{ color: COLORS.orange }}>
+                  {eigeneMannschaft?.name ?? "e. V."}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
         <nav className="p-3 space-y-1">
           {nav.map((n) => (
@@ -5072,7 +5252,12 @@ export default function App() {
             <h2 className="text-lg font-bold" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>{titles[tab]}</h2>
           </div>
           <div className="flex items-center gap-4">
-            <Bell size={18} className="text-gray-400" />
+            <Benachrichtigungen
+              profil={profil}
+              onOeffneUmfrage={(umfrageId) => { setZielUmfrageId(umfrageId); setTab("umfragen"); }}
+              onOeffneNachricht={(spielerId) => { setZielSpielerId(spielerId); setTab("nachrichten"); }}
+              onOeffneKalender={() => setTab("kalender")}
+            />
             <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background: COLORS.petrol }}>{initialen}</div>
           </div>
         </header>
