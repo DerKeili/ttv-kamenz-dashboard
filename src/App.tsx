@@ -624,6 +624,15 @@ function baueOnboardingSchritte(profil) {
 
   const schritte = [
     {
+      icon: Sparkles,
+      titel: profil.vorname ? `Willkommen, ${profil.vorname}!` : "Willkommen beim TTV 97 Kamenz",
+      text:
+        "Schön, dass du beim TTV 97 Kamenz dabei bist. Diese App bringt alles zusammen, was bei uns über die Saison hinweg organisiert werden muss — für alle Mannschaften des Vereins an einem Ort. " +
+        "Wer kann am Freitag, wer ist verhindert, wo fehlt noch ein Spieler? Statt langer Telefonketten und untergegangener Chatnachrichten sagst du hier einmal Bescheid, und alle sehen es sofort. " +
+        "Dazu kommen die wichtigen Vereinstermine im Jahr und unsere internen Turniere, die sich damit von der Anmeldung bis zum letzten Satz planen lassen. " +
+        "Je mehr von uns mitmachen, desto besser funktioniert es — und desto entspannter wird der Spieltag für alle. Zwei Minuten, dann kennst du dich aus.",
+    },
+    {
       icon: LayoutDashboard,
       titel: "Dein Dashboard",
       text: "Hier siehst du auf einen Blick euren Tabellenplatz, das nächste Spiel, offene Umfragen, ungelesene Nachrichten und anstehende Termine.",
@@ -731,7 +740,7 @@ function OnboardingTour({ profil, onFertig }) {
         <h2 className="font-bold text-lg mb-2" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
           {aktuell.titel}
         </h2>
-        <p className="text-sm text-gray-500 mb-6 leading-relaxed">{aktuell.text}</p>
+        <p className="text-sm text-gray-500 mb-6 leading-relaxed max-h-[45vh] overflow-y-auto">{aktuell.text}</p>
 
         <div className="flex items-center justify-center gap-1.5 mb-6">
           {schritte.map((_, i) => (
@@ -2406,6 +2415,12 @@ function ZugangsNachricht({ vorname, email, passwort, onAbschliessen }) {
 
   return (
     <div className="mt-4 p-3 rounded-md text-sm" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
+      <p className="font-semibold mb-1">Zugang angelegt — die Zugangsdaten sind bereits per E-Mail unterwegs.</p>
+      <p className="text-xs mb-3 opacity-90">
+        {email} hat das Einmalpasswort automatisch zugeschickt bekommen. Du kannst denselben Text zusätzlich
+        über WhatsApp oder einen anderen Messenger weitergeben — etwa wenn die E-Mail im Spam landet oder
+        jemand seine Adresse selten abruft.
+      </p>
       <p className="mb-2">
         Einmalpasswort: <strong className="font-mono">{passwort}</strong>
       </p>
@@ -2735,6 +2750,7 @@ function Spielerverwaltung({ profil }) {
   const [spielerBearbeitenFehler, setSpielerBearbeitenFehler] = useState(null);
   const [spielerBearbeitenLadend, setSpielerBearbeitenLadend] = useState(false);
   const [spielerLoeschenBestaetigung, setSpielerLoeschenBestaetigung] = useState(null);
+  const [listenFehler, setListenFehler] = useState(null);
   const [spielerLoeschenLadend, setSpielerLoeschenLadend] = useState(false);
 
   const [zurueckgesetztFuerId, setZurueckgesetztFuerId] = useState(null);
@@ -2808,9 +2824,12 @@ function Spielerverwaltung({ profil }) {
     setSpielerLoeschenLadend(false);
     setSpielerLoeschenBestaetigung(null);
     if (error || data?.error) {
-      setFehler(await echteFehlermeldung(error, data));
+      const meldung = await echteFehlermeldung(error, data);
+      setFehler(meldung);
+      setListenFehler(meldung); // direkt an der Spielerliste anzeigen, nicht nur oben am Formular
       return;
     }
+    setListenFehler(null);
     ladenAlles();
   }
 
@@ -3007,6 +3026,9 @@ function Spielerverwaltung({ profil }) {
               Nicht zugewiesen
             </button>
           </div>
+        )}
+        {listenFehler && (
+          <p className="text-xs mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>{listenFehler}</p>
         )}
         <div className="divide-y">
           {gefilterteSpieler.map((s) => {
