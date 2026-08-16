@@ -517,7 +517,7 @@ function Login({ onLogin }) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className="w-full border rounded-md px-3 py-2 mb-4 text-sm"
-            placeholder="vorname.nachname@ttv97-kamenz.de"
+            placeholder="deine@adresse.de"
           />
           <label className="block text-xs font-medium mb-1" style={{ color: COLORS.anthracite }}>Passwort</label>
           <div className="relative mb-2">
@@ -2346,12 +2346,7 @@ function Kader({ saison, profil }) {
         <div className="grid sm:grid-cols-2 gap-3">
           {spieler.map((s) => (
             <div key={s.id} className="bg-white rounded-lg border p-4 flex items-center gap-3">
-              <div
-                className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
-                style={{ background: COLORS.petrol, fontFamily: "Oswald, sans-serif" }}
-              >
-                {s.vorname?.[0]}{s.nachname?.[0]}
-              </div>
+              <Avatar person={s} groesse={40} />
               <div>
                 <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
                 <p className="text-xs" style={{ color: s.rang === "Mannschaftsführer" ? COLORS.orange : "#999" }}>{s.rang}</p>
@@ -3590,7 +3585,7 @@ function Nachrichten({ profil, zielSpielerId }) {
   async function laden() {
     setLadend(true);
     const [{ data: spielerDaten }, { data: nachrichtenDaten }, { data: mannschaftenDaten }] = await Promise.all([
-      supabase.from("profiles").select("id, vorname, nachname, mannschaft_id").neq("id", profil.id).order("nachname"),
+      supabase.from("profiles").select("id, vorname, nachname, mannschaft_id, avatar_url").neq("id", profil.id).order("nachname"),
       supabase.from("nachrichten").select("*").or(`von_id.eq.${profil.id},an_id.eq.${profil.id}`).order("gesendet_am"),
       supabase.from("mannschaften").select("id, name, hierarchie_stufe"),
     ]);
@@ -3715,12 +3710,7 @@ function Nachrichten({ profil, zielSpielerId }) {
         onClick={() => setPartnerId(s.id)}
         className="w-full flex items-center gap-3 p-4 text-left hover:bg-gray-50"
       >
-        <div
-          className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
-          style={{ background: COLORS.petrol, fontFamily: "Oswald, sans-serif" }}
-        >
-          {s.vorname?.[0]}{s.nachname?.[0]}
-        </div>
+        <Avatar person={s} groesse={40} />
         <div className="flex-1 min-w-0">
           <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
           <p className="text-xs text-gray-400 truncate">{letzte ? letzte.inhalt : "Noch keine Nachrichten"}</p>
@@ -3832,6 +3822,8 @@ function Einstellungen({ profil, onProfilGeaendert }) {
         </button>
       </div>
 
+      <ProfilbildEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
+
       <EmailEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
 
       <SchichtplanEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
@@ -3853,6 +3845,105 @@ function Einstellungen({ profil, onProfilGeaendert }) {
       <PasswortAendern profil={profil} />
 
       {profil.ist_admin && <AenderungshinweisVerwaltung />}
+    </div>
+  );
+}
+
+/* ---------- Profilbild hochladen ---------- */
+
+function ProfilbildEinstellungen({ profil, onProfilGeaendert }) {
+  const [ladend, setLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+  const dateiFeld = useRef(null);
+
+  // Vor dem Hochladen verkleinern: aus einem 4-MB-Handyfoto wird so ein
+  // quadratischer Ausschnitt von rund 40 KB.
+  function verkleinern(datei) {
+    return new Promise((fertig, fehlgeschlagen) => {
+      const leser = new FileReader();
+      leser.onerror = () => fehlgeschlagen(new Error("Datei konnte nicht gelesen werden."));
+      leser.onload = () => {
+        const bild = new Image();
+        bild.onerror = () => fehlgeschlagen(new Error("Das ist kein gültiges Bild."));
+        bild.onload = () => {
+          const kante = Math.min(bild.width, bild.height);
+          const ziel = 400;
+          const flaeche = document.createElement("canvas");
+          flaeche.width = ziel;
+          flaeche.height = ziel;
+          const stift = flaeche.getContext("2d");
+          // Mittigen quadratischen Ausschnitt nehmen
+          stift.drawImage(bild, (bild.width - kante) / 2, (bild.height - kante) / 2, kante, kante, 0, 0, ziel, ziel);
+          flaeche.toBlob((b) => (b ? fertig(b) : fehlgeschlagen(new Error("Umwandlung fehlgeschlagen."))), "image/jpeg", 0.85);
+        };
+        bild.src = leser.result;
+      };
+      leser.readAsDataURL(datei);
+    });
+  }
+
+  async function hochladen(e) {
+    const datei = e.target.files?.[0];
+    if (!datei) return;
+    setFehler(null);
+    setLadend(true);
+    try {
+      const verkleinert = await verkleinern(datei);
+      const pfad = `${profil.id}/profilbild.jpg`;
+      const { error: ladeFehler } = await supabase.storage
+        .from("profilbilder")
+        .upload(pfad, verkleinert, { upsert: true, contentType: "image/jpeg" });
+      if (ladeFehler) throw ladeFehler;
+
+      const { data: { publicUrl } } = supabase.storage.from("profilbilder").getPublicUrl(pfad);
+      // Zeitstempel anhängen, damit der Browser das neue Bild nicht aus dem Zwischenspeicher holt
+      const adresse = `${publicUrl}?v=${Date.now()}`;
+      const { error: profilFehler } = await supabase.from("profiles").update({ avatar_url: adresse }).eq("id", profil.id);
+      if (profilFehler) throw profilFehler;
+      onProfilGeaendert?.({ ...profil, avatar_url: adresse });
+    } catch (f) {
+      setFehler(f.message ?? String(f));
+    }
+    setLadend(false);
+    if (dateiFeld.current) dateiFeld.current.value = "";
+  }
+
+  async function entfernen() {
+    setFehler(null);
+    setLadend(true);
+    await supabase.storage.from("profilbilder").remove([`${profil.id}/profilbild.jpg`]);
+    const { error } = await supabase.from("profiles").update({ avatar_url: null }).eq("id", profil.id);
+    setLadend(false);
+    if (error) return setFehler(error.message);
+    onProfilGeaendert?.({ ...profil, avatar_url: null });
+  }
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={Users}>Mein Profilbild</SectionLabel>
+      <p className="text-xs text-gray-500 mb-4">
+        Dein Bild erscheint im Kader, im Nachrichten-Postfach und oben rechts in der App. Ohne Bild werden weiterhin deine Initialen angezeigt.
+      </p>
+      <div className="flex items-center gap-4">
+        <Avatar person={profil} groesse={72} />
+        <div className="flex flex-col gap-2">
+          <input ref={dateiFeld} type="file" accept="image/*" onChange={hochladen} className="hidden" />
+          <button
+            onClick={() => dateiFeld.current?.click()}
+            disabled={ladend}
+            className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+            style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}
+          >
+            {ladend ? "Lade hoch…" : profil.avatar_url ? "Bild ändern" : "Bild auswählen"}
+          </button>
+          {profil.avatar_url && (
+            <button onClick={entfernen} disabled={ladend} className="text-xs text-gray-500 underline text-left">
+              Bild entfernen
+            </button>
+          )}
+        </div>
+      </div>
+      {fehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
     </div>
   );
 }
@@ -4934,6 +5025,32 @@ const NAV_BASIS = [
   { key: "einstellungen", label: "Einstellungen", icon: Settings },
 ];
 
+/* ---------- Profilbild ---------- */
+
+function Avatar({ person, groesse = 32, className = "" }) {
+  const initialen = `${person?.vorname?.[0] ?? ""}${person?.nachname?.[0] ?? ""}`.toUpperCase();
+  const stil = { width: groesse, height: groesse, background: COLORS.petrol };
+
+  if (person?.avatar_url) {
+    return (
+      <img
+        src={person.avatar_url}
+        alt={`${person.vorname ?? ""} ${person.nachname ?? ""}`}
+        className={`rounded-full object-cover shrink-0 ${className}`}
+        style={{ width: groesse, height: groesse }}
+      />
+    );
+  }
+  return (
+    <div
+      className={`rounded-full flex items-center justify-center text-white font-bold shrink-0 ${className}`}
+      style={{ ...stil, fontSize: Math.round(groesse * 0.38), fontFamily: "Oswald, sans-serif" }}
+    >
+      {initialen}
+    </div>
+  );
+}
+
 /* ---------- Benachrichtigungen (Glocke in der Kopfzeile) ---------- */
 
 function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender }) {
@@ -5193,7 +5310,6 @@ export default function App() {
     spieler: "Spieler",
   };
 
-  const initialen = `${profil.vorname?.[0] ?? ""}${profil.nachname?.[0] ?? ""}`.toUpperCase();
   const aktiveSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === profil.mannschaft_id) ?? null;
   const mannschaftsAbhaengigeTabs = ["tabelle", "ergebnisse", "planung", "kader"];
   const effektiveMannschaftId = mannschaftsAbhaengigeTabs.includes(tab) ? (ausgewaehlteMannschaftId ?? profil.mannschaft_id) : profil.mannschaft_id;
@@ -5246,7 +5362,10 @@ export default function App() {
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="flex items-center justify-between px-6 py-4 bg-white border-b">
+        <header
+          className="flex items-center justify-between px-6 py-4 bg-white border-b sticky top-0 z-10"
+          style={{ paddingTop: "max(1rem, env(safe-area-inset-top))" }}
+        >
           <div className="flex items-center gap-3">
             <button className="md:hidden" onClick={() => setNavOpen(!navOpen)}><Menu size={20} /></button>
             <h2 className="text-lg font-bold" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>{titles[tab]}</h2>
@@ -5258,7 +5377,9 @@ export default function App() {
               onOeffneNachricht={(spielerId) => { setZielSpielerId(spielerId); setTab("nachrichten"); }}
               onOeffneKalender={() => setTab("kalender")}
             />
-            <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background: COLORS.petrol }}>{initialen}</div>
+            <button onClick={() => setTab("einstellungen")} title="Mein Profil">
+              <Avatar person={profil} groesse={32} />
+            </button>
           </div>
         </header>
         <main className="p-6 overflow-y-auto">
