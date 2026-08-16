@@ -5579,14 +5579,14 @@ export default function App() {
   const eigenesMannschaftsLogo = logoFuerMannschaft(eigeneMannschaft);
 
   return (
-    <div className="min-h-screen flex" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
+    <div className="h-[100dvh] flex overflow-hidden" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
       <AenderungsPopup profil={profil} />
       <UmfrageEskalation profil={profil} />
       <aside
-        className={`fixed md:static z-20 h-full md:h-auto w-64 transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
+        className={`fixed md:static z-20 h-[100dvh] md:h-full w-64 flex flex-col transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
         style={{ background: COLORS.petrolDark }}
       >
-        <div className="p-5 border-b" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+        <div className="p-5 border-b shrink-0" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
           {eigenesMannschaftsLogo ? (
             // Das Mannschaftslogo trägt Vereinsname und Mannschaft bereits in sich
             <img src={eigenesMannschaftsLogo} alt={`TTV 97 Kamenz — ${eigeneMannschaft?.name ?? ""}`} className="w-full max-w-[190px]" />
@@ -5602,7 +5602,7 @@ export default function App() {
             </div>
           )}
         </div>
-        <nav className="p-3 space-y-1">
+        <nav className="p-3 space-y-1 flex-1 overflow-y-auto">
           {nav.map((n) => (
             <button
               key={n.key}
@@ -5615,14 +5615,14 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="absolute bottom-0 w-full p-3 border-t" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+        <div className="p-3 border-t shrink-0" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
           <button onClick={abmelden} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
             <LogOut size={16} /> Abmelden
           </button>
         </div>
       </aside>
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <header
           className="flex items-center justify-between px-6 py-4 bg-white border-b sticky top-0 z-10"
           style={{ paddingTop: "max(1rem, env(safe-area-inset-top))" }}
@@ -5643,7 +5643,7 @@ export default function App() {
             </button>
           </div>
         </header>
-        <main className="p-6 overflow-y-auto">
+        <main className="p-6 overflow-y-auto flex-1">
           {tab === "einstellungen" ? (
             <Einstellungen profil={profil} onProfilGeaendert={setProfil} />
           ) : tab === "umfragen" ? (
