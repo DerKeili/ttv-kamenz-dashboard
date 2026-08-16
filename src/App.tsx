@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock
+  CalendarClock, Clock, Newspaper
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -862,6 +862,8 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
 
   return (
     <div className="space-y-6">
+      <News profil={profil} />
+
       <div className="grid md:grid-cols-3 gap-4">
         <TiltCard tone="petrol" className="p-5 text-white">
           <SectionLabel icon={Trophy}>Aktuelle Tabelle</SectionLabel>
@@ -2384,16 +2386,23 @@ function Kader({ saison, profil }) {
 
 const APP_URL = "https://derkeili.github.io/ttv-kamenz-dashboard/";
 
-function zugangsNachrichtText(vorname, email, passwort) {
+function zugangsNachrichtText(vorname, email, passwort, art = "neu") {
+  const einleitung =
+    art === "reset"
+      ? `dein Passwort für die TTV 97 Kamenz App wurde zurückgesetzt. Die neuen Daten haben wir dir auch schon
+per E-Mail an ${email} geschickt — hier nochmal zum Nachschauen:`
+      : `dein Zugang zur TTV 97 Kamenz App ist bereit. Die Daten haben wir dir auch schon
+per E-Mail an ${email} geschickt — hier nochmal zum Nachschauen:`;
+
   return `Hallo ${vorname},
 
-dein Zugang zur TTV 97 Kamenz App ist bereit:
+${einleitung}
 
 E-Mail: ${email}
-Einmalpasswort: ${passwort}
+${art === "reset" ? "Neues Passwort" : "Einmalpasswort"}: ${passwort}
 
 Anmelden hier: ${APP_URL}
-Beim ersten Login wirst du gebeten, dir ein eigenes Passwort zu vergeben.
+Beim nächsten Login wirst du gebeten, dir ein eigenes Passwort zu vergeben.
 
 Tipp: Du kannst dir die App wie eine normale App aufs Handy legen:
 – iPhone: Seite in Safari öffnen → Teilen-Symbol → "Zum Home-Bildschirm"
@@ -2403,9 +2412,9 @@ Sportliche Grüße
 TTV 97 Kamenz e.V.`;
 }
 
-function ZugangsNachricht({ vorname, email, passwort, onAbschliessen }) {
+function ZugangsNachricht({ vorname, email, passwort, onAbschliessen, art = "neu" }) {
   const [kopiert, setKopiert] = useState(false);
-  const text = zugangsNachrichtText(vorname, email, passwort);
+  const text = zugangsNachrichtText(vorname, email, passwort, art);
 
   function kopieren() {
     navigator.clipboard?.writeText(text);
@@ -2415,14 +2424,18 @@ function ZugangsNachricht({ vorname, email, passwort, onAbschliessen }) {
 
   return (
     <div className="mt-4 p-3 rounded-md text-sm" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
-      <p className="font-semibold mb-1">Zugang angelegt — die Zugangsdaten sind bereits per E-Mail unterwegs.</p>
+      <p className="font-semibold mb-1">
+        {art === "reset"
+          ? "Passwort zurückgesetzt — die neuen Daten sind bereits per E-Mail unterwegs."
+          : "Zugang angelegt — die Zugangsdaten sind bereits per E-Mail unterwegs."}
+      </p>
       <p className="text-xs mb-3 opacity-90">
-        {email} hat das Einmalpasswort automatisch zugeschickt bekommen. Du kannst denselben Text zusätzlich
-        über WhatsApp oder einen anderen Messenger weitergeben — etwa wenn die E-Mail im Spam landet oder
-        jemand seine Adresse selten abruft.
+        An {email} ist das Passwort automatisch rausgegangen. Du kannst denselben Text zusätzlich über
+        WhatsApp oder einen anderen Messenger weitergeben — etwa wenn die E-Mail im Spam landet oder
+        jemand seine Adresse selten abruft. Im Text steht, dass die Daten auch per E-Mail gekommen sind.
       </p>
       <p className="mb-2">
-        Einmalpasswort: <strong className="font-mono">{passwort}</strong>
+        {art === "reset" ? "Neues Passwort" : "Einmalpasswort"}: <strong className="font-mono">{passwort}</strong>
       </p>
       <textarea readOnly value={text} rows={8} className="w-full border rounded-md px-2 py-2 text-xs font-mono bg-white text-gray-700" />
       <div className="flex flex-wrap gap-2 mt-2">
@@ -3131,6 +3144,7 @@ function Spielerverwaltung({ profil }) {
                 </div>
                 {zurueckgesetztFuerId === s.id && (
                   <ZugangsNachricht
+                    art="reset"
                     vorname={s.vorname}
                     email={s.email}
                     passwort={zurueckgesetztesPasswort}
@@ -5055,6 +5069,217 @@ const NAV_BASIS = [
   { key: "nachrichten", label: "Nachrichten", icon: MessageSquare },
   { key: "einstellungen", label: "Einstellungen", icon: Settings },
 ];
+
+/* ---------- Neuigkeiten (News) auf dem Dashboard ----------
+   Sichtbar für alle. Schreiben, ändern und löschen dürfen nur Admins sowie
+   Mannschaftsführer und ihre Stellvertreter. Angezeigt werden zunächst die drei
+   jüngsten Beiträge, ältere lassen sich aufklappen. */
+
+const NEWS_SICHTBAR = 3;
+
+function News({ profil }) {
+  const [beitraege, setBeitraege] = useState([]);
+  const [autoren, setAutoren] = useState({});
+  const [mannschaften, setMannschaften] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [alleZeigen, setAlleZeigen] = useState(false);
+  const [formOffen, setFormOffen] = useState(false);
+  const [bearbeiteId, setBearbeiteId] = useState(null);
+  const [form, setForm] = useState({ titel: "", inhalt: "", mannschaftId: "" });
+  const [loeschenBestaetigung, setLoeschenBestaetigung] = useState(null);
+  const [speichernLadend, setSpeichernLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  const darfSchreiben = profil.ist_admin || istTeamLeiter(profil);
+
+  async function laden() {
+    setLadend(true);
+    const [{ data: news }, { data: personen }, { data: teams }] = await Promise.all([
+      supabase.from("news").select("*").order("erstellt_am", { ascending: false }),
+      supabase.from("profiles").select("id, vorname, nachname, avatar_url"),
+      supabase.from("mannschaften").select("id, name, hierarchie_stufe"),
+    ]);
+    setBeitraege(news ?? []);
+    setAutoren(Object.fromEntries((personen ?? []).map((p) => [p.id, p])));
+    setMannschaften(sortiereMannschaften(teams));
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, [profil.id]);
+
+  function formularOeffnen(beitrag) {
+    setFehler(null);
+    if (beitrag) {
+      setBearbeiteId(beitrag.id);
+      setForm({ titel: beitrag.titel, inhalt: beitrag.inhalt, mannschaftId: beitrag.mannschaft_id ?? "" });
+    } else {
+      setBearbeiteId(null);
+      // Mannschaftsführer schreiben standardmäßig für die eigene Mannschaft
+      setForm({ titel: "", inhalt: "", mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
+    }
+    setFormOffen(true);
+  }
+
+  async function speichern() {
+    setFehler(null);
+    if (!form.titel.trim() || !form.inhalt.trim()) return setFehler("Bitte Überschrift und Text ausfüllen.");
+    setSpeichernLadend(true);
+    const werte = {
+      titel: form.titel.trim(),
+      inhalt: form.inhalt.trim(),
+      mannschaft_id: form.mannschaftId || null,
+    };
+    const { error } = bearbeiteId
+      ? await supabase.from("news").update({ ...werte, aktualisiert_am: new Date().toISOString() }).eq("id", bearbeiteId)
+      : await supabase.from("news").insert({ ...werte, autor_id: profil.id });
+    setSpeichernLadend(false);
+    if (error) return setFehler(error.message);
+    setFormOffen(false);
+    setBearbeiteId(null);
+    laden();
+  }
+
+  async function loeschen(id) {
+    if (loeschenBestaetigung !== id) return setLoeschenBestaetigung(id);
+    const { error } = await supabase.from("news").delete().eq("id", id);
+    setLoeschenBestaetigung(null);
+    if (error) return setFehler(error.message);
+    laden();
+  }
+
+  const sichtbare = alleZeigen ? beitraege : beitraege.slice(0, NEWS_SICHTBAR);
+  const weitere = beitraege.length - NEWS_SICHTBAR;
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <div className="flex items-center justify-between mb-3">
+        <SectionLabel icon={Newspaper}>Neuigkeiten aus dem Verein</SectionLabel>
+        {darfSchreiben && !formOffen && (
+          <button
+            onClick={() => formularOeffnen(null)}
+            className="text-xs px-3 py-1.5 rounded-md text-white font-semibold flex items-center gap-1 shrink-0"
+            style={{ background: COLORS.orange }}
+          >
+            <Plus size={13} /> Beitrag schreiben
+          </button>
+        )}
+      </div>
+
+      {formOffen && (
+        <div className="mb-4 p-3 rounded-md border" style={{ background: COLORS.paper }}>
+          <label className="block text-xs text-gray-500 mb-1">Überschrift</label>
+          <input
+            value={form.titel}
+            onChange={(e) => setForm({ ...form, titel: e.target.value })}
+            placeholder="z. B. Hallenzeiten in den Ferien"
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          />
+          <label className="block text-xs text-gray-500 mb-1">Text</label>
+          <textarea
+            value={form.inhalt}
+            onChange={(e) => setForm({ ...form, inhalt: e.target.value })}
+            rows={4}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          />
+          <label className="block text-xs text-gray-500 mb-1">Für wen ist der Beitrag?</label>
+          <select
+            value={form.mannschaftId}
+            onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })}
+            disabled={!profil.ist_admin}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+            style={{ opacity: profil.ist_admin ? 1 : 0.7 }}
+          >
+            <option value="">Ganzer Verein</option>
+            {mannschaften.map((m) => <option key={m.id} value={m.id}>Nur {m.name}</option>)}
+          </select>
+          {!profil.ist_admin && (
+            <p className="text-[11px] text-gray-400 mb-3">
+              Als Mannschaftsführer schreibst du für deine eigene Mannschaft. Vereinsweite Beiträge kann ein Admin anlegen.
+            </p>
+          )}
+          {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={speichern}
+              disabled={speichernLadend}
+              className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+              style={{ background: COLORS.orange, opacity: speichernLadend ? 0.6 : 1 }}
+            >
+              {speichernLadend ? "Speichere…" : bearbeiteId ? "Änderungen speichern" : "Veröffentlichen"}
+            </button>
+            <button onClick={() => { setFormOffen(false); setBearbeiteId(null); setFehler(null); }} className="px-4 py-2 rounded-md text-sm border">
+              Abbrechen
+            </button>
+          </div>
+        </div>
+      )}
+
+      {ladend ? (
+        <p className="text-sm text-gray-400">Lade Neuigkeiten…</p>
+      ) : beitraege.length === 0 ? (
+        <p className="text-sm text-gray-400">
+          {darfSchreiben ? "Noch keine Beiträge — schreib den ersten." : "Aktuell gibt es keine Neuigkeiten."}
+        </p>
+      ) : (
+        <>
+          <div className="space-y-4">
+            {sichtbare.map((b) => {
+              const autor = autoren[b.autor_id];
+              const team = mannschaften.find((m) => m.id === b.mannschaft_id);
+              return (
+                <div key={b.id} className="border-b last:border-b-0 pb-4 last:pb-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{b.titel}</p>
+                      <div className="flex flex-wrap items-center gap-2 mt-0.5 text-[11px] text-gray-400">
+                        <span>{new Date(b.erstellt_am).toLocaleDateString("de-DE", { day: "2-digit", month: "long", year: "numeric" })}</span>
+                        {autor && <span>· {autor.vorname} {autor.nachname}</span>}
+                        {team && (
+                          <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#E4F2EE", color: COLORS.petrol }}>
+                            {team.name}
+                          </span>
+                        )}
+                        {b.aktualisiert_am && <span>· bearbeitet</span>}
+                      </div>
+                    </div>
+                    {darfSchreiben && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        {loeschenBestaetigung === b.id ? (
+                          <>
+                            <span className="text-xs text-gray-500">Löschen?</span>
+                            <button onClick={() => loeschen(b.id)} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>Ja</button>
+                            <button onClick={() => setLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">Nein</button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => formularOeffnen(b)} className="text-gray-400 hover:text-gray-600"><Pencil size={14} /></button>
+                            <button onClick={() => loeschen(b.id)} style={{ color: COLORS.orangeDeep }}><Trash2 size={14} /></button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap">{b.inhalt}</p>
+                </div>
+              );
+            })}
+          </div>
+
+          {weitere > 0 && (
+            <button
+              onClick={() => setAlleZeigen(!alleZeigen)}
+              className="text-xs mt-4 flex items-center gap-1 font-semibold"
+              style={{ color: COLORS.petrol }}
+            >
+              {alleZeigen ? "Ältere Beiträge ausblenden" : `${weitere} ältere ${weitere === 1 ? "Beitrag" : "Beiträge"} anzeigen`}
+              <ChevronRight size={13} style={{ transform: alleZeigen ? "rotate(-90deg)" : "rotate(90deg)" }} />
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 /* ---------- Profilbild ---------- */
 
