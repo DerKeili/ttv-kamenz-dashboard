@@ -1586,7 +1586,12 @@ function Spielerplanung({ saison, profil }) {
               <tbody>
                 {spieler.map((sp) => (
                   <tr key={sp.id} className="border-t">
-                    <td className="p-3 font-medium sticky left-0 bg-white">{sp.vorname} {sp.nachname}</td>
+                    <td className="p-3 font-medium sticky left-0 bg-white">
+                      <div className="flex items-center gap-2">
+                        <Avatar person={sp} groesse={28} />
+                        <span className="whitespace-nowrap">{sp.vorname} {sp.nachname}</span>
+                      </div>
+                    </td>
                     {spiele.map((s) => {
                       const status = meldungen[s.id]?.[sp.id] ?? "offen";
                       const eigeneZeile = sp.id === profil.id || profil.ist_admin;
@@ -3067,19 +3072,22 @@ function Spielerverwaltung({ profil }) {
             return (
               <div key={s.id} className="py-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <span className="text-sm">{s.vorname} {s.nachname}</span>
-                    <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
-                    {!s.mannschaft_id && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ml-2" style={{ background: "#F1F1EF", color: "#999" }}>
-                        Nicht zugewiesen
-                      </span>
-                    )}
-                    {s.ist_admin && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full text-white ml-2" style={{ background: COLORS.orange }}>
-                        Admin
-                      </span>
-                    )}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Avatar person={s} groesse={32} />
+                    <div className="min-w-0">
+                      <span className="text-sm">{s.vorname} {s.nachname}</span>
+                      <span className="text-xs text-gray-400 ml-2">{s.rang}</span>
+                      {!s.mannschaft_id && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ml-2" style={{ background: "#F1F1EF", color: "#999" }}>
+                          Nicht zugewiesen
+                        </span>
+                      )}
+                      {s.ist_admin && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full text-white ml-2" style={{ background: COLORS.orange }}>
+                          Admin
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {spielerLoeschenBestaetigung === s.id ? (
                     <div className="flex items-center gap-2 shrink-0">
@@ -3657,6 +3665,7 @@ function Nachrichten({ profil, zielSpielerId }) {
           <button onClick={() => setPartnerId(null)} className="text-gray-400 hover:text-gray-600">
             <ArrowLeft size={18} />
           </button>
+          <Avatar person={partner} groesse={32} />
           <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{partner.vorname} {partner.nachname}</p>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -5081,13 +5090,14 @@ function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeff
     });
     const senderIds = Object.keys(nachSender);
     if (senderIds.length > 0) {
-      const { data: absender } = await supabase.from("profiles").select("id, vorname, nachname").in("id", senderIds);
+      const { data: absender } = await supabase.from("profiles").select("id, vorname, nachname, avatar_url").in("id", senderIds);
       senderIds.forEach((id) => {
         const person = (absender ?? []).find((a) => a.id === id);
         const anzahl = nachSender[id].length;
         liste.push({
           art: "nachricht",
           id: `n-${id}`,
+          person,
           titel: person ? `${person.vorname} ${person.nachname}` : "Neue Nachricht",
           text: anzahl === 1 ? nachSender[id][0].inhalt : `${anzahl} ungelesene Nachrichten`,
           zeit: nachSender[id].at(-1)?.gesendet_am,
@@ -5184,12 +5194,16 @@ function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeff
                       onClick={() => { setOffen(false); e.aktion(); }}
                       className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-gray-50"
                     >
-                      <span
-                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                        style={e.art === "termin" ? { background: "#E4F2EE", color: COLORS.petrol } : { background: "#FBE2DA", color: COLORS.orangeDeep }}
-                      >
-                        <Symbol size={13} />
-                      </span>
+                      {e.person ? (
+                        <Avatar person={e.person} groesse={28} className="mt-0.5" />
+                      ) : (
+                        <span
+                          className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+                          style={e.art === "termin" ? { background: "#E4F2EE", color: COLORS.petrol } : { background: "#FBE2DA", color: COLORS.orangeDeep }}
+                        >
+                          <Symbol size={13} />
+                        </span>
+                      )}
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-medium truncate" style={{ color: COLORS.anthracite }}>{e.titel}</span>
                         <span className="block text-xs text-gray-500 truncate">{e.text}</span>
