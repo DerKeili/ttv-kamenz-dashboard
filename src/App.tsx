@@ -2924,6 +2924,8 @@ function Spielerverwaltung({ profil }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      <KuendigungsAntraege profil={profil} onErledigt={ladenAlles} />
+
       {kontakte.length > 0 && (
         <div className="bg-white rounded-lg border p-5">
           <SectionLabel icon={Users}>Importierte Kontakte ({kontakte.length})</SectionLabel>
@@ -3888,6 +3890,8 @@ function Einstellungen({ profil, onProfilGeaendert }) {
       </div>
 
       <PasswortAendern profil={profil} />
+
+      <KontoKuendigung profil={profil} />
 
       {profil.ist_admin && <AenderungshinweisVerwaltung />}
     </div>
@@ -5070,6 +5074,210 @@ const NAV_BASIS = [
   { key: "einstellungen", label: "Einstellungen", icon: Settings },
 ];
 
+/* ---------- Konto kündigen ----------
+   Spieler stellen den Antrag selbst; löschen darf ihn nur ein Admin oder der
+   Mannschaftsführer. So kann niemand versehentlich oder im Affekt seinen Zugang
+   verlieren, und die Mannschaftsführung erfährt zuverlässig davon. */
+
+function KontoKuendigung({ profil }) {
+  const [antrag, setAntrag] = useState(null);
+  const [ladend, setLadend] = useState(true);
+  const [formOffen, setFormOffen] = useState(false);
+  const [grund, setGrund] = useState("");
+  const [senden, setSenden] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  async function laden() {
+    setLadend(true);
+    const { data } = await supabase
+      .from("konto_loeschungen")
+      .select("*")
+      .eq("spieler_id", profil.id)
+      .eq("status", "offen")
+      .maybeSingle();
+    setAntrag(data ?? null);
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, [profil.id]);
+
+  async function beantragen() {
+    setFehler(null);
+    setSenden(true);
+    const { error } = await supabase.from("konto_loeschungen").insert({
+      spieler_id: profil.id,
+      spieler_name: `${profil.vorname} ${profil.nachname}`,
+      spieler_email: profil.email,
+      mannschaft_id: profil.mannschaft_id ?? null,
+      grund: grund.trim() || null,
+      status: "offen",
+    });
+    setSenden(false);
+    if (error) return setFehler(error.message);
+    setFormOffen(false);
+    setGrund("");
+    laden();
+  }
+
+  async function zurueckziehen() {
+    setFehler(null);
+    const { error } = await supabase.from("konto_loeschungen").delete().eq("id", antrag.id);
+    if (error) return setFehler(error.message);
+    laden();
+  }
+
+  if (ladend) return null;
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={LogOut}>Konto kündigen</SectionLabel>
+
+      {antrag ? (
+        <>
+          <div className="p-3 rounded-md text-sm mb-3" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+            <p className="font-semibold">Deine Kündigung liegt zur Bestätigung vor.</p>
+            <p className="text-xs mt-1">
+              Eingereicht am {formatDatum(antrag.erstellt_am)}. Sobald ein Administrator oder dein Mannschaftsführer
+              sie bestätigt, werden dein Zugang und alle deine Daten gelöscht. Bis dahin kannst du die App normal weiter nutzen.
+            </p>
+          </div>
+          <button onClick={zurueckziehen} className="px-4 py-2 rounded-md text-sm font-semibold border" style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}>
+            Kündigung zurückziehen
+          </button>
+        </>
+      ) : formOffen ? (
+        <>
+          <p className="text-sm text-gray-600 mb-3">
+            Mit der Kündigung werden dein Zugang, dein Profil, deine Rückmeldungen und deine Nachrichten
+            vollständig gelöscht. Das lässt sich danach nicht rückgängig machen.
+          </p>
+          <label className="block text-xs text-gray-500 mb-1">Grund (optional)</label>
+          <textarea
+            value={grund}
+            onChange={(e) => setGrund(e.target.value)}
+            rows={3}
+            placeholder="Magst du kurz sagen, warum? Hilft uns, die App besser zu machen."
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          />
+          {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={beantragen}
+              disabled={senden}
+              className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+              style={{ background: COLORS.orangeDeep, opacity: senden ? 0.6 : 1 }}
+            >
+              {senden ? "Sende…" : "Kündigung einreichen"}
+            </button>
+            <button onClick={() => { setFormOffen(false); setFehler(null); }} className="px-4 py-2 rounded-md text-sm border">
+              Abbrechen
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-gray-600 mb-3">
+            Du möchtest die App nicht mehr nutzen? Dann kannst du hier die Löschung deines Kontos beantragen.
+            Ein Administrator oder dein Mannschaftsführer bestätigt sie, danach sind alle deine Daten entfernt.
+          </p>
+          <button onClick={() => setFormOffen(true)} className="px-4 py-2 rounded-md text-sm font-semibold border" style={{ borderColor: COLORS.orangeDeep, color: COLORS.orangeDeep }}>
+            Konto kündigen
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function KuendigungsAntraege({ profil, onErledigt }) {
+  const [antraege, setAntraege] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [bearbeiteId, setBearbeiteId] = useState(null);
+  const [fehler, setFehler] = useState(null);
+
+  async function laden() {
+    setLadend(true);
+    const { data } = await supabase
+      .from("konto_loeschungen")
+      .select("*")
+      .eq("status", "offen")
+      .order("erstellt_am");
+    setAntraege(data ?? []);
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, [profil.id]);
+
+  async function bestaetigen(antrag) {
+    setFehler(null);
+    setBearbeiteId(antrag.id);
+    const { data, error } = await supabase.functions.invoke("delete-spieler", { body: { spielerId: antrag.spieler_id } });
+    if (error || data?.error) {
+      setBearbeiteId(null);
+      setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    // Antrag als erledigt vermerken — der Eintrag bleibt als Nachweis bestehen
+    await supabase
+      .from("konto_loeschungen")
+      .update({ status: "bestaetigt", bearbeitet_von: profil.id, bearbeitet_am: new Date().toISOString() })
+      .eq("id", antrag.id);
+    setBearbeiteId(null);
+    laden();
+    onErledigt?.();
+  }
+
+  async function ablehnen(antrag) {
+    setFehler(null);
+    setBearbeiteId(antrag.id);
+    await supabase
+      .from("konto_loeschungen")
+      .update({ status: "abgelehnt", bearbeitet_von: profil.id, bearbeitet_am: new Date().toISOString() })
+      .eq("id", antrag.id);
+    setBearbeiteId(null);
+    laden();
+  }
+
+  if (ladend || antraege.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-lg border p-5 mb-6" style={{ borderColor: COLORS.orangeDeep }}>
+      <SectionLabel icon={AlertTriangle}>Offene Kündigungen ({antraege.length})</SectionLabel>
+      <p className="text-xs text-gray-500 mb-3">
+        Diese Spieler haben die Löschung ihres Kontos beantragt. Mit der Bestätigung werden Zugang und
+        alle Daten endgültig entfernt — bitte vorher kurz Rücksprache halten.
+      </p>
+      {fehler && <p className="text-xs mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>{fehler}</p>}
+      <div className="divide-y">
+        {antraege.map((a) => (
+          <div key={a.id} className="py-3 first:pt-0 last:pb-0">
+            <p className="text-sm font-medium" style={{ color: COLORS.anthracite }}>{a.spieler_name}</p>
+            <p className="text-xs text-gray-400">{a.spieler_email} · eingereicht am {formatDatum(a.erstellt_am)}</p>
+            {a.grund && <p className="text-sm text-gray-600 mt-1 italic">„{a.grund}"</p>}
+            <div className="flex flex-wrap gap-2 mt-2">
+              <button
+                onClick={() => bestaetigen(a)}
+                disabled={bearbeiteId === a.id}
+                className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
+                style={{ background: COLORS.orangeDeep, opacity: bearbeiteId === a.id ? 0.6 : 1 }}
+              >
+                {bearbeiteId === a.id ? "Lösche…" : "Kündigung bestätigen und löschen"}
+              </button>
+              <button
+                onClick={() => ablehnen(a)}
+                disabled={bearbeiteId === a.id}
+                className="px-3 py-1.5 rounded-md text-xs font-semibold border"
+              >
+                Erledigt, Spieler bleibt
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Neuigkeiten (News) auf dem Dashboard ----------
    Sichtbar für alle. Schreiben, ändern und löschen dürfen nur Admins sowie
    Mannschaftsführer und ihre Stellvertreter. Angezeigt werden zunächst die drei
@@ -5309,7 +5517,7 @@ function Avatar({ person, groesse = 32, className = "" }) {
 
 /* ---------- Benachrichtigungen (Glocke in der Kopfzeile) ---------- */
 
-function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender }) {
+function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender, onOeffneSpieler }) {
   const [offen, setOffen] = useState(false);
   const [eintraege, setEintraege] = useState([]);
   const [ladend, setLadend] = useState(true);
@@ -5376,6 +5584,24 @@ function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeff
       });
     });
 
+    // Offene Kündigungen — nur für Admins und Mannschaftsführung
+    if (profil.ist_admin || istTeamLeiter(profil)) {
+      const { data: kuendigungen } = await supabase
+        .from("konto_loeschungen")
+        .select("id, spieler_name, erstellt_am")
+        .eq("status", "offen");
+      (kuendigungen ?? []).forEach((k) => {
+        liste.push({
+          art: "kuendigung",
+          id: `k-${k.id}`,
+          titel: `Kündigung: ${k.spieler_name}`,
+          text: "Wartet auf deine Bestätigung",
+          zeit: k.erstellt_am,
+          aktion: () => onOeffneSpieler(),
+        });
+      });
+    }
+
     // Termine der nächsten sieben Tage
     (termine ?? []).forEach((t) => {
       if (t.mannschaft_id && t.mannschaft_id !== profil.mannschaft_id) return;
@@ -5405,7 +5631,7 @@ function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeff
   }, [profil.id]);
 
   const zuErledigen = eintraege.filter((e) => e.art !== "termin").length;
-  const symbole = { nachricht: MessageSquare, umfrage: Vote, termin: CalendarDays };
+  const symbole = { nachricht: MessageSquare, umfrage: Vote, termin: CalendarDays, kuendigung: AlertTriangle };
 
   return (
     <div className="relative">
@@ -5637,6 +5863,7 @@ export default function App() {
               onOeffneUmfrage={(umfrageId) => { setZielUmfrageId(umfrageId); setTab("umfragen"); }}
               onOeffneNachricht={(spielerId) => { setZielSpielerId(spielerId); setTab("nachrichten"); }}
               onOeffneKalender={() => setTab("kalender")}
+              onOeffneSpieler={() => setTab("spieler")}
             />
             <button onClick={() => setTab("einstellungen")} title="Mein Profil">
               <Avatar person={profil} groesse={32} />
