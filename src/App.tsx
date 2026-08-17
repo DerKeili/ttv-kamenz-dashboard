@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock, Newspaper, Lock, Unlock
+  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -1301,6 +1301,7 @@ function MannschaftsUebersicht({ profil }) {
                   gesendetIds.includes(mannschaft.id) ? (
                     <p className="text-xs mt-2" style={{ color: COLORS.petrol }}>Umfrage an {untereMannschaft.name} verschickt.</p>
                   ) : (
+                    <>
                     <button
                       onClick={() => umfrageAnUntereSenden(eintrag, untereMannschaft)}
                       disabled={sendenLadendId === mannschaft.id}
@@ -1309,6 +1310,11 @@ function MannschaftsUebersicht({ profil }) {
                     >
                       {sendenLadendId === mannschaft.id ? "Sende…" : `Umfrage an ${untereMannschaft.name} senden`}
                     </button>
+                    <p className="text-[11px] text-gray-400 mt-1 flex items-start gap-1">
+                      <Mail size={11} className="mt-0.5 shrink-0" />
+                      <span>Alle Spieler der {untereMannschaft.name} bekommen die Anfrage zusätzlich per E-Mail.</span>
+                    </p>
+                    </>
                   )
                 ) : (
                   <p className="text-xs mt-2 text-gray-400">Keine tiefere Mannschaft hinterlegt, die aushelfen könnte.</p>
@@ -1756,6 +1762,10 @@ function Spielerplanung({ saison, profil }) {
                     />
                   </div>
                 </div>
+                <p className="text-[11px] text-gray-400 mb-2 flex items-start gap-1">
+                  <Mail size={11} className="mt-0.5 shrink-0" />
+                  <span>Beim Ansetzen eines neuen Termins wird niemand automatisch benachrichtigt — sag deiner Mannschaft am besten kurz Bescheid oder starte eine Umfrage.</span>
+                </p>
                 <div className="flex flex-wrap gap-2">
                   <button
                     onClick={() => verlegungSpeichern(true)}
@@ -2402,6 +2412,9 @@ function Kalender({ profil }) {
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={form.perMail} onChange={(e) => setForm({ ...form, perMail: e.target.checked })} />
               Alle Spieler per E-Mail über diesen Termin informieren
+              <span className="block text-[11px] text-gray-400 font-normal">
+                Spieler, die Termin-E-Mails abgeschaltet haben, erhalten keine.
+              </span>
             </label>
           </div>
           {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
@@ -3736,6 +3749,14 @@ function Umfragen({ profil, zielUmfrageId }) {
             )}
           </div>
 
+          <p className="text-xs text-gray-500 mb-3 flex items-start gap-1.5">
+            <Mail size={13} className="mt-0.5 shrink-0" />
+            <span>
+              Alle ausgewählten Spieler bekommen die Umfrage automatisch per E-Mail zugeschickt — außer sie
+              haben E-Mails zu Umfragen in ihren Einstellungen abgeschaltet.
+            </span>
+          </p>
+
           {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
           <button
             onClick={umfrageErstellen}
@@ -4044,6 +4065,10 @@ function Nachrichten({ profil, zielSpielerId }) {
             })
           )}
         </div>
+        <p className="text-[11px] text-gray-400 px-3 pt-3 flex items-start gap-1.5">
+          <Mail size={12} className="mt-0.5 shrink-0" />
+          <span>{partner.vorname} bekommt eine E-Mail, dass eine neue Nachricht wartet — höchstens einmal pro Stunde.</span>
+        </p>
         <div className="flex items-center gap-2 p-3 border-t">
           <input
             value={entwurf}
@@ -4858,6 +4883,10 @@ function Turniere({ profil }) {
               </label>
 
               {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+              <p className="text-xs text-gray-500 mb-3 flex items-start gap-1.5">
+                <Mail size={13} className="mt-0.5 shrink-0" />
+                <span>Zum Turnier entsteht automatisch eine Anmelde-Umfrage — die eingeladenen Spieler bekommen sie auch per E-Mail.</span>
+              </p>
               <button onClick={turnierErstellen} disabled={speichernLadend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: speichernLadend ? 0.6 : 1 }}>
                 {speichernLadend ? "Lege an…" : "Turnier anlegen"}
               </button>
