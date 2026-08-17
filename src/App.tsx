@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock, Newspaper
+  CalendarClock, Clock, Newspaper, Lock, Unlock
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -192,6 +192,28 @@ function autoAktualisierungMerken(schluessel) {
 function letzterAbrufZeitpunkt(schluessel) {
   const zuletzt = letzteAutoAktualisierung.get(schluessel);
   return zuletzt ? new Date(zuletzt) : null;
+}
+
+/* ---------- Spielverlegung ----------
+   Das vom Verband gemeldete Datum bleibt in `datum` unangetastet, damit ein
+   erneuter Spielplan-Abruf nichts überschreibt. Eine Verlegung wird separat in
+   `verlegt` und `verlegt_auf` geführt. Überall, wo es um den tatsächlichen
+   Termin geht, wird das effektive Datum verwendet. */
+
+function effektivesSpielDatum(spiel) {
+  return spiel?.verlegt_auf ?? spiel?.datum ?? null;
+}
+
+// Solange kein Ersatztermin feststeht, kann sich niemand eintragen
+function spielGesperrt(spiel) {
+  return Boolean(spiel?.verlegt) && !spiel?.verlegt_auf;
+}
+
+function formatDatumZeit(iso) {
+  if (!iso) return "–";
+  return new Date(iso).toLocaleString("de-DE", {
+    weekday: "short", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  }) + " Uhr";
 }
 
 function formatDatum(iso) {
@@ -884,7 +906,10 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
               <p className="text-lg font-bold" style={{ fontFamily: "Oswald, sans-serif" }}>
                 {naechstesSpiel.ist_heimspiel ? naechstesSpiel.gastteam : naechstesSpiel.heimteam}
               </p>
-              <p className="text-sm opacity-90 mt-1">{formatDatum(naechstesSpiel.datum)} · {naechstesSpiel.ist_heimspiel ? "Heimspiel" : "Auswärts"}</p>
+              <p className="text-sm opacity-90 mt-1">
+                {formatDatum(effektivesSpielDatum(naechstesSpiel))} · {naechstesSpiel.ist_heimspiel ? "Heimspiel" : "Auswärts"}
+                {naechstesSpiel.verlegt && <span className="ml-1 opacity-80">· verlegt</span>}
+              </p>
             </>
           ) : (
             <p className="text-sm opacity-90">Noch kein Spiel terminiert.</p>
@@ -1010,8 +1035,8 @@ async function verlegungsTermineFinden(spiel, mannschaftId) {
   const belegt = new Set();
 
   if (saisonIds.length > 0) {
-    const { data: alleSpiele } = await supabase.from("verbands_spiele").select("datum").in("saison_id", saisonIds);
-    (alleSpiele ?? []).forEach((s) => { if (s.datum) belegt.add(tagesSchluessel(s.datum)); });
+    const { data: alleSpiele } = await supabase.from("verbands_spiele").select("datum, verlegt_auf").in("saison_id", saisonIds);
+    (alleSpiele ?? []).forEach((s) => { const d = effektivesSpielDatum(s); if (d) belegt.add(tagesSchluessel(d)); });
   }
 
   // Kalendertermine der eigenen Mannschaft (und vereinsweite Termine) ebenfalls meiden
@@ -1417,6 +1442,86 @@ function Spielerplanung({ saison, profil }) {
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
+  const [verlegung, setVerlegung] = useState(null); // { spiel, datum, grund }
+  const [verlegungLadend, setVerlegungLadend] = useState(false);
+  const [schreibschutzAus, setSchreibschutzAus] = useState(false);
+  const [gesetztVon, setGesetztVon] = useState({}); // { "spielId:spielerId": { id, vorname } }
+  const schreibschutzTimer = useRef(null);
+
+  const darfPlanen = darfMannschaftVerwalten(profil, saison.mannschaft_id);
+
+  // Der Schreibschutz greift nach fünf Minuten ohne Eintrag wieder von selbst,
+  // damit er nicht versehentlich dauerhaft offen bleibt.
+  const SCHREIBSCHUTZ_DAUER_MS = 5 * 60 * 1000;
+
+  function schreibschutzZeitVerlaengern() {
+    if (schreibschutzTimer.current) clearTimeout(schreibschutzTimer.current);
+    schreibschutzTimer.current = setTimeout(() => setSchreibschutzAus(false), SCHREIBSCHUTZ_DAUER_MS);
+  }
+
+  function schreibschutzUmschalten() {
+    if (schreibschutzAus) {
+      if (schreibschutzTimer.current) clearTimeout(schreibschutzTimer.current);
+      setSchreibschutzAus(false);
+      return;
+    }
+    setSchreibschutzAus(true);
+    schreibschutzZeitVerlaengern();
+  }
+
+  useEffect(() => () => { if (schreibschutzTimer.current) clearTimeout(schreibschutzTimer.current); }, []);
+
+  function verlegungOeffnen(spiel) {
+    setFehler(null);
+    setVerlegung({
+      spiel,
+      // Vorhandenen Ersatztermin für das Eingabefeld aufbereiten (lokale Zeit, ohne Sekunden)
+      datum: spiel.verlegt_auf ? new Date(spiel.verlegt_auf).toISOString().slice(0, 16) : "",
+      grund: spiel.verlegt_grund ?? "",
+    });
+  }
+
+  async function verlegungSpeichern(mitTermin) {
+    setFehler(null);
+    if (mitTermin && !verlegung.datum) return setFehler("Bitte einen neuen Termin angeben.");
+    setVerlegungLadend(true);
+
+    const neuerTermin = mitTermin ? new Date(verlegung.datum).toISOString() : null;
+    const { error } = await supabase
+      .from("verbands_spiele")
+      .update({
+        verlegt: true,
+        verlegt_auf: neuerTermin,
+        verlegt_grund: verlegung.grund.trim() || null,
+        verlegt_von: profil.id,
+        verlegt_am: new Date().toISOString(),
+      })
+      .eq("id", verlegung.spiel.id);
+
+    if (error) {
+      setVerlegungLadend(false);
+      return setFehler(error.message);
+    }
+
+    // Bisherige Rückmeldungen gelten für den alten Termin und werden zurückgesetzt,
+    // damit niemand fälschlich als verfügbar gezählt wird.
+    await supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", verlegung.spiel.id);
+
+    setVerlegungLadend(false);
+    setVerlegung(null);
+    laden();
+  }
+
+  async function verlegungAufheben() {
+    setVerlegungLadend(true);
+    await supabase
+      .from("verbands_spiele")
+      .update({ verlegt: false, verlegt_auf: null, verlegt_grund: null, verlegt_von: null, verlegt_am: null })
+      .eq("id", verlegung.spiel.id);
+    setVerlegungLadend(false);
+    setVerlegung(null);
+    laden();
+  }
 
   async function laden() {
     setLadend(true);
@@ -1432,8 +1537,16 @@ function Spielerplanung({ saison, profil }) {
     setSpieler(spielerDaten ?? []);
     const map = {};
     (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
-    (meldungenDaten ?? []).forEach((m) => { if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status; });
+    const herkunft = {};
+    (meldungenDaten ?? []).forEach((m) => {
+      if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status;
+      if (m.gesetzt_von) {
+        const person = (spielerDaten ?? []).find((sp) => sp.id === m.gesetzt_von);
+        herkunft[`${m.spiel_id}:${m.spieler_id}`] = { id: m.gesetzt_von, vorname: person?.vorname ?? "Mannschaftsführung" };
+      }
+    });
     setMeldungen(map);
+    setGesetztVon(herkunft);
 
     if (saison.mannschaft_id) {
       const { data: mannschaft } = await supabase.from("mannschaften").select("benoetigte_spieler, hierarchie_stufe").eq("id", saison.mannschaft_id).single();
@@ -1491,17 +1604,35 @@ function Spielerplanung({ saison, profil }) {
   }
 
   async function toggle(spielId, spielerId) {
-    if (spielerId !== profil.id && !profil.ist_admin) return; // nur eigene Meldung, außer Admin
+    const fremdeZeile = spielerId !== profil.id;
+    // Für andere Spieler darf nur die Mannschaftsführung eintragen, und auch nur
+    // bei aufgehobenem Schreibschutz — sonst passiert das versehentlich beim Scrollen.
+    if (fremdeZeile && !(darfPlanen && schreibschutzAus)) return;
+
     const order = { offen: "ja", ja: "nein", nein: "offen" };
     const neuerStatus = order[meldungen[spielId]?.[spielerId] ?? "offen"];
 
     const aktualisierteMeldungenFuerSpiel = { ...meldungen[spielId], [spielerId]: neuerStatus };
     setMeldungen((prev) => ({ ...prev, [spielId]: aktualisierteMeldungenFuerSpiel }));
+    setGesetztVon((prev) => ({
+      ...prev,
+      [`${spielId}:${spielerId}`]: fremdeZeile ? { id: profil.id, vorname: profil.vorname } : null,
+    }));
 
     await supabase.from("spielerplanung_meldungen").upsert(
-      { saison_id: saison.id, spiel_id: spielId, spieler_id: spielerId, status: neuerStatus, aktualisiert_am: new Date().toISOString() },
+      {
+        saison_id: saison.id,
+        spiel_id: spielId,
+        spieler_id: spielerId,
+        status: neuerStatus,
+        aktualisiert_am: new Date().toISOString(),
+        // Nachvollziehbar halten, wer eine fremde Rückmeldung gesetzt hat
+        gesetzt_von: fremdeZeile ? profil.id : null,
+      },
       { onConflict: "spiel_id,spieler_id" }
     );
+
+    if (fremdeZeile) schreibschutzZeitVerlaengern();
 
     const jaAnzahl = Object.values(aktualisierteMeldungenFuerSpiel).filter((v) => v === "ja").length;
     if (neuerStatus === "nein" || jaAnzahl < benoetigteSpieler) {
@@ -1565,29 +1696,134 @@ function Spielerplanung({ saison, profil }) {
       ) : (
         <>
           <div className="bg-white rounded-lg border overflow-x-auto">
+            {darfPlanen && (
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 p-3 border-b"
+                style={{ background: schreibschutzAus ? "#FBE2DA" : COLORS.paper }}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {schreibschutzAus ? <Unlock size={15} style={{ color: COLORS.orangeDeep }} /> : <Lock size={15} className="text-gray-400" />}
+                  <p className="text-xs" style={{ color: schreibschutzAus ? COLORS.orangeDeep : "#6b7280" }}>
+                    {schreibschutzAus
+                      ? "Schreibschutz aufgehoben — du kannst jetzt für deine Spieler eintragen. Jeder Eintrag wird mit deinem Namen gekennzeichnet."
+                      : "Schreibschutz aktiv — du kannst nur für dich selbst eintragen."}
+                  </p>
+                </div>
+                <button
+                  onClick={schreibschutzUmschalten}
+                  className="text-xs px-3 py-1.5 rounded-md font-semibold shrink-0"
+                  style={schreibschutzAus
+                    ? { background: COLORS.orangeDeep, color: "white" }
+                    : { border: `1px solid ${COLORS.petrol}`, color: COLORS.petrol }}
+                >
+                  {schreibschutzAus ? "Wieder sperren" : "Schreibschutz aufheben"}
+                </button>
+              </div>
+            )}
+
+            {verlegung && (
+              <div className="p-4 border-b" style={{ background: COLORS.paper }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <CalendarClock size={16} style={{ color: COLORS.konflikt }} />
+                  <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>
+                    Spiel verlegen: {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
+                  </p>
+                </div>
+                <p className="text-xs text-gray-500 mb-3">
+                  Ursprünglich am {formatDatum(verlegung.spiel.datum)}. Solange kein Ersatztermin feststeht,
+                  ist die Spalte gesperrt und niemand kann sich eintragen. Sobald du einen Termin einträgst,
+                  wird die Spalte wieder freigegeben — bereits gegebene Rückmeldungen werden dabei zurückgesetzt,
+                  weil sie sich auf den alten Termin bezogen.
+                </p>
+                <div className="grid sm:grid-cols-2 gap-3 mb-3">
+                  <div className="min-w-0">
+                    <label className="block text-xs text-gray-500 mb-1">Neuer Termin</label>
+                    <input
+                      type="datetime-local"
+                      value={verlegung.datum}
+                      onChange={(e) => setVerlegung({ ...verlegung, datum: e.target.value })}
+                      style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
+                      className="w-full border rounded-md px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <label className="block text-xs text-gray-500 mb-1">Grund (optional)</label>
+                    <input
+                      value={verlegung.grund}
+                      onChange={(e) => setVerlegung({ ...verlegung, grund: e.target.value })}
+                      placeholder="z. B. zu wenige Spieler"
+                      className="w-full border rounded-md px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => verlegungSpeichern(true)}
+                    disabled={verlegungLadend}
+                    className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+                    style={{ background: COLORS.orange, opacity: verlegungLadend ? 0.6 : 1 }}
+                  >
+                    Neuen Termin ansetzen
+                  </button>
+                  <button
+                    onClick={() => verlegungSpeichern(false)}
+                    disabled={verlegungLadend}
+                    className="px-4 py-2 rounded-md text-sm font-semibold border"
+                    style={{ borderColor: COLORS.konflikt, color: COLORS.konflikt }}
+                  >
+                    Nur als verlegt markieren
+                  </button>
+                  {verlegung.spiel.verlegt && (
+                    <button onClick={verlegungAufheben} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
+                      Verlegung aufheben
+                    </button>
+                  )}
+                  <button onClick={() => setVerlegung(null)} className="px-4 py-2 rounded-md text-sm border">
+                    Abbrechen
+                  </button>
+                </div>
+              </div>
+            )}
+
             <table className="w-full text-sm min-w-[640px]">
               <thead>
                 <tr style={{ background: COLORS.petrolDark }} className="text-white">
                   <th className="p-3 text-left font-medium sticky left-0" style={{ background: COLORS.petrolDark }}>Spieler</th>
                   {spiele.map((s) => {
-                    const tag = s.datum?.slice(0, 10);
+                    const tag = effektivesSpielDatum(s)?.slice(0, 10);
                     const parallel = (tag && ueberschneidungen[tag]) || [];
                     const hatUeberschneidung = parallel.length > 0;
+                    const gesperrt = spielGesperrt(s);
+                    const kopfStil = gesperrt
+                      ? { background: "#4A4A44", borderBottom: "3px solid #6b6b63" }
+                      : hatUeberschneidung
+                      ? { background: COLORS.konflikt, borderBottom: `3px solid ${COLORS.konfliktHell}` }
+                      : {};
                     return (
-                      <th
-                        key={s.id}
-                        className="p-3 text-center font-medium min-w-[110px]"
-                        style={hatUeberschneidung ? { background: COLORS.konflikt, borderBottom: `3px solid ${COLORS.konfliktHell}` } : {}}
-                      >
+                      <th key={s.id} className="p-3 text-center font-medium min-w-[110px]" style={kopfStil}>
                         <div className="flex items-center justify-center gap-1">
-                          {formatDatum(s.datum)}
-                          {hatUeberschneidung && <CalendarClock size={13} />}
+                          <span style={s.verlegt && s.verlegt_auf ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
+                            {formatDatum(s.datum)}
+                          </span>
+                          {hatUeberschneidung && !gesperrt && <CalendarClock size={13} />}
                         </div>
+                        {s.verlegt && s.verlegt_auf && (
+                          <div className="text-[11px] font-semibold mt-0.5">→ {formatDatum(s.verlegt_auf)}</div>
+                        )}
+                        {gesperrt && <div className="text-[10px] font-semibold mt-0.5">verlegt · Termin offen</div>}
                         <div className="text-[11px] font-normal opacity-80">{s.ist_heimspiel ? s.gastteam : s.heimteam}</div>
-                        {hatUeberschneidung && (
+                        {hatUeberschneidung && !gesperrt && (
                           <div className="text-[10px] font-semibold mt-1 leading-tight">
                             parallel: {parallel.map((u) => u.mannschaftName).join(", ")}
                           </div>
+                        )}
+                        {darfPlanen && (
+                          <button
+                            onClick={() => verlegungOeffnen(s)}
+                            className="text-[10px] font-normal underline mt-1 opacity-80"
+                          >
+                            {s.verlegt ? "Verlegung ändern" : "verlegen"}
+                          </button>
                         )}
                       </th>
                     );
@@ -1605,8 +1841,12 @@ function Spielerplanung({ saison, profil }) {
                     </td>
                     {spiele.map((s) => {
                       const status = meldungen[s.id]?.[sp.id] ?? "offen";
-                      const eigeneZeile = sp.id === profil.id || profil.ist_admin;
-                      const tag = s.datum?.slice(0, 10);
+                      const gesperrt = spielGesperrt(s);
+                      const fremdeZeile = sp.id !== profil.id;
+                      const darfSetzen = !gesperrt && (!fremdeZeile || (darfPlanen && schreibschutzAus));
+                      const eigeneZeile = darfSetzen; // steuert Klickbarkeit und Deckkraft
+                      const herkunft = gesetztVon[`${s.id}:${sp.id}`];
+                      const tag = effektivesSpielDatum(s)?.slice(0, 10);
                       const hatUeberschneidung = tag && ueberschneidungen[tag]?.length > 0;
                       const schicht = schichtSichtbarFuer(sp, profil) ? schichtFuerDatum(sp, s.datum) : null;
                       const schichtStil = schicht ? SCHICHT_STIL[schicht] : null;
@@ -1620,19 +1860,29 @@ function Spielerplanung({ saison, profil }) {
                         <td
                           key={s.id}
                           className="p-2 text-center"
-                          style={hatUeberschneidung ? { background: COLORS.konfliktHell } : {}}
+                          style={gesperrt ? { background: "#EFEFEC" } : hatUeberschneidung ? { background: COLORS.konfliktHell } : {}}
                         >
                           <button
                             onClick={() => toggle(s.id, sp.id)}
                             disabled={!eigeneZeile}
                             className="w-full py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1"
-                            style={{ ...style, opacity: eigeneZeile ? 1 : 0.7, cursor: eigeneZeile ? "pointer" : "default" }}
+                            style={
+                              gesperrt
+                                ? { background: "#E3E3DF", color: "#8a8a82", cursor: "default" }
+                                : { ...style, opacity: eigeneZeile ? 1 : 0.7, cursor: eigeneZeile ? "pointer" : "default" }
+                            }
                           >
-                            {status === "ja" && <Check size={13} />}
-                            {status === "nein" && <X size={13} />}
-                            {status === "offen" && <HelpCircle size={13} />}
-                            {status === "ja" ? "Kann" : status === "nein" ? "Kann nicht" : "Offen"}
+                            {gesperrt && <CalendarClock size={13} />}
+                            {!gesperrt && status === "ja" && <Check size={13} />}
+                            {!gesperrt && status === "nein" && <X size={13} />}
+                            {!gesperrt && status === "offen" && <HelpCircle size={13} />}
+                            {gesperrt ? "verlegt" : status === "ja" ? "Kann" : status === "nein" ? "Kann nicht" : "Offen"}
                           </button>
+                          {herkunft && !gesperrt && (
+                            <span className="block text-[9px] text-gray-400 mt-0.5 leading-tight">
+                              von {herkunft.vorname} eingetragen
+                            </span>
+                          )}
                           {schichtStil && (
                             <span
                               className="mt-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold"
@@ -1856,7 +2106,14 @@ function Ergebnisse({ saison, profil }) {
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>
                     {s.heimteam} <span className="text-gray-400 font-normal">vs</span> {s.gastteam}
                   </p>
-                  <p className="text-xs text-gray-400">{formatDatum(s.datum)} · {s.ist_heimspiel ? "Heimspiel" : "Auswärts"}</p>
+                  <p className="text-xs text-gray-400">
+                    {formatDatum(effektivesSpielDatum(s))} · {s.ist_heimspiel ? "Heimspiel" : "Auswärts"}
+                    {s.verlegt && (
+                      <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold" style={{ background: COLORS.konfliktHell, color: COLORS.konfliktDunkel }}>
+                        {s.verlegt_auf ? "verlegt" : "verlegt · Termin offen"}
+                      </span>
+                    )}
+                  </p>
                 </div>
                 <span className="text-sm font-bold px-3 py-1.5 rounded-md shrink-0" style={tonFarben[info.ton]}>
                   {info.text}
@@ -3224,6 +3481,49 @@ function Umfragen({ profil, zielUmfrageId }) {
     laden();
   }
 
+  // Aus einer Verlegungs-Umfrage heraus einen Termin verbindlich ansetzen.
+  // Das betroffene Spiel wird auf den neuen Termin gelegt und die Umfrage beendet.
+  async function terminAnsetzen(umfrage, datumTag) {
+    if (!umfrage.bezug_spiel_id) return setFehler("Zu dieser Umfrage ist kein Spiel hinterlegt.");
+    setFehler(null);
+
+    const { data: spiel } = await supabase
+      .from("verbands_spiele")
+      .select("*")
+      .eq("id", umfrage.bezug_spiel_id)
+      .maybeSingle();
+    if (!spiel) return setFehler("Das zugehörige Spiel wurde nicht gefunden.");
+
+    // Anspielzeit vom ursprünglichen Termin übernehmen
+    const ursprung = new Date(spiel.datum);
+    const [jahr, monat, tag] = datumTag.split("-").map(Number);
+    const neuerTermin = new Date(jahr, monat - 1, tag, ursprung.getHours(), ursprung.getMinutes(), 0, 0);
+
+    const bestaetigt = window.confirm(
+      `Spiel gegen ${spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam} verbindlich auf ` +
+      `${neuerTermin.toLocaleString("de-DE", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} Uhr legen?\n\n` +
+      `Bitte nur bestätigen, wenn der Termin mit dem Gegner abgesprochen ist. ` +
+      `Die bisherigen Rückmeldungen zu diesem Spiel werden zurückgesetzt.`
+    );
+    if (!bestaetigt) return;
+
+    const { error } = await supabase
+      .from("verbands_spiele")
+      .update({
+        verlegt: true,
+        verlegt_auf: neuerTermin.toISOString(),
+        verlegt_grund: "Neuer Termin aus der Umfrage",
+        verlegt_von: profil.id,
+        verlegt_am: new Date().toISOString(),
+      })
+      .eq("id", spiel.id);
+    if (error) return setFehler(error.message);
+
+    await supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", spiel.id);
+    await supabase.from("umfragen").update({ endet_am: new Date().toISOString() }).eq("id", umfrage.id);
+    laden();
+  }
+
   async function beenden(umfrageId) {
     await supabase.from("umfragen").update({ endet_am: new Date().toISOString() }).eq("id", umfrageId);
     laden();
@@ -3466,6 +3766,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               onAbstimmen={(gewaehlt) => abstimmen(u.id, u.mehrfachauswahl, gewaehlt)}
               onBeenden={() => beenden(u.id)}
               onLoeschen={() => loeschen(u.id)}
+              onTerminAnsetzen={terminAnsetzen}
             />
           );
         })
@@ -3474,7 +3775,15 @@ function Umfragen({ profil, zielUmfrageId }) {
   );
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen }) {
+// Aus einer Antwortoption wie "Fr, 09.10.2026" das Datum herauslesen
+function terminAusOption(option) {
+  const treffer = String(option ?? "").match(/(\d{2})\.(\d{2})\.(\d{4})/);
+  if (!treffer) return null;
+  const [, tag, monat, jahr] = treffer;
+  return `${jahr}-${monat}-${tag}`;
+}
+
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
@@ -3589,6 +3898,15 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
                   <div className="h-full rounded-full" style={{ width: `${prozent}%`, background: COLORS.petrol }} />
                 </div>
                 {namen.length > 0 && <p className="text-[11px] text-gray-400 mt-1">{namen.join(", ")}</p>}
+                {umfrage.art === "verlegung" && darfMannschaftVerwalten(profil, umfrage.mannschaft_id) && terminAusOption(option) && (
+                  <button
+                    onClick={() => onTerminAnsetzen?.(umfrage, terminAusOption(option))}
+                    className="text-[11px] font-semibold mt-1 underline"
+                    style={{ color: COLORS.konflikt }}
+                  >
+                    Diesen Termin ansetzen
+                  </button>
+                )}
               </div>
             );
           })}
