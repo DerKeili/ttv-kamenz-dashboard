@@ -209,6 +209,19 @@ function spielGesperrt(spiel) {
   return Boolean(spiel?.verlegt) && !spiel?.verlegt_auf;
 }
 
+function wochentagLang(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("de-DE", { weekday: "short" });
+}
+
+function uhrzeit(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  // Ohne hinterlegte Anspielzeit steht in der Datenbank Mitternacht — dann lieber nichts anzeigen
+  if (d.getHours() === 0 && d.getMinutes() === 0) return "";
+  return d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr";
+}
+
 function formatDatumZeit(iso) {
   if (!iso) return "–";
   return new Date(iso).toLocaleString("de-DE", {
@@ -1748,7 +1761,7 @@ function Spielerplanung({ saison, profil }) {
                   </p>
                 </div>
                 <p className="text-xs text-gray-500 mb-3">
-                  Ursprünglich am {formatDatum(verlegung.spiel.datum)}. Solange kein Ersatztermin feststeht,
+                  Ursprünglich am {wochentagLang(verlegung.spiel.datum)}, {formatDatum(verlegung.spiel.datum)}{uhrzeit(verlegung.spiel.datum) ? ` um ${uhrzeit(verlegung.spiel.datum)}` : ""}. Solange kein Ersatztermin feststeht,
                   ist die Spalte gesperrt und niemand kann sich eintragen. Sobald du einen Termin einträgst,
                   wird die Spalte wieder freigegeben — bereits gegebene Rückmeldungen werden dabei zurückgesetzt,
                   weil sie sich auf den alten Termin bezogen.
@@ -1829,17 +1842,23 @@ function Spielerplanung({ saison, profil }) {
                     return (
                       <th
                         key={s.id}
-                        className="p-3 text-center font-medium min-w-[110px]"
+                        className="p-3 text-center font-medium min-w-[128px]"
                         style={{ background: COLORS.petrolDark, ...kopfStil }}
                       >
                         <div className="flex items-center justify-center gap-1">
                           <span style={s.verlegt && s.verlegt_auf ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
-                            {formatDatum(s.datum)}
+                            {wochentagLang(s.datum)}, {formatDatum(s.datum)}
                           </span>
                           {hatUeberschneidung && !gesperrt && <CalendarClock size={13} />}
                         </div>
+                        {!s.verlegt_auf && uhrzeit(s.datum) && (
+                          <div className="text-[11px] font-normal opacity-80">{uhrzeit(s.datum)}</div>
+                        )}
                         {s.verlegt && s.verlegt_auf && (
-                          <div className="text-[11px] font-semibold mt-0.5">→ {formatDatum(s.verlegt_auf)}</div>
+                          <div className="text-[11px] font-semibold mt-0.5">
+                            → {wochentagLang(s.verlegt_auf)}, {formatDatum(s.verlegt_auf)}
+                            {uhrzeit(s.verlegt_auf) && <span className="block font-normal opacity-90">{uhrzeit(s.verlegt_auf)}</span>}
+                          </div>
                         )}
                         {gesperrt && <div className="text-[10px] font-semibold mt-0.5">verlegt · Termin offen</div>}
                         <div className="text-[11px] font-normal opacity-80">{s.ist_heimspiel ? s.gastteam : s.heimteam}</div>
