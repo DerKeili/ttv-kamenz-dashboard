@@ -1468,6 +1468,13 @@ function Spielerplanung({ saison, profil }) {
   const schreibschutzTimer = useRef(null);
 
   const darfPlanen = darfMannschaftVerwalten(profil, saison.mannschaft_id);
+  const [mannschaftsName, setMannschaftsName] = useState("TTV 97 Kamenz");
+
+  useEffect(() => {
+    if (!saison.mannschaft_id) return;
+    supabase.from("mannschaften").select("name").eq("id", saison.mannschaft_id).maybeSingle()
+      .then(({ data }) => { if (data?.name) setMannschaftsName(`TTV 97 Kamenz ${data.name}`); });
+  }, [saison.mannschaft_id]);
 
   // Der Schreibschutz greift nach fünf Minuten ohne Eintrag wieder von selbst,
   // damit er nicht versehentlich dauerhaft offen bleibt.
@@ -1704,16 +1711,19 @@ function Spielerplanung({ saison, profil }) {
             </button>
           ))}
         </div>
-        {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
-          <button
-            onClick={aktualisieren}
-            className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
-            style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
-            disabled={aktualisiertLadend}
-          >
-            {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          <SpieleExportMenu spiele={spiele} mannschaftName={mannschaftsName} />
+          {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
+            <button
+              onClick={aktualisieren}
+              className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
+              style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
+              disabled={aktualisiertLadend}
+            >
+              {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
+            </button>
+          )}
+        </div>
       </div>
       {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
 
@@ -2123,6 +2133,7 @@ function Ergebnisse({ saison, profil }) {
           ))}
         </div>
         <div className="flex items-center gap-3 text-xs text-gray-500">
+          <SpieleExportMenu spiele={spiele} mannschaftName="TTV 97 Kamenz" />
           {aktualisiertLadend ? (
             <span>Aktualisiere…</span>
           ) : (
@@ -2165,9 +2176,14 @@ function Ergebnisse({ saison, profil }) {
                     )}
                   </p>
                 </div>
-                <span className="text-sm font-bold px-3 py-1.5 rounded-md shrink-0" style={tonFarben[info.ton]}>
-                  {info.text}
-                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  {info.ton === "offen" && effektivesSpielDatum(s) && !spielGesperrt(s) && (
+                    <KalenderExportMenu ereignis={spielAlsTermin(s, "TTV 97 Kamenz")} />
+                  )}
+                  <span className="text-sm font-bold px-3 py-1.5 rounded-md" style={tonFarben[info.ton]}>
+                    {info.text}
+                  </span>
+                </div>
               </div>
             );
           })}
@@ -2193,25 +2209,55 @@ function ereignisEndeOderPlusEineStunde(e) {
 }
 
 function icsHerunterladen(e) {
-  const inhalt = [
+  icsDateiHerunterladen([e], e.titel);
+}
+
+/* ---------- Spiele in den eigenen Kalender ----------
+   Aus Verbandsspielen werden Kalendereinträge gebaut: ein Spiel einzeln oder
+   die ganze Saison als eine Datei. Verlegte Spiele wandern automatisch auf
+   ihren neuen Termin, Spiele ohne Ersatztermin bleiben außen vor. */
+
+function spielAlsTermin(spiel, mannschaftName) {
+  const datum = effektivesSpielDatum(spiel);
+  const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+  return {
+    id: `spiel-${spiel.id}`,
+    titel: `${mannschaftName ?? "TTV 97 Kamenz"}: ${spiel.ist_heimspiel ? "Heim" : "Auswärts"} gegen ${gegner}`,
+    datum,
+    // Ein Punktspiel dauert erfahrungsgemäß rund drei Stunden
+    datum_ende: new Date(new Date(datum).getTime() + 3 * 60 * 60 * 1000).toISOString(),
+    ort: spiel.ist_heimspiel ? "Heimspielstätte" : gegner,
+  };
+}
+
+function icsInhalt(termine) {
+  const zeilen = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//TTV 97 Kamenz//3. Mannschaft//DE",
-    "BEGIN:VEVENT",
-    `UID:${e.id}@ttv97-kamenz`,
-    `DTSTAMP:${zuIcsDatum(new Date().toISOString())}`,
-    `DTSTART:${zuIcsDatum(e.datum)}`,
-    `DTEND:${zuIcsDatum(ereignisEndeOderPlusEineStunde(e))}`,
-    `SUMMARY:${e.titel.replace(/\n/g, " ")}`,
-    "END:VEVENT",
-    "END:VCALENDAR",
-  ].join("\r\n");
+    "PRODID:-//TTV 97 Kamenz//Mannschafts-App//DE",
+  ];
+  termine.forEach((t) => {
+    zeilen.push(
+      "BEGIN:VEVENT",
+      `UID:${t.id}@ttv97-kamenz`,
+      `DTSTAMP:${zuIcsDatum(new Date().toISOString())}`,
+      `DTSTART:${zuIcsDatum(t.datum)}`,
+      `DTEND:${zuIcsDatum(t.datum_ende ?? ereignisEndeOderPlusEineStunde(t))}`,
+      `SUMMARY:${String(t.titel).replace(/\n/g, " ")}`,
+      ...(t.ort ? [`LOCATION:${String(t.ort).replace(/\n/g, " ")}`] : []),
+      "END:VEVENT"
+    );
+  });
+  zeilen.push("END:VCALENDAR");
+  return zeilen.join("\r\n");
+}
 
-  const blob = new Blob([inhalt], { type: "text/calendar;charset=utf-8" });
+function icsDateiHerunterladen(termine, dateiname) {
+  const blob = new Blob([icsInhalt(termine)], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${e.titel.replace(/[^\w äöüÄÖÜß-]/g, "")}.ics`;
+  link.download = `${dateiname.replace(/[^\w äöüÄÖÜß-]/g, "")}.ics`;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -2223,8 +2269,48 @@ function googleKalenderLink(e) {
     action: "TEMPLATE",
     text: e.titel,
     dates: `${start}/${ende}`,
+    ...(e.ort ? { location: e.ort } : {}),
   });
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function SpieleExportMenu({ spiele, mannschaftName }) {
+  const [offen, setOffen] = useState(false);
+  // Nur Spiele mit gültigem Termin — verlegte ohne Ersatztermin bringen im Kalender nichts
+  const termine = (spiele ?? [])
+    .filter((s) => effektivesSpielDatum(s) && !spielGesperrt(s))
+    .map((s) => spielAlsTermin(s, mannschaftName));
+
+  if (termine.length === 0) return null;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOffen((o) => !o)}
+        className="text-xs px-3 py-1.5 rounded-md font-semibold border flex items-center gap-1"
+        style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+      >
+        <CalendarPlus size={13} /> In meinen Kalender
+      </button>
+      {offen && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOffen(false)} />
+          <div className="absolute right-0 mt-1 bg-white border rounded-md shadow-lg z-40 text-xs whitespace-nowrap overflow-hidden">
+            <button
+              onClick={() => { icsDateiHerunterladen(termine, `TTV 97 Kamenz Spielplan`); setOffen(false); }}
+              className="block w-full text-left px-3 py-2 hover:bg-gray-50"
+              style={{ color: COLORS.anthracite }}
+            >
+              Alle {termine.length} Spiele als .ics
+            </button>
+            <p className="px-3 py-2 text-[10px] text-gray-400 border-t max-w-[220px] whitespace-normal">
+              Die Datei öffnest du auf dem Handy einfach — Apple Kalender, Outlook und Google übernehmen alle Spiele auf einmal.
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function KalenderExportMenu({ ereignis }) {
