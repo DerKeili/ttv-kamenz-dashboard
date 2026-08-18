@@ -922,7 +922,9 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
                 {naechstesSpiel.ist_heimspiel ? naechstesSpiel.gastteam : naechstesSpiel.heimteam}
               </p>
               <p className="text-sm opacity-90 mt-1">
-                {formatDatum(effektivesSpielDatum(naechstesSpiel))} · {naechstesSpiel.ist_heimspiel ? "Heimspiel" : "Auswärts"}
+                {wochentagLang(effektivesSpielDatum(naechstesSpiel))}, {formatDatum(effektivesSpielDatum(naechstesSpiel))}
+                {uhrzeit(effektivesSpielDatum(naechstesSpiel)) && ` · ${uhrzeit(effektivesSpielDatum(naechstesSpiel))}`}
+                {" · "}{naechstesSpiel.ist_heimspiel ? "Heimspiel" : "Auswärts"}
                 {naechstesSpiel.verlegt && <span className="ml-1 opacity-80">· verlegt</span>}
               </p>
             </>
@@ -1873,7 +1875,17 @@ function Spielerplanung({ saison, profil }) {
                           </div>
                         )}
                         {gesperrt && <div className="text-[10px] font-semibold mt-0.5">verlegt · Termin offen</div>}
-                        <div className="text-[11px] font-normal opacity-80">{s.ist_heimspiel ? s.gastteam : s.heimteam}</div>
+                        <div className="text-[11px] font-normal opacity-80">
+                          <span
+                            className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-semibold mb-0.5"
+                            style={s.ist_heimspiel
+                              ? { background: "rgba(255,255,255,0.18)" }
+                              : { background: "rgba(226,99,43,0.85)" }}
+                          >
+                            {s.ist_heimspiel ? "Heim" : "Auswärts"}
+                          </span>
+                          <span className="block">{s.ist_heimspiel ? s.gastteam : s.heimteam}</span>
+                        </div>
                         {hatUeberschneidung && !gesperrt && (
                           <div className="text-[10px] font-semibold mt-1 leading-tight">
                             parallel: {parallel.map((u) => u.mannschaftName).join(", ")}
@@ -2170,7 +2182,9 @@ function Ergebnisse({ saison, profil }) {
                     {s.heimteam} <span className="text-gray-400 font-normal">vs</span> {s.gastteam}
                   </p>
                   <p className="text-xs text-gray-400">
-                    {formatDatum(effektivesSpielDatum(s))} · {s.ist_heimspiel ? "Heimspiel" : "Auswärts"}
+                    {wochentagLang(effektivesSpielDatum(s))}, {formatDatum(effektivesSpielDatum(s))}
+                    {uhrzeit(effektivesSpielDatum(s)) && ` · ${uhrzeit(effektivesSpielDatum(s))}`}
+                    {" · "}{s.ist_heimspiel ? "Heimspiel" : "Auswärts"}
                     {s.verlegt && (
                       <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold" style={{ background: COLORS.konfliktHell, color: COLORS.konfliktDunkel }}>
                         {s.verlegt_auf ? "verlegt" : "verlegt · Termin offen"}
