@@ -1716,7 +1716,7 @@ function Spielerplanung({ saison, profil }) {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <SpieleExportMenu spiele={spiele} mannschaftName={mannschaftsName} />
+          <SpieleExportMenu spiele={spiele} mannschaftName={mannschaftsName} profil={profil} />
           {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
             <button
               onClick={aktualisieren}
@@ -2147,7 +2147,7 @@ function Ergebnisse({ saison, profil }) {
           ))}
         </div>
         <div className="flex items-center gap-3 text-xs text-gray-500">
-          <SpieleExportMenu spiele={spiele} mannschaftName="TTV 97 Kamenz" />
+          <SpieleExportMenu spiele={spiele} mannschaftName="TTV 97 Kamenz" profil={profil} />
           {aktualisiertLadend ? (
             <span>Aktualisiere…</span>
           ) : (
@@ -2290,14 +2290,27 @@ function googleKalenderLink(e) {
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
-function SpieleExportMenu({ spiele, mannschaftName }) {
+function SpieleExportMenu({ spiele, mannschaftName, profil }) {
   const [offen, setOffen] = useState(false);
+  const [token, setToken] = useState(profil?.kalender_token ?? null);
+  const [erstellt, setErstellt] = useState(false);
+
   // Nur Spiele mit gültigem Termin — verlegte ohne Ersatztermin bringen im Kalender nichts
   const termine = (spiele ?? [])
     .filter((s) => effektivesSpielDatum(s) && !spielGesperrt(s))
     .map((s) => spielAlsTermin(s, mannschaftName));
 
   if (termine.length === 0) return null;
+
+  const aboAdresse = token ? `${KALENDER_FEED_BASIS}?token=${token}`.replace(/^https:/, "webcal:") : null;
+
+  async function aboEinrichten() {
+    const neuerWert = crypto.randomUUID();
+    const { error } = await supabase.from("profiles").update({ kalender_token: neuerWert }).eq("id", profil.id);
+    if (error) return;
+    setToken(neuerWert);
+    setErstellt(true); // der eigentliche Abo-Klick folgt gleich als zweiter Schritt
+  }
 
   return (
     <div className="relative">
@@ -2311,17 +2324,50 @@ function SpieleExportMenu({ spiele, mannschaftName }) {
       {offen && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOffen(false)} />
-          <div className="absolute right-0 mt-1 bg-white border rounded-md shadow-lg z-40 text-xs whitespace-nowrap overflow-hidden">
-            <button
-              onClick={() => { icsDateiHerunterladen(termine, `TTV 97 Kamenz Spielplan`); setOffen(false); }}
-              className="block w-full text-left px-3 py-2 hover:bg-gray-50"
-              style={{ color: COLORS.anthracite }}
-            >
-              Alle {termine.length} Spiele als .ics
-            </button>
-            <p className="px-3 py-2 text-[10px] text-gray-400 border-t max-w-[220px] whitespace-normal">
-              Die Datei öffnest du auf dem Handy einfach — Apple Kalender, Outlook und Google übernehmen alle Spiele auf einmal.
-            </p>
+          <div className="absolute right-0 mt-1 bg-white border rounded-md shadow-lg z-40 text-xs w-[280px] overflow-hidden">
+
+            {/* Weg 1: dauerhaftes Abo — Änderungen kommen automatisch nach */}
+            <div className="px-3 py-2.5">
+              <p className="font-semibold mb-0.5" style={{ color: COLORS.anthracite }}>Dauerhaft abonnieren</p>
+              <p className="text-[10px] text-gray-500 mb-2">
+                Empfohlen: Verlegungen und neue Termine landen automatisch im Kalender. Die Einträge lassen
+                sich dann nicht selbst bearbeiten — daran erkennst du, dass es wirklich ein Abo ist.
+              </p>
+              {aboAdresse ? (
+                <a
+                  href={aboAdresse}
+                  onClick={() => setOffen(false)}
+                  className="inline-block px-3 py-1.5 rounded-md text-white font-semibold"
+                  style={{ background: COLORS.orange }}
+                >
+                  {erstellt ? "Jetzt abonnieren →" : "Abo öffnen"}
+                </a>
+              ) : (
+                <button
+                  onClick={aboEinrichten}
+                  className="px-3 py-1.5 rounded-md text-white font-semibold"
+                  style={{ background: COLORS.orange }}
+                >
+                  Abo einrichten
+                </button>
+              )}
+            </div>
+
+            {/* Weg 2: einmaliger Export — feste Kopie im eigenen Kalender */}
+            <div className="px-3 py-2.5 border-t">
+              <p className="font-semibold mb-0.5" style={{ color: COLORS.anthracite }}>Einmalig übernehmen</p>
+              <p className="text-[10px] text-gray-500 mb-2">
+                Legt eine feste Kopie in deinem Kalender an, die du selbst bearbeiten kannst. Spätere
+                Verlegungen musst du dann von Hand nachtragen.
+              </p>
+              <button
+                onClick={() => { icsDateiHerunterladen(termine, "TTV 97 Kamenz Spielplan"); setOffen(false); }}
+                className="px-3 py-1.5 rounded-md font-semibold border"
+                style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+              >
+                Alle {termine.length} Spiele laden
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -4580,6 +4626,12 @@ function KalenderAbo({ profil, onProfilGeaendert }) {
               <li><strong>Android / Google:</strong> Auf calendar.google.com → Weitere Kalender → Per URL → Adresse einfügen. Über die Handy-App geht es leider nicht.</li>
               <li><strong>Outlook:</strong> Kalender → Kalender hinzufügen → Aus dem Internet abonnieren.</li>
             </ul>
+            <p className="mt-2">
+              <strong>Woran du erkennst, dass es geklappt hat:</strong> Der Kalender „TTV 97 Kamenz" steht in
+              deiner Kalenderliste unter <em>Abonniert</em>, und die Spiele lassen sich nicht bearbeiten oder
+              löschen. Landen die Termine dagegen in deinem privaten Kalender und sind änderbar, war es der
+              einmalige Export statt des Abos.
+            </p>
             <p className="mt-2">
               Kalender fragen die Adresse meist alle paar Stunden ab — Änderungen erscheinen also nicht sofort.
               Behandle die Adresse wie ein Passwort: Wer sie hat, sieht deine Termine. Über „Adresse erneuern" wird sie ungültig.
