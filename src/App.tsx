@@ -1513,6 +1513,18 @@ function Spielerplanung({ saison, profil }) {
     // damit niemand fälschlich als verfügbar gezählt wird.
     await supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", verlegung.spiel.id);
 
+    if (neuerTermin) {
+      supabase.functions.invoke("notify-spielverlegung", {
+        body: {
+          spielId: verlegung.spiel.id,
+          neuerTermin,
+          altesDatum: verlegung.spiel.datum,
+          grund: verlegung.grund.trim() || null,
+          mannschaftId: saison.mannschaft_id,
+        },
+      }); // bewusst nicht awaited
+    }
+
     setVerlegungLadend(false);
     setVerlegung(null);
     laden();
@@ -1701,7 +1713,7 @@ function Spielerplanung({ saison, profil }) {
         <Leerzustand text={`Noch keine Spiele für die ${runde} hinterlegt.`} />
       ) : (
         <>
-          <div className="bg-white rounded-lg border overflow-x-auto">
+          <div className="bg-white rounded-lg border overflow-auto max-h-[75vh]">
             {darfPlanen && (
               <div
                 className="flex flex-wrap items-center justify-between gap-2 p-3 border-b"
@@ -1764,7 +1776,7 @@ function Spielerplanung({ saison, profil }) {
                 </div>
                 <p className="text-[11px] text-gray-400 mb-2 flex items-start gap-1">
                   <Mail size={11} className="mt-0.5 shrink-0" />
-                  <span>Beim Ansetzen eines neuen Termins wird niemand automatisch benachrichtigt — sag deiner Mannschaft am besten kurz Bescheid oder starte eine Umfrage.</span>
+                  <span>Sobald du einen neuen Termin ansetzt, bekommt deine Mannschaft automatisch eine E-Mail mit dem alten und dem neuen Termin.</span>
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -1796,9 +1808,14 @@ function Spielerplanung({ saison, profil }) {
             )}
 
             <table className="w-full text-sm min-w-[640px]">
-              <thead>
+              <thead className="sticky top-0 z-20">
                 <tr style={{ background: COLORS.petrolDark }} className="text-white">
-                  <th className="p-3 text-left font-medium sticky left-0" style={{ background: COLORS.petrolDark }}>Spieler</th>
+                  <th
+                    className="p-3 text-left font-medium sticky left-0 z-30"
+                    style={{ background: COLORS.petrolDark }}
+                  >
+                    Spieler
+                  </th>
                   {spiele.map((s) => {
                     const tag = effektivesSpielDatum(s)?.slice(0, 10);
                     const parallel = (tag && ueberschneidungen[tag]) || [];
@@ -1810,7 +1827,11 @@ function Spielerplanung({ saison, profil }) {
                       ? { background: COLORS.konflikt, borderBottom: `3px solid ${COLORS.konfliktHell}` }
                       : {};
                     return (
-                      <th key={s.id} className="p-3 text-center font-medium min-w-[110px]" style={kopfStil}>
+                      <th
+                        key={s.id}
+                        className="p-3 text-center font-medium min-w-[110px]"
+                        style={{ background: COLORS.petrolDark, ...kopfStil }}
+                      >
                         <div className="flex items-center justify-center gap-1">
                           <span style={s.verlegt && s.verlegt_auf ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
                             {formatDatum(s.datum)}
@@ -1843,7 +1864,7 @@ function Spielerplanung({ saison, profil }) {
               <tbody>
                 {spieler.map((sp) => (
                   <tr key={sp.id} className="border-t">
-                    <td className="p-3 font-medium sticky left-0 bg-white">
+                    <td className="p-3 font-medium sticky left-0 z-10 bg-white">
                       <div className="flex items-center gap-2">
                         <Avatar person={sp} groesse={28} />
                         <span className="whitespace-nowrap">{sp.vorname} {sp.nachname}</span>
@@ -1910,7 +1931,7 @@ function Spielerplanung({ saison, profil }) {
               </tbody>
               <tfoot>
                 <tr className="border-t">
-                  <td className="p-3 text-xs font-semibold text-gray-500 sticky left-0 bg-white">Zusagen</td>
+                  <td className="p-3 text-xs font-semibold text-gray-500 sticky left-0 z-10 bg-white">Zusagen</td>
                   {spiele.map((s) => {
                     const ja = countJa(s.id);
                     const kritisch = ja < benoetigteSpieler;
@@ -3534,6 +3555,17 @@ function Umfragen({ profil, zielUmfrageId }) {
 
     await supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", spiel.id);
     await supabase.from("umfragen").update({ endet_am: new Date().toISOString() }).eq("id", umfrage.id);
+
+    supabase.functions.invoke("notify-spielverlegung", {
+      body: {
+        spielId: spiel.id,
+        neuerTermin: neuerTermin.toISOString(),
+        altesDatum: spiel.datum,
+        grund: "Termin aus der Umfrage übernommen",
+        mannschaftId: umfrage.ziel_mannschaft_id ?? umfrage.mannschaft_id ?? null,
+      },
+    }); // bewusst nicht awaited
+
     laden();
   }
 
