@@ -30,8 +30,10 @@ import {
 
 // Diese beiden Werte sind bewusst öffentlich im Frontend – die eigentliche
 // Absicherung passiert über Row Level Security in Supabase, nicht über Geheimhaltung.
+const SUPABASE_URL = "https://oskplsznrhpcfvoogcup.supabase.co";
+
 const supabase = createClient(
-  "https://oskplsznrhpcfvoogcup.supabase.co",
+  SUPABASE_URL,
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9za3Bsc3pucmhwY2Z2b29nY3VwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMyNzU3NzksImV4cCI6MjA5ODg1MTc3OX0.x8aWcUz2MNLjfy_YZ4RvQtk6zWbHlvmrMdTrBPC0pFs"
 );
 
@@ -4351,6 +4353,8 @@ function Einstellungen({ profil, onProfilGeaendert }) {
 
       <ProfilbildEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
 
+      <KalenderAbo profil={profil} onProfilGeaendert={onProfilGeaendert} />
+
       <EmailEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
 
       <SchichtplanEinstellungen profil={profil} onProfilGeaendert={onProfilGeaendert} />
@@ -4473,6 +4477,112 @@ function ProfilbildEinstellungen({ profil, onProfilGeaendert }) {
         </div>
       </div>
       {fehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+    </div>
+  );
+}
+
+/* ---------- Kalender-Abo ----------
+   Statt eines einmaligen Exports kann jeder Spieler seinen Kalender dauerhaft
+   mit der App verbinden. Verlegungen und neue Termine landen dann von selbst
+   im Handy-Kalender. Der Zugang läuft über einen persönlichen, zufälligen
+   Schlüssel in der Adresse — jederzeit widerrufbar. */
+
+const KALENDER_FEED_BASIS = `${SUPABASE_URL}/functions/v1/kalender-feed`;
+
+function KalenderAbo({ profil, onProfilGeaendert }) {
+  const [ladend, setLadend] = useState(false);
+  const [kopiert, setKopiert] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  const token = profil.kalender_token;
+  const adresse = token ? `${KALENDER_FEED_BASIS}?token=${token}` : null;
+  const webcalAdresse = adresse ? adresse.replace(/^https:/, "webcal:") : null;
+
+  async function tokenSetzen(neuerWert) {
+    setFehler(null);
+    setLadend(true);
+    const { error } = await supabase.from("profiles").update({ kalender_token: neuerWert }).eq("id", profil.id);
+    setLadend(false);
+    if (error) return setFehler(error.message);
+    onProfilGeaendert?.({ ...profil, kalender_token: neuerWert });
+  }
+
+  async function kopieren() {
+    try {
+      await navigator.clipboard.writeText(adresse);
+      setKopiert(true);
+      setTimeout(() => setKopiert(false), 2000);
+    } catch {
+      setFehler("Kopieren hat nicht geklappt — bitte die Adresse von Hand markieren.");
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={CalendarPlus}>Kalender-Abo</SectionLabel>
+      <p className="text-xs text-gray-500 mb-3">
+        Verbinde deinen Handy-Kalender dauerhaft mit der App: Spiele deiner Mannschaft und Vereinstermine
+        erscheinen dann automatisch — auch wenn ein Spiel später verlegt wird. Anders als beim einmaligen
+        Herunterladen musst du nichts nachpflegen.
+      </p>
+
+      {adresse ? (
+        <>
+          <div className="p-2 rounded-md border text-[11px] font-mono break-all mb-3" style={{ background: COLORS.paper }}>
+            {adresse}
+          </div>
+          <div className="flex flex-wrap gap-2 mb-3">
+            <a
+              href={webcalAdresse}
+              className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+              style={{ background: COLORS.orange }}
+            >
+              Jetzt abonnieren
+            </a>
+            <button onClick={kopieren} className="px-4 py-2 rounded-md text-sm border">
+              {kopiert ? "Kopiert ✓" : "Adresse kopieren"}
+            </button>
+            <button
+              onClick={() => tokenSetzen(crypto.randomUUID())}
+              disabled={ladend}
+              className="px-4 py-2 rounded-md text-sm border"
+              title="Erzeugt eine neue Adresse — bestehende Abos hören auf zu funktionieren"
+            >
+              Adresse erneuern
+            </button>
+            <button
+              onClick={() => tokenSetzen(null)}
+              disabled={ladend}
+              className="px-4 py-2 rounded-md text-sm border"
+              style={{ color: COLORS.orangeDeep }}
+            >
+              Abo abschalten
+            </button>
+          </div>
+          <details className="text-xs text-gray-500">
+            <summary className="cursor-pointer font-medium">So richtest du es ein</summary>
+            <ul className="mt-2 space-y-1 list-disc pl-4">
+              <li><strong>iPhone:</strong> Auf „Jetzt abonnieren" tippen und bestätigen. Falls nichts passiert: Einstellungen → Apps → Kalender → Accounts → Account hinzufügen → Andere → Kalenderabo, dann die Adresse einfügen.</li>
+              <li><strong>Android / Google:</strong> Auf calendar.google.com → Weitere Kalender → Per URL → Adresse einfügen. Über die Handy-App geht es leider nicht.</li>
+              <li><strong>Outlook:</strong> Kalender → Kalender hinzufügen → Aus dem Internet abonnieren.</li>
+            </ul>
+            <p className="mt-2">
+              Kalender fragen die Adresse meist alle paar Stunden ab — Änderungen erscheinen also nicht sofort.
+              Behandle die Adresse wie ein Passwort: Wer sie hat, sieht deine Termine. Über „Adresse erneuern" wird sie ungültig.
+            </p>
+          </details>
+        </>
+      ) : (
+        <button
+          onClick={() => tokenSetzen(crypto.randomUUID())}
+          disabled={ladend}
+          className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+          style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}
+        >
+          {ladend ? "Erstelle…" : "Kalender-Abo einrichten"}
+        </button>
+      )}
+      {fehler && <p className="text-xs mt-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
     </div>
   );
 }
