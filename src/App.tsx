@@ -3500,6 +3500,18 @@ function Spielerverwaltung({ profil }) {
             </button>
           </div>
         )}
+        {(() => {
+          const offen = gefilterteSpieler.filter((s) => s.muss_passwort_aendern);
+          if (offen.length === 0) return null;
+          return (
+            <p className="text-xs mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+              {offen.length === 1
+                ? `${offen[0].vorname} ${offen[0].nachname} hat sich noch nie angemeldet und nutzt weiterhin das Einmalpasswort.`
+                : `${offen.length} Spieler haben sich noch nie angemeldet: ${offen.map((s) => s.vorname).join(", ")}. Sie nutzen weiterhin ihr Einmalpasswort.`}
+            </p>
+          );
+        })()}
+
         {listenFehler && (
           <p className="text-xs mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>{listenFehler}</p>
         )}
@@ -3580,6 +3592,24 @@ function Spielerverwaltung({ profil }) {
                       {s.ist_admin && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full text-white ml-2" style={{ background: COLORS.orange }}>
                           Admin
+                        </span>
+                      )}
+                      {/* Zeigt, wer sich noch nie selbst angemeldet und ein eigenes Passwort vergeben hat */}
+                      {s.muss_passwort_aendern ? (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded-full ml-2 inline-flex items-center gap-1"
+                          style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}
+                          title="Nutzt noch das Einmalpasswort — hat sich also noch nicht selbst angemeldet"
+                        >
+                          <KeyRound size={9} /> noch nicht angemeldet
+                        </span>
+                      ) : (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded-full ml-2 inline-flex items-center gap-1"
+                          style={{ background: "#DDF0EA", color: COLORS.petrol }}
+                          title="Hat sich angemeldet und ein eigenes Passwort vergeben"
+                        >
+                          <Check size={9} /> aktiv
                         </span>
                       )}
                     </div>
