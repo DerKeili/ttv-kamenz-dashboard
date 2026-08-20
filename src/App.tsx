@@ -860,7 +860,7 @@ function PasswortAendern({ profil }) {
 
 /* ---------- Dashboard ---------- */
 
-function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
+function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender }) {
   const [ladend, setLadend] = useState(true);
   const [eigenerTabellenplatz, setEigenerTabellenplatz] = useState(null);
   const [naechstesSpiel, setNaechstesSpiel] = useState(null);
@@ -998,9 +998,20 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht }) {
           ) : (
             <ul className="space-y-2">
               {termine.map((e) => (
-                <li key={e.id} className="flex items-center justify-between text-sm">
-                  <span className="text-gray-700">{e.titel}</span>
-                  <span className="text-xs text-gray-400">{formatDatum(e.datum)}</span>
+                <li key={e.id}>
+                  <button
+                    onClick={onOeffneKalender}
+                    className="w-full flex items-center justify-between text-sm text-left hover:opacity-70"
+                  >
+                    <span className="text-gray-700 flex items-center gap-1.5 min-w-0">
+                      <span className="truncate">{e.titel}</span>
+                      {e.anhang_url && <FileText size={12} className="shrink-0 text-gray-400" />}
+                    </span>
+                    <span className="text-xs text-gray-400 shrink-0 ml-2 flex items-center gap-1">
+                      {formatDatum(e.datum)}
+                      <ChevronRight size={12} />
+                    </span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -2278,6 +2289,29 @@ function icsDateiHerunterladen(termine, dateiname) {
   URL.revokeObjectURL(url);
 }
 
+/* ---------- Dateien herunterladen ----------
+   In der als App abgelegten Ansicht führt ein Link mit target="_blank" aus der App
+   heraus und landet in einem leeren Fenster. Deshalb holen wir die Datei selbst und
+   bieten sie als Download an — die App bleibt dabei im Vordergrund. */
+async function dateiHerunterladen(url, name) {
+  try {
+    const antwort = await fetch(url);
+    if (!antwort.ok) throw new Error("Datei nicht erreichbar");
+    const blob = await antwort.blob();
+    const objektUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objektUrl;
+    link.download = name || "anhang.pdf";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objektUrl), 10000);
+  } catch {
+    // Klappt das nicht, bleibt der direkte Weg über den Browser
+    window.location.href = url;
+  }
+}
+
 function googleKalenderLink(e) {
   const start = zuIcsDatum(e.datum);
   const ende = zuIcsDatum(ereignisEndeOderPlusEineStunde(e));
@@ -2775,15 +2809,13 @@ function Kalender({ profil }) {
                     <label className="block text-xs text-gray-400 mb-1">PDF-Anhang</label>
                     {bearbeitenForm.anhangUrl && !neuerAnhang && !anhangEntfernen && (
                       <div className="flex flex-wrap items-center gap-2 mb-2">
-                        <a
-                          href={bearbeitenForm.anhangUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-xs inline-flex items-center gap-1 font-medium"
+                        <button
+                          onClick={() => dateiHerunterladen(bearbeitenForm.anhangUrl, bearbeitenForm.anhangName)}
+                          className="text-xs inline-flex items-center gap-1 font-medium underline"
                           style={{ color: COLORS.petrol }}
                         >
                           <FileText size={12} /> {bearbeitenForm.anhangName ?? "aktuelles PDF"}
-                        </a>
+                        </button>
                         <button
                           onClick={() => setAnhangEntfernen(true)}
                           className="text-[11px] underline"
@@ -2853,15 +2885,13 @@ function Kalender({ profil }) {
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{e.titel}</p>
                   <p className="text-xs text-gray-400">{zeitraum}{mannschaftName ? ` · nur ${mannschaftName}` : ""}</p>
                   {e.anhang_url && (
-                    <a
-                      href={e.anhang_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs mt-1 inline-flex items-center gap-1 font-medium"
+                    <button
+                      onClick={() => dateiHerunterladen(e.anhang_url, e.anhang_name)}
+                      className="text-xs mt-1 inline-flex items-center gap-1 font-medium underline"
                       style={{ color: COLORS.petrol }}
                     >
-                      <FileText size={12} /> {e.anhang_name ?? "PDF öffnen"}
-                    </a>
+                      <FileText size={12} /> {e.anhang_name ?? "PDF herunterladen"}
+                    </button>
                   )}
                 </div>
                 {loeschenBestaetigungId === e.id ? (
@@ -6462,9 +6492,36 @@ function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeff
       });
     }
 
+    // Seit dem letzten Kalenderbesuch neu angelegte Termine — auch weiter in der Zukunft
+    const gesehenAm = profil.kalender_gesehen_am ? new Date(profil.kalender_gesehen_am) : null;
+    const { data: neueTermine } = await supabase
+      .from("kalender_ereignisse")
+      .select("id, titel, datum, mannschaft_id, erstellt_am, anhang_name")
+      .gte("datum", new Date().toISOString())
+      .order("erstellt_am", { ascending: false });
+
+    const neuIds = new Set();
+    (neueTermine ?? []).forEach((t) => {
+      if (t.mannschaft_id && t.mannschaft_id !== profil.mannschaft_id) return;
+      if (!t.erstellt_am) return;
+      if (gesehenAm && new Date(t.erstellt_am) <= gesehenAm) return;
+      neuIds.add(t.id);
+      liste.push({
+        art: "neuerTermin",
+        id: `nt-${t.id}`,
+        titel: `Neuer Termin: ${t.titel}`,
+        text:
+          new Date(t.datum).toLocaleString("de-DE", { weekday: "long", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) +
+          " Uhr" + (t.anhang_name ? " · mit PDF" : ""),
+        zeit: t.datum,
+        aktion: () => onOeffneKalender(),
+      });
+    });
+
     // Termine der nächsten sieben Tage
     (termine ?? []).forEach((t) => {
       if (t.mannschaft_id && t.mannschaft_id !== profil.mannschaft_id) return;
+      if (neuIds.has(t.id)) return; // steht schon als neuer Termin in der Liste
       liste.push({
         art: "termin",
         id: `t-${t.id}`,
@@ -6491,7 +6548,7 @@ function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeff
   }, [profil.id]);
 
   const zuErledigen = eintraege.filter((e) => e.art !== "termin").length;
-  const symbole = { nachricht: MessageSquare, umfrage: Vote, termin: CalendarDays, kuendigung: AlertTriangle };
+  const symbole = { nachricht: MessageSquare, umfrage: Vote, termin: CalendarDays, neuerTermin: CalendarPlus, kuendigung: AlertTriangle };
 
   return (
     <div className="relative">
@@ -6565,6 +6622,15 @@ export default function App() {
   const [mannschaften, setMannschaften] = useState([]);
   const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(null);
   const [passwortZuruecksetzen, setPasswortZuruecksetzen] = useState(false);
+
+  useEffect(() => {
+    // Beim Öffnen des Kalenders gelten alle bis dahin angelegten Termine als gesehen
+    if (tab !== "kalender" || !profil?.id) return;
+    const jetzt = new Date().toISOString();
+    supabase.from("profiles").update({ kalender_gesehen_am: jetzt }).eq("id", profil.id).then(() => {
+      setProfil((vorher) => (vorher ? { ...vorher, kalender_gesehen_am: jetzt } : vorher));
+    });
+  }, [tab, profil?.id]);
 
   useEffect(() => {
     // Kommt jemand über den Link aus der "Passwort vergessen"-Mail, meldet Supabase
@@ -6764,6 +6830,7 @@ export default function App() {
                     setZielSpielerId(spielerId);
                     setTab("nachrichten");
                   }}
+                  onOeffneKalender={() => setTab("kalender")}
                 />
               )}
 
