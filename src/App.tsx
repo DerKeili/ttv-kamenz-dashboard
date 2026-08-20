@@ -2415,6 +2415,10 @@ function Kalender({ profil }) {
   const [anhang, setAnhang] = useState(null);
   const [anhangLadend, setAnhangLadend] = useState(false);
   const anhangFeld = useRef(null);
+  const [neuerAnhang, setNeuerAnhang] = useState(null);
+  const [anhangEntfernen, setAnhangEntfernen] = useState(false);
+  const [bearbeitenLadend, setBearbeitenLadend] = useState(false);
+  const [bearbeitenFehler, setBearbeitenFehler] = useState(null);
   const [fehler, setFehler] = useState(null);
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
@@ -2498,12 +2502,51 @@ function Kalender({ profil }) {
       datumEnde: isoZuDatetimeLocal(e.datum_ende),
       typ: e.typ,
       mannschaftId: e.mannschaft_id ?? "",
+      anhangUrl: e.anhang_url ?? null,
+      anhangName: e.anhang_name ?? null,
     });
+    setNeuerAnhang(null);
+    setAnhangEntfernen(false);
+    setBearbeitenFehler(null);
+  }
+
+  // Die alte Datei aus dem Speicher werfen, damit dort nichts Unbenutztes liegen bleibt
+  async function altenAnhangLoeschen(url) {
+    if (!url) return;
+    const teil = url.split("/kalender-anhaenge/")[1];
+    if (teil) await supabase.storage.from("kalender-anhaenge").remove([decodeURIComponent(teil.split("?")[0])]);
   }
 
   async function bearbeitenSpeichern() {
     if (!bearbeitenForm.titel || !bearbeitenForm.datum) return;
-    await supabase
+    setBearbeitenFehler(null);
+
+    let anhangUrl = bearbeitenForm.anhangUrl;
+    let anhangName = bearbeitenForm.anhangName;
+
+    if (anhangEntfernen && !neuerAnhang) {
+      await altenAnhangLoeschen(bearbeitenForm.anhangUrl);
+      anhangUrl = null;
+      anhangName = null;
+    }
+
+    if (neuerAnhang) {
+      setBearbeitenLadend(true);
+      const pfad = `${crypto.randomUUID()}-${neuerAnhang.name.replace(/[^\w.\-]/g, "_")}`;
+      const { error: ladeFehler } = await supabase.storage
+        .from("kalender-anhaenge")
+        .upload(pfad, neuerAnhang, { contentType: neuerAnhang.type || "application/pdf" });
+      setBearbeitenLadend(false);
+      if (ladeFehler) return setBearbeitenFehler(`Die Datei konnte nicht hochgeladen werden: ${ladeFehler.message}`);
+
+      // Erst nach erfolgreichem Hochladen die alte Datei entfernen
+      await altenAnhangLoeschen(bearbeitenForm.anhangUrl);
+      const { data: { publicUrl } } = supabase.storage.from("kalender-anhaenge").getPublicUrl(pfad);
+      anhangUrl = publicUrl;
+      anhangName = neuerAnhang.name;
+    }
+
+    const { error } = await supabase
       .from("kalender_ereignisse")
       .update({
         titel: bearbeitenForm.titel,
@@ -2511,9 +2554,15 @@ function Kalender({ profil }) {
         datum_ende: bearbeitenForm.datumEnde ? new Date(bearbeitenForm.datumEnde).toISOString() : null,
         typ: bearbeitenForm.typ,
         mannschaft_id: bearbeitenForm.mannschaftId || null,
+        anhang_url: anhangUrl,
+        anhang_name: anhangName,
       })
       .eq("id", bearbeitenId);
+    if (error) return setBearbeitenFehler(error.message);
+
     setBearbeitenId(null);
+    setNeuerAnhang(null);
+    setAnhangEntfernen(false);
     laden();
   }
 
@@ -2525,6 +2574,9 @@ function Kalender({ profil }) {
       return;
     }
     setLoeschenBestaetigungId(null);
+    // Hängt ein PDF am Termin, wandert es mit in den Papierkorb
+    const ereignis = ereignisse.find((e) => e.id === id);
+    await altenAnhangLoeschen(ereignis?.anhang_url);
     await supabase.from("kalender_ereignisse").delete().eq("id", id);
     laden();
   }
@@ -2719,9 +2771,64 @@ function Kalender({ profil }) {
                     <option value="">Alle Mannschaften</option>
                     {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                   </select>
+                  <div className="border-t pt-3">
+                    <label className="block text-xs text-gray-400 mb-1">PDF-Anhang</label>
+                    {bearbeitenForm.anhangUrl && !neuerAnhang && !anhangEntfernen && (
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <a
+                          href={bearbeitenForm.anhangUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs inline-flex items-center gap-1 font-medium"
+                          style={{ color: COLORS.petrol }}
+                        >
+                          <FileText size={12} /> {bearbeitenForm.anhangName ?? "aktuelles PDF"}
+                        </a>
+                        <button
+                          onClick={() => setAnhangEntfernen(true)}
+                          className="text-[11px] underline"
+                          style={{ color: COLORS.orangeDeep }}
+                        >
+                          entfernen
+                        </button>
+                      </div>
+                    )}
+                    {anhangEntfernen && !neuerAnhang && (
+                      <p className="text-[11px] mb-2" style={{ color: COLORS.orangeDeep }}>
+                        Wird beim Speichern entfernt.{" "}
+                        <button onClick={() => setAnhangEntfernen(false)} className="underline">rückgängig</button>
+                      </p>
+                    )}
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      onChange={(ev) => setNeuerAnhang(ev.target.files?.[0] ?? null)}
+                      className="w-full border rounded-md px-3 py-2 text-sm"
+                    />
+                    <p className="text-[11px] text-gray-400 mt-1">
+                      {bearbeitenForm.anhangUrl
+                        ? "Eine neue Datei ersetzt die bisherige — die alte wird dabei gelöscht."
+                        : "Optional: PDF zu diesem Termin hinterlegen."}
+                    </p>
+                    {neuerAnhang && (
+                      <p className="text-[11px] mt-1" style={{ color: COLORS.petrol }}>
+                        Neu: {neuerAnhang.name} ({Math.round(neuerAnhang.size / 1024)} KB)
+                      </p>
+                    )}
+                  </div>
+
+                  {bearbeitenFehler && (
+                    <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{bearbeitenFehler}</p>
+                  )}
+
                   <div className="flex gap-2 pt-1">
-                    <button onClick={bearbeitenSpeichern} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange }}>
-                      Speichern
+                    <button
+                      onClick={bearbeitenSpeichern}
+                      disabled={bearbeitenLadend}
+                      className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
+                      style={{ background: COLORS.orange, opacity: bearbeitenLadend ? 0.6 : 1 }}
+                    >
+                      {bearbeitenLadend ? "Lade Datei hoch…" : "Speichern"}
                     </button>
                     <button onClick={() => setBearbeitenId(null)} className="px-3 py-1.5 rounded-md text-xs border">
                       Abbrechen
