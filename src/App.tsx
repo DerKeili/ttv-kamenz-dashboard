@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail
+  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -2412,6 +2412,9 @@ function Kalender({ profil }) {
   const [mannschaften, setMannschaften] = useState([]);
   const [ladend, setLadend] = useState(true);
   const [form, setForm] = useState({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
+  const [anhang, setAnhang] = useState(null);
+  const [anhangLadend, setAnhangLadend] = useState(false);
+  const anhangFeld = useRef(null);
   const [fehler, setFehler] = useState(null);
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
@@ -2442,6 +2445,22 @@ function Kalender({ profil }) {
       ? new Date(form.datumEnde)
       : new Date(start.getTime() + Number(effektiveDauerMinuten) * 60000);
 
+    // Optionales PDF zuerst hochladen, damit die Adresse mit dem Termin gespeichert werden kann
+    let anhangUrl = null;
+    let anhangName = null;
+    if (anhang) {
+      setAnhangLadend(true);
+      const pfad = `${crypto.randomUUID()}-${anhang.name.replace(/[^\w.\-]/g, "_")}`;
+      const { error: ladeFehler } = await supabase.storage
+        .from("kalender-anhaenge")
+        .upload(pfad, anhang, { contentType: anhang.type || "application/pdf" });
+      setAnhangLadend(false);
+      if (ladeFehler) return setFehler(`Die Datei konnte nicht hochgeladen werden: ${ladeFehler.message}`);
+      const { data: { publicUrl } } = supabase.storage.from("kalender-anhaenge").getPublicUrl(pfad);
+      anhangUrl = publicUrl;
+      anhangName = anhang.name;
+    }
+
     const { error } = await supabase.from("kalender_ereignisse").insert({
       titel: form.titel,
       datum: start.toISOString(),
@@ -2449,13 +2468,24 @@ function Kalender({ profil }) {
       typ: form.typ,
       mannschaft_id: form.mannschaftId || null,
       erstellt_von: profil.id,
+      anhang_url: anhangUrl,
+      anhang_name: anhangName,
     });
     if (error) return setFehler(error.message);
     if (form.perMail) {
       supabase.functions.invoke("notify-kalender-eintrag", {
-        body: { titel: form.titel, datum: start.toISOString(), typ: form.typ, mannschaftId: form.mannschaftId || null },
+        body: {
+          titel: form.titel,
+          datum: start.toISOString(),
+          typ: form.typ,
+          mannschaftId: form.mannschaftId || null,
+          anhangUrl,
+          anhangName,
+        },
       }); // bewusst nicht awaited
     }
+    setAnhang(null);
+    if (anhangFeld.current) anhangFeld.current.value = "";
     setForm({ titel: "", datum: "", uhrzeit: "", dauerMinuten: 90, dauerMinutenEigen: 60, datumEnde: "", typ: "termin", zeitraum: false, perMail: true, mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
     laden();
   }
@@ -2597,6 +2627,26 @@ function Kalender({ profil }) {
               </div>
             )}
 
+            <div className="sm:col-span-2">
+              <label className="block text-xs text-gray-400 mb-1">PDF anhängen (optional)</label>
+              <input
+                ref={anhangFeld}
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => setAnhang(e.target.files?.[0] ?? null)}
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              />
+              <p className="text-[11px] text-gray-400 mt-1">
+                z. B. eine Ausschreibung oder Anfahrtsbeschreibung. Die Datei kann im Kalender heruntergeladen
+                werden und wird der Info-Mail als Anhang beigelegt. Bis 5 MB.
+              </p>
+              {anhang && (
+                <p className="text-[11px] mt-1" style={{ color: COLORS.petrol }}>
+                  Ausgewählt: {anhang.name} ({Math.round(anhang.size / 1024)} KB)
+                </p>
+              )}
+            </div>
+
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={form.perMail} onChange={(e) => setForm({ ...form, perMail: e.target.checked })} />
               Alle Spieler per E-Mail über diesen Termin informieren
@@ -2606,8 +2656,8 @@ function Kalender({ profil }) {
             </label>
           </div>
           {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
-          <button onClick={anlegen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange }}>
-            Termin anlegen
+          <button onClick={anlegen} disabled={anhangLadend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: anhangLadend ? 0.6 : 1 }}>
+            {anhangLadend ? "Lade Datei hoch…" : "Termin anlegen"}
           </button>
         </div>
       )}
@@ -2695,6 +2745,17 @@ function Kalender({ profil }) {
                 <div className="flex-1">
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{e.titel}</p>
                   <p className="text-xs text-gray-400">{zeitraum}{mannschaftName ? ` · nur ${mannschaftName}` : ""}</p>
+                  {e.anhang_url && (
+                    <a
+                      href={e.anhang_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs mt-1 inline-flex items-center gap-1 font-medium"
+                      style={{ color: COLORS.petrol }}
+                    >
+                      <FileText size={12} /> {e.anhang_name ?? "PDF öffnen"}
+                    </a>
+                  )}
                 </div>
                 {loeschenBestaetigungId === e.id ? (
                   <div className="flex items-center gap-2 shrink-0">
