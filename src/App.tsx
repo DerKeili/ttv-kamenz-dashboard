@@ -1253,17 +1253,19 @@ function MannschaftsUebersicht({ profil }) {
 
   useEffect(() => { laden(); }, []);
 
-  async function umfrageAnUntereSenden(eintrag, untereMannschaft) {
+  async function umfrageAnUntereSenden(eintrag, untereMannschaft, fehlend) {
     setSendenLadendId(eintrag.mannschaft.id);
     const gegner = eintrag.spiel.ist_heimspiel ? eintrag.spiel.gastteam : eintrag.spiel.heimteam;
-    const datumText = formatDatum(eintrag.spiel.datum);
+    const datumText = `${wochentagLang(effektivesSpielDatum(eintrag.spiel))}, ${formatDatum(effektivesSpielDatum(eintrag.spiel))}`;
+    const zeit = uhrzeit(effektivesSpielDatum(eintrag.spiel));
     const frist = new Date(Date.now() + AUSHILFE_FRIST_TAGE * 24 * 60 * 60 * 1000);
+    const anzahlText = fehlend === 1 ? "wird noch 1 Spieler" : `werden noch ${fehlend} Spieler`;
 
     const { data: neueUmfrage, error } = await supabase
       .from("umfragen")
       .insert({
-        titel: `Aushilfe gesucht: ${eintrag.mannschaft.name} braucht Spieler`,
-        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText} werden noch Spieler gebraucht. Hast du an dem Tag Zeit auszuhelfen? (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
+        titel: `Aushilfe gesucht: ${eintrag.mannschaft.name} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
+        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${eintrag.spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
         optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
         mehrfachauswahl: false,
         erstellt_von: profil.id,
@@ -1324,14 +1326,14 @@ function MannschaftsUebersicht({ profil }) {
                 <p className="text-xs text-gray-400 mt-1">Kein anstehendes Spiel terminiert.</p>
               )}
 
-              {spiel && fehlend > 0 && profil.ist_admin && (
+              {spiel && fehlend > 0 && darfMannschaftVerwalten(profil, mannschaft.id) && (
                 untereMannschaft ? (
                   gesendetIds.includes(mannschaft.id) ? (
                     <p className="text-xs mt-2" style={{ color: COLORS.petrol }}>Umfrage an {untereMannschaft.name} verschickt.</p>
                   ) : (
                     <>
                     <button
-                      onClick={() => umfrageAnUntereSenden(eintrag, untereMannschaft)}
+                      onClick={() => umfrageAnUntereSenden(eintrag, untereMannschaft, fehlend)}
                       disabled={sendenLadendId === mannschaft.id}
                       className="text-xs mt-2 px-3 py-1.5 rounded-md text-white font-semibold"
                       style={{ background: COLORS.orangeDeep, opacity: sendenLadendId === mannschaft.id ? 0.6 : 1 }}
@@ -1479,6 +1481,7 @@ function Spielerplanung({ saison, profil }) {
   const [verlegung, setVerlegung] = useState(null); // { spiel, datum, grund }
   const [verlegungLadend, setVerlegungLadend] = useState(false);
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
+  const [aushilfen, setAushilfen] = useState([]);
   const [gesetztVon, setGesetztVon] = useState({}); // { "spielId:spielerId": { id, vorname } }
   const schreibschutzTimer = useRef(null);
 
@@ -1590,6 +1593,33 @@ function Spielerplanung({ saison, profil }) {
     setSpieler(spielerDaten ?? []);
     const map = {};
     (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
+    // Eingeplante Aushilfen anderer Mannschaften zu diesen Spielen
+    const spielIds = (spieleDaten ?? []).map((sp) => sp.id);
+    let aushilfenListe = [];
+    if (spielIds.length > 0) {
+      const { data: aushilfenDaten } = await supabase
+        .from("spiel_aushilfen")
+        .select("spiel_id, spieler_id")
+        .in("spiel_id", spielIds);
+      const helferIds = [...new Set((aushilfenDaten ?? []).map((a) => a.spieler_id))];
+      if (helferIds.length > 0) {
+        const { data: helfer } = await supabase
+          .from("profiles")
+          .select("id, vorname, nachname, avatar_url, mannschaft_id")
+          .in("id", helferIds);
+        const { data: teams } = await supabase.from("mannschaften").select("id, name");
+        aushilfenListe = (aushilfenDaten ?? []).map((a) => {
+          const person = (helfer ?? []).find((h) => h.id === a.spieler_id);
+          return {
+            ...a,
+            person,
+            mannschaftName: (teams ?? []).find((t) => t.id === person?.mannschaft_id)?.name ?? "andere Mannschaft",
+          };
+        });
+      }
+    }
+    setAushilfen(aushilfenListe);
+
     const herkunft = {};
     (meldungenDaten ?? []).forEach((m) => {
       if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status;
@@ -1982,6 +2012,48 @@ function Spielerplanung({ saison, profil }) {
                     })}
                   </tr>
                 ))}
+
+                {aushilfen.length > 0 && [...new Set(aushilfen.map((a) => a.spieler_id))].map((helferId) => {
+                  const helferEintraege = aushilfen.filter((a) => a.spieler_id === helferId);
+                  const person = helferEintraege[0]?.person;
+                  return (
+                    <tr key={`aushilfe-${helferId}`} className="border-t" style={{ background: "#FCF7F3" }}>
+                      <td className="p-3 font-medium sticky left-0 z-10" style={{ background: "#FCF7F3" }}>
+                        <div className="flex items-center gap-2">
+                          <Avatar person={person} groesse={28} />
+                          <span className="min-w-0">
+                            <span className="whitespace-nowrap block">
+                              {person ? `${person.vorname} ${person.nachname}` : "Aushilfe"}
+                            </span>
+                            <span
+                              className="text-[10px] px-1.5 py-0.5 rounded-full inline-block mt-0.5"
+                              style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}
+                            >
+                              Aushilfe · {helferEintraege[0]?.mannschaftName}
+                            </span>
+                          </span>
+                        </div>
+                      </td>
+                      {spiele.map((s) => {
+                        const hilftHier = helferEintraege.some((a) => a.spiel_id === s.id);
+                        return (
+                          <td key={s.id} className="p-2 text-center">
+                            {hilftHier ? (
+                              <span
+                                className="w-full py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1"
+                                style={{ background: "#DDF0EA", color: COLORS.petrol }}
+                              >
+                                <Check size={13} /> Hilft aus
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-300">–</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr className="border-t">
@@ -2625,13 +2697,13 @@ function Kalender({ profil }) {
           <div className="grid sm:grid-cols-2 gap-2 mb-2">
             <input placeholder="Titel" value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2" />
 
-            <div>
+            <div className="min-w-0">
               <label className="block text-xs text-gray-400 mb-1">Datum</label>
               <input type="date" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
             </div>
-            <div>
+            <div className="min-w-0">
               <label className="block text-xs text-gray-400 mb-1">Uhrzeit</label>
-              <input type="time" value={form.uhrzeit} onChange={(e) => setForm({ ...form, uhrzeit: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              <input type="time" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.uhrzeit} onChange={(e) => setForm({ ...form, uhrzeit: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
             </div>
 
             {!form.zeitraum && (
@@ -2709,7 +2781,7 @@ function Kalender({ profil }) {
             {form.zeitraum && (
               <div className="sm:col-span-2">
                 <label className="block text-xs text-gray-400 mb-1">Ende (Datum & Uhrzeit)</label>
-                <input type="datetime-local" value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+                <input type="datetime-local" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
               </div>
             )}
 
@@ -2770,6 +2842,7 @@ function Kalender({ profil }) {
                       <label className="block text-xs text-gray-400 mb-1">Beginn</label>
                       <input
                         type="datetime-local"
+                        style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
                         value={bearbeitenForm.datum}
                         onChange={(ev) => setBearbeitenForm({ ...bearbeitenForm, datum: ev.target.value })}
                         className="w-full border rounded-md px-3 py-2 text-sm"
@@ -2779,6 +2852,7 @@ function Kalender({ profil }) {
                       <label className="block text-xs text-gray-400 mb-1">Ende (optional)</label>
                       <input
                         type="datetime-local"
+                        style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
                         value={bearbeitenForm.datumEnde}
                         onChange={(ev) => setBearbeitenForm({ ...bearbeitenForm, datumEnde: ev.target.value })}
                         className="w-full border rounded-md px-3 py-2 text-sm"
@@ -2877,25 +2951,26 @@ function Kalender({ profil }) {
             const mannschaftName = e.mannschaft_id ? mannschaften.find((m) => m.id === e.mannschaft_id)?.name : null;
 
             return (
-              <div key={e.id} className="flex items-center gap-4 p-4">
+              <div key={e.id} className="flex flex-wrap items-start gap-3 p-4">
                 <div className="w-10 h-10 rounded-md flex items-center justify-center shrink-0" style={{ background: COLORS.petrolDark }}>
                   <Icon size={18} color="white" />
                 </div>
-                <div className="flex-1">
+                <div className="flex-1 min-w-[8rem]">
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{e.titel}</p>
                   <p className="text-xs text-gray-400">{zeitraum}{mannschaftName ? ` · nur ${mannschaftName}` : ""}</p>
                   {e.anhang_url && (
                     <button
                       onClick={() => dateiHerunterladen(e.anhang_url, e.anhang_name)}
-                      className="text-xs mt-1 inline-flex items-center gap-1 font-medium underline"
+                      className="text-xs mt-1 flex items-start gap-1 font-medium underline text-left"
                       style={{ color: COLORS.petrol }}
                     >
-                      <FileText size={12} /> {e.anhang_name ?? "PDF herunterladen"}
+                      <FileText size={12} className="mt-0.5 shrink-0" />
+                      <span className="break-all">{e.anhang_name ?? "PDF herunterladen"}</span>
                     </button>
                   )}
                 </div>
                 {loeschenBestaetigungId === e.id ? (
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0 ml-auto">
                     <span className="text-xs text-gray-500">Löschen?</span>
                     <button onClick={() => loeschen(e.id)} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
                       Ja
@@ -2905,7 +2980,7 @@ function Kalender({ profil }) {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-3 shrink-0 ml-auto">
                     <KalenderExportMenu ereignis={e} />
                     {darfMannschaftVerwalten(profil, e.mannschaft_id) && (
                       <>
@@ -3854,6 +3929,7 @@ function Spielerverwaltung({ profil }) {
 function Umfragen({ profil, zielUmfrageId }) {
   const [umfragen, setUmfragen] = useState([]);
   const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({});
+  const [aushilfen, setAushilfen] = useState([]);
   const [zieleNachUmfrage, setZieleNachUmfrage] = useState({}); // { [umfrageId]: spielerId[] } – leer = "alle"
   const [spielerListe, setSpielerListe] = useState([]);
   const [mannschaften, setMannschaften] = useState([]);
@@ -3869,14 +3945,16 @@ function Umfragen({ profil, zielUmfrageId }) {
 
   async function laden() {
     setLadend(true);
-    const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }, { data: zieleDaten }, { data: mannschaftenDaten }] = await Promise.all([
+    const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }, { data: zieleDaten }, { data: mannschaftenDaten }, { data: aushilfenDaten }] = await Promise.all([
       supabase.from("umfragen").select("*").eq("aktiv", true).order("erstellt_am", { ascending: false }),
       supabase.from("umfrage_antworten").select("umfrage_id, spieler_id, ausgewaehlte_optionen"),
-      supabase.from("profiles").select("id, vorname, nachname"),
+      supabase.from("profiles").select("id, vorname, nachname, avatar_url"),
       supabase.from("umfrage_ziele").select("umfrage_id, spieler_id"),
       supabase.from("mannschaften").select("*"),
+      supabase.from("spiel_aushilfen").select("spiel_id, spieler_id"),
     ]);
     setUmfragen(umfragenDaten ?? []);
+    setAushilfen(aushilfenDaten ?? []);
     setSpielerListe(spielerDaten ?? []);
     setMannschaften(sortiereMannschaften(mannschaftenDaten));
     const antwortenGruppiert = {};
@@ -3903,6 +3981,13 @@ function Umfragen({ profil, zielUmfrageId }) {
   }, [zielUmfrageId, ladend]);
 
   async function abstimmen(umfrageId, mehrfachauswahl, gewaehlt) {
+    const umfrage = umfragen.find((u) => u.id === umfrageId);
+    // Sagt jemand bei einer Aushilfe-Anfrage zu, erfährt die Mannschaftsführung davon sofort
+    if (umfrage?.art === "aushilfe" && (gewaehlt ?? []).some((o) => String(o).toLowerCase().startsWith("ja"))) {
+      supabase.functions.invoke("notify-aushilfe", {
+        body: { art: "zusage", spielId: umfrage.bezug_spiel_id, spielerId: profil.id, umfrageId },
+      }); // bewusst nicht awaited
+    }
     await supabase.from("umfrage_antworten").upsert(
       { umfrage_id: umfrageId, spieler_id: profil.id, ausgewaehlte_optionen: gewaehlt, beantwortet_am: new Date().toISOString() },
       { onConflict: "umfrage_id,spieler_id" }
@@ -3912,6 +3997,33 @@ function Umfragen({ profil, zielUmfrageId }) {
 
   // Aus einer Verlegungs-Umfrage heraus einen Termin verbindlich ansetzen.
   // Das betroffene Spiel wird auf den neuen Termin gelegt und die Umfrage beendet.
+  // Aushilfen für ein Spiel ein- oder wieder ausplanen
+  async function aushilfeUmschalten(umfrage, spielerId, einplanen) {
+    setFehler(null);
+    if (!umfrage.bezug_spiel_id) return setFehler("Zu dieser Umfrage ist kein Spiel hinterlegt.");
+
+    if (einplanen) {
+      const { error } = await supabase.from("spiel_aushilfen").insert({
+        spiel_id: umfrage.bezug_spiel_id,
+        spieler_id: spielerId,
+        umfrage_id: umfrage.id,
+        zugeordnet_von: profil.id,
+      });
+      if (error) return setFehler(error.message);
+      supabase.functions.invoke("notify-aushilfe", {
+        body: { art: "eingeplant", spielId: umfrage.bezug_spiel_id, spielerId },
+      }); // bewusst nicht awaited
+    } else {
+      const { error } = await supabase
+        .from("spiel_aushilfen")
+        .delete()
+        .eq("spiel_id", umfrage.bezug_spiel_id)
+        .eq("spieler_id", spielerId);
+      if (error) return setFehler(error.message);
+    }
+    laden();
+  }
+
   async function terminAnsetzen(umfrage, datumTag) {
     if (!umfrage.bezug_spiel_id) return setFehler("Zu dieser Umfrage ist kein Spiel hinterlegt.");
     setFehler(null);
@@ -4215,6 +4327,8 @@ function Umfragen({ profil, zielUmfrageId }) {
               onBeenden={() => beenden(u.id)}
               onLoeschen={() => loeschen(u.id)}
               onTerminAnsetzen={terminAnsetzen}
+              aushilfen={aushilfen.filter((a) => a.spiel_id === u.bezug_spiel_id)}
+              onAushilfeUmschalten={aushilfeUmschalten}
             />
           );
         })
@@ -4231,7 +4345,7 @@ function terminAusOption(option) {
   return `${jahr}-${monat}-${tag}`;
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, aushilfen = [], onAushilfeUmschalten }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
@@ -4346,6 +4460,35 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
                   <div className="h-full rounded-full" style={{ width: `${prozent}%`, background: COLORS.petrol }} />
                 </div>
                 {namen.length > 0 && <p className="text-[11px] text-gray-400 mt-1">{namen.join(", ")}</p>}
+                {umfrage.art === "aushilfe" && darfMannschaftVerwalten(profil, umfrage.ziel_mannschaft_id) &&
+                  String(option).toLowerCase().startsWith("ja") && stimmenderIds.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {stimmenderIds.map((id) => {
+                        const person = spielerListe.find((s) => s.id === id);
+                        const eingeplant = aushilfen.some((a) => a.spieler_id === id);
+                        return (
+                          <div key={id} className="flex items-center justify-between gap-2 text-xs">
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <Avatar person={person} groesse={20} />
+                              <span className="truncate">{person ? `${person.vorname} ${person.nachname}` : "Unbekannt"}</span>
+                            </span>
+                            <button
+                              onClick={() => onAushilfeUmschalten?.(umfrage, id, !eingeplant)}
+                              className="px-2 py-1 rounded-md font-semibold shrink-0"
+                              style={eingeplant
+                                ? { background: "#DDF0EA", color: COLORS.petrol }
+                                : { background: COLORS.orange, color: "white" }}
+                            >
+                              {eingeplant ? "✓ eingeplant" : "einplanen"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                      <p className="text-[10px] text-gray-400">
+                        Wer eingeplant wird, erscheint in eurer Spielerplanung und bekommt eine E-Mail.
+                      </p>
+                    </div>
+                  )}
                 {umfrage.art === "verlegung" && darfMannschaftVerwalten(profil, umfrage.mannschaft_id) && terminAusOption(option) && (
                   <button
                     onClick={() => onTerminAnsetzen?.(umfrage, terminAusOption(option))}
