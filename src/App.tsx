@@ -4689,7 +4689,8 @@ const EMAIL_ARTEN = [
   { feld: "email_umfragen", titel: "Neue Umfragen", text: "Wenn eine Umfrage startet, die dich betrifft — auch Aushilfe-Anfragen und Terminvorschläge zur Spielverlegung." },
   { feld: "email_nachrichten", titel: "Neue Nachrichten", text: "Wenn dir jemand im Postfach schreibt. Höchstens eine Mail pro Stunde und Absender." },
   { feld: "email_termine", titel: "Neue Termine", text: "Wenn ein Training, Spiel oder anderer Termin für deine Mannschaft angelegt wird." },
-  { feld: "email_spielplan", titel: "Erinnerungen zur Spielerplanung", text: "Erinnerung, wenn vor einem Spiel deine Rückmeldung noch fehlt. Mannschaftsführer bekommen zusätzlich eine Warnung, wenn zu wenige Spieler zugesagt haben." },
+  { feld: "email_spielplan", titel: "Erinnerung an meine Rückmeldung", text: "Erinnerung ab 14 Tagen vor einem Spiel, solange du nicht eingetragen hast, ob du kannst. Höchstens alle sechs Tage und nie am Vortag." },
+  { feld: "email_zusagenwarnung", titel: "Warnung bei zu wenigen Zusagen", nurLeitung: true, text: "Nur für die Mannschaftsführung: Übersicht, wenn für ein anstehendes Spiel zu wenige Spieler zugesagt haben." },
 ];
 
 function EmailEinstellungen({ profil, onProfilGeaendert }) {
@@ -4700,8 +4701,10 @@ function EmailEinstellungen({ profil, onProfilGeaendert }) {
   const [ladend, setLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
 
-  // Erinnerungen zur Spielerplanung betreffen alle Spieler, nicht nur die Mannschaftsführung
-  const relevanteArten = EMAIL_ARTEN;
+  // Die Zusagen-Warnung sieht nur, wer auch tatsächlich aufstellen muss
+  const relevanteArten = EMAIL_ARTEN.filter(
+    (a) => !a.nurLeitung || profil.ist_admin || istTeamLeiter(profil)
+  );
 
   async function speichern() {
     setFehler(null);
