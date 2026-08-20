@@ -4689,7 +4689,7 @@ const EMAIL_ARTEN = [
   { feld: "email_umfragen", titel: "Neue Umfragen", text: "Wenn eine Umfrage startet, die dich betrifft — auch Aushilfe-Anfragen und Terminvorschläge zur Spielverlegung." },
   { feld: "email_nachrichten", titel: "Neue Nachrichten", text: "Wenn dir jemand im Postfach schreibt. Höchstens eine Mail pro Stunde und Absender." },
   { feld: "email_termine", titel: "Neue Termine", text: "Wenn ein Training, Spiel oder anderer Termin für deine Mannschaft angelegt wird." },
-  { feld: "email_spielplan", titel: "Warnung bei zu wenigen Zusagen", text: "Nur für Mannschaftsführer: Hinweis, wenn für ein Spiel zu wenige Spieler zugesagt haben." },
+  { feld: "email_spielplan", titel: "Erinnerungen zur Spielerplanung", text: "Erinnerung, wenn vor einem Spiel deine Rückmeldung noch fehlt. Mannschaftsführer bekommen zusätzlich eine Warnung, wenn zu wenige Spieler zugesagt haben." },
 ];
 
 function EmailEinstellungen({ profil, onProfilGeaendert }) {
@@ -4700,9 +4700,8 @@ function EmailEinstellungen({ profil, onProfilGeaendert }) {
   const [ladend, setLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
 
-  const relevanteArten = EMAIL_ARTEN.filter(
-    (a) => a.feld !== "email_spielplan" || profil.ist_admin || istTeamLeiter(profil)
-  );
+  // Erinnerungen zur Spielerplanung betreffen alle Spieler, nicht nur die Mannschaftsführung
+  const relevanteArten = EMAIL_ARTEN;
 
   async function speichern() {
     setFehler(null);
