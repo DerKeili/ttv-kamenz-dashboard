@@ -1482,6 +1482,7 @@ function Spielerplanung({ saison, profil }) {
   const [verlegungLadend, setVerlegungLadend] = useState(false);
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
   const [aushilfen, setAushilfen] = useState([]);
+  const [anfrageLadendId, setAnfrageLadendId] = useState(null);
   const [gesetztVon, setGesetztVon] = useState({}); // { "spielId:spielerId": { id, vorname } }
   const schreibschutzTimer = useRef(null);
 
@@ -1523,6 +1524,72 @@ function Spielerplanung({ saison, profil }) {
       datum: spiel.verlegt_auf ? new Date(spiel.verlegt_auf).toISOString().slice(0, 16) : "",
       grund: spiel.verlegt_grund ?? "",
     });
+  }
+
+  // Aushilfe-Anfrage direkt aus der Spielerplanung heraus starten
+  async function aushilfeAnfragen(spiel) {
+    setFehler(null);
+    const fehlend = benoetigteSpieler - countJa(spiel.id);
+    if (fehlend <= 0) return;
+
+    const { data: eigene } = await supabase
+      .from("mannschaften")
+      .select("id, name, hierarchie_stufe")
+      .eq("id", saison.mannschaft_id)
+      .maybeSingle();
+    const { data: untere } = await supabase
+      .from("mannschaften")
+      .select("id, name")
+      .eq("hierarchie_stufe", (eigene?.hierarchie_stufe ?? 0) + 1)
+      .maybeSingle();
+    if (!untere) return setFehler("Es gibt keine darunter liegende Mannschaft, die aushelfen könnte.");
+
+    const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+    const termin = effektivesSpielDatum(spiel);
+    const datumText = `${wochentagLang(termin)}, ${formatDatum(termin)}`;
+    const zeit = uhrzeit(termin);
+    const frist = new Date(Date.now() + AUSHILFE_FRIST_TAGE * 24 * 60 * 60 * 1000);
+    const anzahlText = fehlend === 1 ? "wird noch 1 Spieler" : `werden noch ${fehlend} Spieler`;
+
+    if (!window.confirm(
+      `Anfrage an die ${untere.name} senden?\n\n${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""}\n` +
+      `Es fehlen aktuell ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}.`
+    )) return;
+
+    setAnfrageLadendId(spiel.id);
+    const { data: neueUmfrage, error } = await supabase
+      .from("umfragen")
+      .insert({
+        titel: `Aushilfe gesucht: ${eigene?.name ?? "Mannschaft"} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
+        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
+        optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
+        mehrfachauswahl: false,
+        erstellt_von: profil.id,
+        mannschaft_id: untere.id,
+        art: "aushilfe",
+        bezug_spiel_id: spiel.id,
+        ziel_mannschaft_id: saison.mannschaft_id,
+        endet_am: frist.toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error || !neueUmfrage) {
+      setAnfrageLadendId(null);
+      return setFehler(error?.message ?? "Die Umfrage konnte nicht angelegt werden.");
+    }
+
+    const { data: empfaenger } = await supabase.from("profiles").select("id").eq("mannschaft_id", untere.id);
+    const empfaengerIds = (empfaenger ?? []).map((e) => e.id);
+    if (empfaengerIds.length > 0) {
+      await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
+      supabase.functions.invoke("notify-neue-umfrage", {
+        body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
+      }); // bewusst nicht awaited
+    }
+    setAnfrageLadendId(null);
+    setFehler(null);
+    window.alert(`Anfrage an die ${untere.name} ist raus. Sobald jemand zusagt, bekommst du eine E-Mail und kannst ihn in den Umfragen einplanen.`);
   }
 
   async function verlegungSpeichern(mitTermin) {
@@ -2070,8 +2137,18 @@ function Spielerplanung({ saison, profil }) {
                           style={kritisch ? { background: COLORS.orange, color: "white" } : { background: "#E4F2EE", color: COLORS.petrol }}
                         >
                           {kritisch && <AlertTriangle size={12} />}
-                          {ja}/{spieler.length} zugesagt
+                          {ja}/{benoetigteSpieler} zugesagt
                         </div>
+                        {kritisch && darfPlanen && !spielGesperrt(s) && (
+                          <button
+                            onClick={() => aushilfeAnfragen(s)}
+                            disabled={anfrageLadendId === s.id}
+                            className="mt-1 text-[10px] underline font-semibold"
+                            style={{ color: COLORS.petrol }}
+                          >
+                            {anfrageLadendId === s.id ? "sende…" : "Aushilfe anfragen"}
+                          </button>
+                        )}
                       </td>
                     );
                   })}
