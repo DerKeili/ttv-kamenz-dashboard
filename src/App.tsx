@@ -1848,7 +1848,154 @@ function Spielerplanung({ saison, profil }) {
         <Leerzustand text={`Noch keine Spiele für die ${runde} hinterlegt.`} />
       ) : (
         <>
-          <div className="bg-white rounded-lg border overflow-auto max-h-[75vh]">
+          {/* Hochformat auf dem Handy: Karten statt Tabelle — eine Karte je Spieltag */}
+          <div className="sm:hidden space-y-3">
+            {spiele.map((s) => {
+              const gesperrt = spielGesperrt(s);
+              const termin = effektivesSpielDatum(s);
+              const eigenerStatus = meldungen[s.id]?.[profil.id] ?? "offen";
+              const ja = countJa(s.id);
+              const kritisch = ja < benoetigteSpieler;
+              const tag = termin?.slice(0, 10);
+              const parallel = (tag && ueberschneidungen[tag]) || [];
+              const helfer = aushilfen.filter((a) => a.spiel_id === s.id);
+              const meineSchicht = schichtSichtbarFuer(profil, profil) ? schichtFuerDatum(profil, termin) : null;
+
+              return (
+                <div key={s.id} className="bg-white rounded-lg border overflow-hidden">
+                  <div className="p-3" style={{ background: gesperrt ? "#4A4A44" : parallel.length > 0 ? COLORS.konflikt : COLORS.petrolDark }}>
+                    <div className="flex items-start justify-between gap-2 text-white">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm">
+                          <span style={s.verlegt && s.verlegt_auf ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
+                            {wochentagLang(s.datum)}, {formatDatum(s.datum)}
+                          </span>
+                          {s.verlegt && s.verlegt_auf && <span className="block">→ {wochentagLang(s.verlegt_auf)}, {formatDatum(s.verlegt_auf)}</span>}
+                        </p>
+                        <p className="text-xs opacity-90">
+                          {uhrzeit(termin) && `${uhrzeit(termin)} · `}
+                          {s.ist_heimspiel ? "Heim" : "Auswärts"} gegen {s.ist_heimspiel ? s.gastteam : s.heimteam}
+                        </p>
+                        {gesperrt && <p className="text-[11px] font-semibold mt-1">verlegt · Termin offen</p>}
+                        {parallel.length > 0 && !gesperrt && (
+                          <p className="text-[11px] font-semibold mt-1 flex items-center gap-1">
+                            <CalendarClock size={11} /> parallel: {parallel.map((u) => u.mannschaftName).join(", ")}
+                          </p>
+                        )}
+                      </div>
+                      {darfPlanen && (
+                        <button onClick={() => verlegungOeffnen(s)} className="text-[11px] underline shrink-0 opacity-90">
+                          {s.verlegt ? "ändern" : "verlegen"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="p-3 space-y-3">
+                    {/* Eigene Rückmeldung groß und gut treffbar */}
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">
+                        Deine Rückmeldung
+                        {meineSchicht && <span className="ml-1">· {SCHICHT_STIL[meineSchicht]?.kuerzel}schicht</span>}
+                      </p>
+                      <button
+                        onClick={() => toggle(s.id, profil.id)}
+                        disabled={gesperrt}
+                        className="w-full py-3 rounded-md text-sm font-semibold flex items-center justify-center gap-2"
+                        style={
+                          gesperrt
+                            ? { background: "#E3E3DF", color: "#8a8a82" }
+                            : eigenerStatus === "ja"
+                            ? { background: "#DDF0EA", color: COLORS.petrol }
+                            : eigenerStatus === "nein"
+                            ? { background: "#FBE2DA", color: COLORS.orangeDeep }
+                            : { background: "#F1F1EF", color: "#777" }
+                        }
+                      >
+                        {gesperrt ? <CalendarClock size={16} /> : eigenerStatus === "ja" ? <Check size={16} /> : eigenerStatus === "nein" ? <X size={16} /> : <HelpCircle size={16} />}
+                        {gesperrt ? "verlegt" : eigenerStatus === "ja" ? "Ich kann" : eigenerStatus === "nein" ? "Ich kann nicht" : "Antippen zum Eintragen"}
+                      </button>
+                    </div>
+
+                    {/* Übrige Mannschaft kompakt */}
+                    <details>
+                      <summary className="text-xs text-gray-500 cursor-pointer">Mannschaft anzeigen</summary>
+                      <div className="mt-2 space-y-1">
+                        {spieler.filter((sp) => sp.id !== profil.id).map((sp) => {
+                          const st = meldungen[s.id]?.[sp.id] ?? "offen";
+                          const herkunft = gesetztVon[`${s.id}:${sp.id}`];
+                          const schicht = schichtSichtbarFuer(sp, profil) ? schichtFuerDatum(sp, termin) : null;
+                          return (
+                            <button
+                              key={sp.id}
+                              onClick={() => toggle(s.id, sp.id)}
+                              disabled={gesperrt || !(darfPlanen && schreibschutzAus)}
+                              className="w-full flex items-center justify-between gap-2 text-xs py-1"
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <Avatar person={sp} groesse={22} />
+                                <span className="truncate">{sp.vorname} {sp.nachname}</span>
+                                {schicht && (
+                                  <span className="text-[9px] px-1 rounded" style={{ background: SCHICHT_STIL[schicht]?.background, color: SCHICHT_STIL[schicht]?.color }}>
+                                    {SCHICHT_STIL[schicht]?.kuerzel}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="shrink-0 text-right">
+                                <span
+                                  className="px-2 py-0.5 rounded-md font-semibold"
+                                  style={st === "ja" ? { background: "#DDF0EA", color: COLORS.petrol } : st === "nein" ? { background: "#FBE2DA", color: COLORS.orangeDeep } : { background: "#F1F1EF", color: "#999" }}
+                                >
+                                  {st === "ja" ? "Kann" : st === "nein" ? "Kann nicht" : "Offen"}
+                                </span>
+                                {herkunft && <span className="block text-[9px] text-gray-400">von {herkunft.vorname}</span>}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {helfer.map((a) => (
+                          <div key={a.spieler_id} className="w-full flex items-center justify-between gap-2 text-xs py-1">
+                            <span className="flex items-center gap-2 min-w-0">
+                              <Avatar person={a.person} groesse={22} />
+                              <span className="truncate">{a.person?.vorname} {a.person?.nachname}</span>
+                              <span className="text-[9px] px-1 rounded" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+                                Aushilfe
+                              </span>
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md font-semibold shrink-0" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
+                              Hilft aus
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t">
+                      <span
+                        className="px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1"
+                        style={kritisch ? { background: COLORS.orange, color: "white" } : { background: "#E4F2EE", color: COLORS.petrol }}
+                      >
+                        {kritisch && <AlertTriangle size={12} />}
+                        {ja}/{benoetigteSpieler} zugesagt
+                      </span>
+                      {kritisch && darfPlanen && !gesperrt && (
+                        <button
+                          onClick={() => aushilfeAnfragen(s)}
+                          disabled={anfrageLadendId === s.id}
+                          className="text-xs underline font-semibold"
+                          style={{ color: COLORS.petrol }}
+                        >
+                          {anfrageLadendId === s.id ? "sende…" : "Aushilfe anfragen"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="hidden sm:block bg-white rounded-lg border overflow-auto max-h-[75vh]">
             {darfPlanen && (
               <div
                 className="flex flex-wrap items-center justify-between gap-2 p-3 border-b"
@@ -6843,6 +6990,34 @@ export default function App() {
   const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(null);
   const [passwortZuruecksetzen, setPasswortZuruecksetzen] = useState(false);
 
+  // Android-Zurücktaste: erst offene Ebenen schließen, dann zum vorherigen Reiter
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.history.replaceState({ tab: "dashboard" }, "");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.history.state?.tab === tab) return;
+    window.history.pushState({ tab }, "");
+  }, [tab]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    function beiZurueck(ereignis) {
+      // Offenes Menü zählt als eigener Schritt
+      if (navOpen) {
+        setNavOpen(false);
+        window.history.pushState({ tab }, "");
+        return;
+      }
+      const ziel = ereignis.state?.tab;
+      if (ziel) setTab(ziel);
+    }
+    window.addEventListener("popstate", beiZurueck);
+    return () => window.removeEventListener("popstate", beiZurueck);
+  }, [navOpen, tab]);
+
   useEffect(() => {
     // Beim Öffnen des Kalenders gelten alle bis dahin angelegten Termine als gesehen
     if (tab !== "kalender" || !profil?.id) return;
@@ -6954,8 +7129,18 @@ export default function App() {
     <div className="h-[100dvh] flex overflow-hidden" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
       <AenderungsPopup profil={profil} />
       <UmfrageEskalation profil={profil} />
+      {/* Abdunkelnder Hintergrund, solange das Menü auf dem Handy offen ist —
+          verhindert außerdem, dass Inhalte dahinter durchscheinen */}
+      {navOpen && (
+        <div
+          className="fixed inset-0 z-30 md:hidden"
+          style={{ background: "rgba(0,0,0,0.45)" }}
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+
       <aside
-        className={`fixed md:static z-20 h-[100dvh] md:h-full w-64 flex flex-col transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
+        className={`fixed md:static z-40 md:z-auto h-[100dvh] md:h-full w-64 flex flex-col transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
         style={{ background: COLORS.petrolDark }}
       >
         <div className="p-5 border-b shrink-0" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
