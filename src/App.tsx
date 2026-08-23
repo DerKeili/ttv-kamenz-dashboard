@@ -1483,6 +1483,9 @@ function Spielerplanung({ saison, profil }) {
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
   const [aushilfen, setAushilfen] = useState([]);
   const [anfrageLadendId, setAnfrageLadendId] = useState(null);
+  const [aufstellungen, setAufstellungen] = useState({});
+  const [aufstellungFuer, setAufstellungFuer] = useState(null);
+  const [meldung, setMeldung] = useState([]);
   const [gesetztVon, setGesetztVon] = useState({}); // { "spielId:spielerId": { id, vorname } }
   const schreibschutzTimer = useRef(null);
 
@@ -1687,6 +1690,21 @@ function Spielerplanung({ saison, profil }) {
     }
     setAushilfen(aushilfenListe);
 
+    // Fertige Aufstellungen und die offizielle Mannschaftsmeldung des Verbands
+    if (spielIds.length > 0) {
+      const { data: aufstellungsDaten } = await supabase
+        .from("spiel_aufstellungen")
+        .select("*")
+        .in("spiel_id", spielIds);
+      setAufstellungen(Object.fromEntries((aufstellungsDaten ?? []).map((a) => [a.spiel_id, a])));
+    }
+    const { data: info } = await supabase
+      .from("mannschaft_info")
+      .select("spieler")
+      .eq("saison_id", saison.id)
+      .maybeSingle();
+    setMeldung(info?.spieler ?? []);
+
     const herkunft = {};
     (meldungenDaten ?? []).forEach((m) => {
       if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status;
@@ -1798,6 +1816,17 @@ function Spielerplanung({ saison, profil }) {
     }
   }
 
+  // Wer steht für dieses Spiel zur Verfügung? Zusagen plus eingeplante Aushilfen
+  function kandidatenFuer(spielId) {
+    const eigene = spieler
+      .filter((sp) => (meldungen[spielId]?.[sp.id] ?? "offen") === "ja")
+      .map((sp) => ({ ...sp, istAushilfe: false, offiziell: offiziellePosition(sp, meldung) }));
+    const helfer = aushilfen
+      .filter((a) => a.spiel_id === spielId && a.person)
+      .map((a) => ({ ...a.person, istAushilfe: true, offiziell: null }));
+    return [...eigene, ...helfer];
+  }
+
   function countJa(spielId) {
     return Object.values(meldungen[spielId] ?? {}).filter((v) => v === "ja").length;
   }
@@ -1838,6 +1867,19 @@ function Spielerplanung({ saison, profil }) {
         </div>
       </div>
       {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+
+      {aufstellungFuer && (
+        <AufstellungFenster
+          spiel={aufstellungFuer}
+          kandidaten={kandidatenFuer(aufstellungFuer.id)}
+          meldung={meldung}
+          benoetigt={benoetigteSpieler}
+          darfBearbeiten={darfPlanen}
+          vorhanden={aufstellungen[aufstellungFuer.id] ?? null}
+          onSchliessen={() => setAufstellungFuer(null)}
+          onGespeichert={() => { setAufstellungFuer(null); laden(); }}
+        />
+      )}
 
       <p className="text-xs text-gray-400 flex items-center gap-1 landscape:hidden md:hidden">
         <HelpCircle size={12} className="shrink-0" />
@@ -1978,16 +2020,27 @@ function Spielerplanung({ saison, profil }) {
                         {kritisch && <AlertTriangle size={12} />}
                         {ja}/{benoetigteSpieler} zugesagt
                       </span>
-                      {kritisch && darfPlanen && !gesperrt && (
-                        <button
-                          onClick={() => aushilfeAnfragen(s)}
-                          disabled={anfrageLadendId === s.id}
-                          className="text-xs underline font-semibold"
-                          style={{ color: COLORS.petrol }}
-                        >
-                          {anfrageLadendId === s.id ? "sende…" : "Aushilfe anfragen"}
-                        </button>
-                      )}
+                      <span className="flex flex-col items-end gap-1">
+                        {kritisch && darfPlanen && !gesperrt && (
+                          <button
+                            onClick={() => aushilfeAnfragen(s)}
+                            disabled={anfrageLadendId === s.id}
+                            className="text-xs underline font-semibold"
+                            style={{ color: COLORS.petrol }}
+                          >
+                            {anfrageLadendId === s.id ? "sende…" : "Aushilfe anfragen"}
+                          </button>
+                        )}
+                        {!gesperrt && (aufstellungen[s.id] || (darfPlanen && ja >= benoetigteSpieler)) && (
+                          <button
+                            onClick={() => setAufstellungFuer(s)}
+                            className="text-xs underline font-semibold"
+                            style={{ color: aufstellungen[s.id] ? COLORS.petrol : COLORS.orangeDeep }}
+                          >
+                            {aufstellungen[s.id] ? "Spielaufstellung ansehen" : "Spielaufstellung fertigstellen"}
+                          </button>
+                        )}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -2290,10 +2343,19 @@ function Spielerplanung({ saison, profil }) {
                           <button
                             onClick={() => aushilfeAnfragen(s)}
                             disabled={anfrageLadendId === s.id}
-                            className="mt-1 text-[10px] underline font-semibold"
+                            className="mt-1 text-[10px] underline font-semibold block mx-auto"
                             style={{ color: COLORS.petrol }}
                           >
                             {anfrageLadendId === s.id ? "sende…" : "Aushilfe anfragen"}
+                          </button>
+                        )}
+                        {!spielGesperrt(s) && (aufstellungen[s.id] || (darfPlanen && ja >= benoetigteSpieler)) && (
+                          <button
+                            onClick={() => setAufstellungFuer(s)}
+                            className="mt-1 text-[10px] underline font-semibold block mx-auto"
+                            style={{ color: aufstellungen[s.id] ? COLORS.petrol : COLORS.orangeDeep }}
+                          >
+                            {aufstellungen[s.id] ? "Spielaufstellung ansehen" : "Spielaufstellung fertigstellen"}
                           </button>
                         )}
                       </td>
@@ -5256,6 +5318,7 @@ const EMAIL_ARTEN = [
   { feld: "email_termine", titel: "Neue Termine", text: "Wenn ein Training, Spiel oder anderer Termin für deine Mannschaft angelegt wird." },
   { feld: "email_spielplan", titel: "Erinnerung an meine Rückmeldung", text: "Erinnerung ab 14 Tagen vor einem Spiel, solange du nicht eingetragen hast, ob du kannst. Höchstens alle sechs Tage und nie am Vortag." },
   { feld: "email_zusagenwarnung", titel: "Warnung bei zu wenigen Zusagen", nurLeitung: true, text: "Nur für die Mannschaftsführung: Übersicht, wenn für ein anstehendes Spiel zu wenige Spieler zugesagt haben." },
+  { feld: "email_aufstellung", titel: "Spielaufstellung", text: "Nachricht, wenn du für ein Spiel aufgestellt wurdest — mit Reihenfolge und Doppelpaaren." },
 ];
 
 function EmailEinstellungen({ profil, onProfilGeaendert }) {
@@ -6742,6 +6805,278 @@ function News({ profil }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* ---------- Spielaufstellung ----------
+   Reihenfolge nach der offiziellen Mannschaftsmeldung des Verbands (WO H 2.2):
+   Wer fehlt, dessen Platz rücken die anderen auf. Aushilfen aus unteren
+   Mannschaften spielen auf den hinteren Plätzen.
+   Doppel: Doppel 1 ist frei wählbar, Doppel 2 und 3 müssen nach Wertigkeit
+   folgen — Wertigkeit ist die Summe der beiden Einzelplätze. */
+
+function nameNormalisieren(text) {
+  return String(text ?? "")
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Findet die offizielle Position eines Spielers in der Verbandsmeldung
+function offiziellePosition(person, meldung) {
+  if (!person || !Array.isArray(meldung)) return null;
+  const voll = nameNormalisieren(`${person.vorname} ${person.nachname}`);
+  const gedreht = nameNormalisieren(`${person.nachname} ${person.vorname}`);
+  const treffer = meldung.find((m) => {
+    const n = nameNormalisieren(m.name);
+    return n === voll || n === gedreht || (n.includes(nameNormalisieren(person.nachname)) && n.includes(nameNormalisieren(person.vorname)));
+  });
+  return treffer ? { position: Number(treffer.position), lpz: treffer.lpz ?? null } : null;
+}
+
+function wertigkeit(doppel, positionen) {
+  return doppel.reduce((summe, id) => summe + (positionen.findIndex((p) => p.spieler_id === id) + 1), 0);
+}
+
+function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbeiten, vorhanden, onSchliessen, onGespeichert }) {
+  const [reihenfolge, setReihenfolge] = useState([]);
+  const [doppel, setDoppel] = useState([]);
+  const [speichern, setSpeichern] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  useEffect(() => {
+    if (vorhanden?.positionen?.length) {
+      setReihenfolge(vorhanden.positionen);
+      setDoppel(vorhanden.doppel ?? []);
+      return;
+    }
+    // Vorschlag: nach offizieller Meldung, Aushilfen ans Ende, sonst nach LPZ
+    const sortiert = [...kandidaten].sort((a, b) => {
+      if (a.istAushilfe !== b.istAushilfe) return a.istAushilfe ? 1 : -1;
+      const pa = a.offiziell?.position ?? 99;
+      const pb = b.offiziell?.position ?? 99;
+      if (pa !== pb) return pa - pb;
+      return (Number(b.offiziell?.lpz) || 0) - (Number(a.offiziell?.lpz) || 0);
+    });
+    const gewaehlt = sortiert.slice(0, benoetigt).map((k) => ({ spieler_id: k.id }));
+    setReihenfolge(gewaehlt);
+    setDoppel(standardDoppel(gewaehlt));
+  }, [vorhanden, kandidaten.length, benoetigt]);
+
+  function standardDoppel(liste) {
+    const paare = [];
+    for (let i = 0; i + 1 < liste.length; i += 2) {
+      paare.push({ nr: paare.length + 1, spieler: [liste[i].spieler_id, liste[i + 1].spieler_id] });
+    }
+    return paare;
+  }
+
+  function person(id) {
+    return kandidaten.find((k) => k.id === id);
+  }
+
+  function tauschen(index, richtung) {
+    const ziel = index + richtung;
+    if (ziel < 0 || ziel >= reihenfolge.length) return;
+    const neu = [...reihenfolge];
+    [neu[index], neu[ziel]] = [neu[ziel], neu[index]];
+    setReihenfolge(neu);
+    setDoppel(standardDoppel(neu));
+  }
+
+  function spielerTauschenGegen(index, neueId) {
+    const neu = [...reihenfolge];
+    neu[index] = { spieler_id: neueId };
+    setReihenfolge(neu);
+    setDoppel(standardDoppel(neu));
+  }
+
+  // Prüfungen nach Wettspielordnung — nur Hinweise, nichts wird blockiert
+  const hinweise = [];
+  reihenfolge.forEach((eintrag, i) => {
+    const p = person(eintrag.spieler_id);
+    if (!p) return;
+    for (let j = 0; j < i; j++) {
+      const vorher = person(reihenfolge[j].spieler_id);
+      if (!vorher) continue;
+      const posP = p.offiziell?.position;
+      const posV = vorher.offiziell?.position;
+      if (posP && posV && posP < posV && !p.istAushilfe && !vorher.istAushilfe) {
+        hinweise.push(`${p.vorname} ${p.nachname} steht laut Mannschaftsmeldung vor ${vorher.vorname} ${vorher.nachname} (Position ${posP} vor ${posV}).`);
+      }
+    }
+  });
+  const doppelWerte = doppel.map((d) => wertigkeit(d.spieler, reihenfolge));
+  for (let i = 1; i + 1 < doppelWerte.length + 1; i++) {
+    if (doppelWerte[i] !== undefined && doppelWerte[i - 1] !== undefined && i >= 1 && doppelWerte[i] < doppelWerte[i - 1] && i >= 1) {
+      if (i >= 1) hinweise.push(`Doppel ${i + 1} ist stärker als Doppel ${i} (Wertigkeit ${doppelWerte[i]} vor ${doppelWerte[i - 1]}). Ab Doppel 2 muss die Wertigkeit aufsteigen.`);
+    }
+  }
+
+  async function fertigstellen() {
+    setFehler(null);
+    if (reihenfolge.length < benoetigt) return setFehler(`Es müssen ${benoetigt} Spieler aufgestellt werden.`);
+    const ids = reihenfolge.map((r) => r.spieler_id);
+    if (new Set(ids).size !== ids.length) return setFehler("Ein Spieler steht doppelt in der Aufstellung.");
+
+    setSpeichern(true);
+    const { error } = await supabase.from("spiel_aufstellungen").upsert(
+      {
+        spiel_id: spiel.id,
+        positionen: reihenfolge,
+        doppel,
+        status: "fertig",
+        aktualisiert_am: new Date().toISOString(),
+      },
+      { onConflict: "spiel_id" }
+    );
+    setSpeichern(false);
+    if (error) return setFehler(error.message);
+
+    supabase.functions.invoke("notify-aufstellung", { body: { spielId: spiel.id } }); // bewusst nicht awaited
+    onGespeichert?.();
+  }
+
+  const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-lg max-h-[92dvh] overflow-y-auto">
+        <div className="p-4 border-b sticky top-0 bg-white flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>Spielaufstellung</p>
+            <p className="text-xs text-gray-500">
+              {spiel.ist_heimspiel ? "Heim" : "Auswärts"} gegen {gegner} · {wochentagLang(effektivesSpielDatum(spiel))}, {formatDatum(effektivesSpielDatum(spiel))}
+            </p>
+          </div>
+          <button onClick={onSchliessen} className="text-gray-400 shrink-0"><X size={18} /></button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <div>
+            <p className="text-xs text-gray-500 mb-2">Einzel-Reihenfolge</p>
+            <div className="space-y-1">
+              {reihenfolge.map((eintrag, i) => {
+                const p = person(eintrag.spieler_id);
+                return (
+                  <div key={i} className="flex items-center gap-2 p-2 rounded-md border">
+                    <span className="w-5 text-sm font-bold" style={{ color: COLORS.orange }}>{i + 1}.</span>
+                    {darfBearbeiten ? (
+                      <select
+                        value={eintrag.spieler_id}
+                        onChange={(e) => spielerTauschenGegen(i, e.target.value)}
+                        className="flex-1 min-w-0 border rounded-md px-2 py-1 text-sm"
+                      >
+                        {kandidaten.map((k) => (
+                          <option key={k.id} value={k.id}>
+                            {k.vorname} {k.nachname}
+                            {k.offiziell?.lpz ? ` (LPZ ${k.offiziell.lpz})` : ""}
+                            {k.istAushilfe ? " – Aushilfe" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="flex-1 min-w-0 text-sm flex items-center gap-2">
+                        <Avatar person={p} groesse={22} />
+                        <span className="truncate">{p?.vorname} {p?.nachname}</span>
+                        {p?.offiziell?.lpz && <span className="text-xs text-gray-400">LPZ {p.offiziell.lpz}</span>}
+                        {p?.istAushilfe && (
+                          <span className="text-[10px] px-1.5 rounded-full" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>Aushilfe</span>
+                        )}
+                      </span>
+                    )}
+                    {darfBearbeiten && (
+                      <span className="flex flex-col shrink-0">
+                        <button onClick={() => tauschen(i, -1)} className="text-gray-400 leading-none text-xs">▲</button>
+                        <button onClick={() => tauschen(i, 1)} className="text-gray-400 leading-none text-xs">▼</button>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs text-gray-500 mb-2">Doppel</p>
+            <div className="space-y-1">
+              {doppel.map((d, i) => (
+                <div key={i} className="flex items-center gap-2 p-2 rounded-md border text-sm">
+                  <span className="font-bold shrink-0" style={{ color: COLORS.petrol }}>Doppel {d.nr}</span>
+                  {darfBearbeiten ? (
+                    <>
+                      {[0, 1].map((platz) => (
+                        <select
+                          key={platz}
+                          value={d.spieler[platz] ?? ""}
+                          onChange={(e) => {
+                            const neu = doppel.map((x, xi) =>
+                              xi === i ? { ...x, spieler: x.spieler.map((sid, si) => (si === platz ? e.target.value : sid)) } : x
+                            );
+                            setDoppel(neu);
+                          }}
+                          className="flex-1 min-w-0 border rounded-md px-2 py-1 text-sm"
+                        >
+                          {reihenfolge.map((r, ri) => {
+                            const p = person(r.spieler_id);
+                            return <option key={r.spieler_id} value={r.spieler_id}>{ri + 1}. {p?.vorname} {p?.nachname}</option>;
+                          })}
+                        </select>
+                      ))}
+                    </>
+                  ) : (
+                    <span className="flex-1 min-w-0 truncate">
+                      {d.spieler.map((id) => {
+                        const p = person(id);
+                        return `${p?.vorname ?? ""} ${p?.nachname ?? ""}`;
+                      }).join(" & ")}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {hinweise.length > 0 && darfBearbeiten && (
+            <div className="p-3 rounded-md text-xs" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+              <p className="font-semibold mb-1">Bitte prüfen:</p>
+              <ul className="list-disc pl-4 space-y-0.5">
+                {[...new Set(hinweise)].map((h, i) => <li key={i}>{h}</li>)}
+              </ul>
+              <p className="mt-2 opacity-80">
+                Die Aufstellung folgt der Mannschaftsmeldung; Doppel 2 und 3 müssen nach Wertigkeit aufsteigen.
+                Speichern ist trotzdem möglich — im Zweifel beim Staffelleiter nachfragen.
+              </p>
+            </div>
+          )}
+
+          {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+
+          {darfBearbeiten ? (
+            <div className="flex gap-2">
+              <button
+                onClick={fertigstellen}
+                disabled={speichern}
+                className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+                style={{ background: COLORS.orange, opacity: speichern ? 0.6 : 1 }}
+              >
+                {speichern ? "Speichere…" : vorhanden ? "Aufstellung aktualisieren" : "Aufstellung fertigstellen"}
+              </button>
+              <button onClick={onSchliessen} className="px-4 py-2 rounded-md text-sm border">Abbrechen</button>
+            </div>
+          ) : (
+            <button onClick={onSchliessen} className="px-4 py-2 rounded-md text-sm border">Schließen</button>
+          )}
+
+          {darfBearbeiten && (
+            <p className="text-[11px] text-gray-400">
+              Alle aufgestellten Spieler werden per E-Mail informiert, sofern sie das nicht abgeschaltet haben.
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
