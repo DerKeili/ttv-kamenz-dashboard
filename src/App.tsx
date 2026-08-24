@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText
+  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText, TrendingUp
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -1490,6 +1490,8 @@ function Spielerplanung({ saison, profil }) {
   const schreibschutzTimer = useRef(null);
 
   const darfPlanen = darfMannschaftVerwalten(profil, saison.mannschaft_id);
+  // Bei fremden Mannschaften gibt es für mich nichts einzutragen — nur anzusehen
+  const eigeneMannschaft = saison.mannschaft_id === profil.mannschaft_id;
   const [mannschaftsName, setMannschaftsName] = useState("TTV 97 Kamenz");
 
   useEffect(() => {
@@ -1935,6 +1937,7 @@ function Spielerplanung({ saison, profil }) {
 
                   <div className="p-3 space-y-3">
                     {/* Eigene Rückmeldung groß und gut treffbar */}
+                    {eigeneMannschaft ? (
                     <div>
                       <p className="text-xs text-gray-500 mb-1">
                         Deine Rückmeldung
@@ -1958,12 +1961,19 @@ function Spielerplanung({ saison, profil }) {
                         {gesperrt ? "verlegt" : eigenerStatus === "ja" ? "Ich kann" : eigenerStatus === "nein" ? "Ich kann nicht" : "Antippen zum Eintragen"}
                       </button>
                     </div>
+                    ) : (
+                      <p className="text-xs text-gray-500 p-2 rounded-md" style={{ background: COLORS.paper }}>
+                        Fremde Mannschaft — du siehst die Planung nur zur Information.
+                      </p>
+                    )}
 
                     {/* Übrige Mannschaft kompakt */}
-                    <details>
-                      <summary className="text-xs text-gray-500 cursor-pointer">Mannschaft anzeigen</summary>
+                    <details open={!eigeneMannschaft}>
+                      <summary className="text-xs text-gray-500 cursor-pointer">
+                        {eigeneMannschaft ? "Mannschaft anzeigen" : "Rückmeldungen der Mannschaft"}
+                      </summary>
                       <div className="mt-2 space-y-1">
-                        {spieler.filter((sp) => sp.id !== profil.id).map((sp) => {
+                        {spieler.filter((sp) => eigeneMannschaft ? sp.id !== profil.id : true).map((sp) => {
                           const st = meldungen[s.id]?.[sp.id] ?? "offen";
                           const herkunft = gesetztVon[`${s.id}:${sp.id}`];
                           const schicht = schichtSichtbarFuer(sp, profil) ? schichtFuerDatum(sp, termin) : null;
@@ -5316,7 +5326,7 @@ const EMAIL_ARTEN = [
   { feld: "email_umfragen", titel: "Neue Umfragen", text: "Wenn eine Umfrage startet, die dich betrifft — auch Aushilfe-Anfragen und Terminvorschläge zur Spielverlegung." },
   { feld: "email_nachrichten", titel: "Neue Nachrichten", text: "Wenn dir jemand im Postfach schreibt. Höchstens eine Mail pro Stunde und Absender." },
   { feld: "email_termine", titel: "Neue Termine", text: "Wenn ein Training, Spiel oder anderer Termin für deine Mannschaft angelegt wird." },
-  { feld: "email_spielplan", titel: "Erinnerung an meine Rückmeldung", text: "Erinnerung ab 14 Tagen vor einem Spiel, solange du nicht eingetragen hast, ob du kannst. Höchstens alle sechs Tage und nie am Vortag." },
+  { feld: "email_spielplan", titel: "Erinnerung an meine Rückmeldung", text: "Erinnerung ab drei Wochen vor einem Spiel, solange du nicht eingetragen hast, ob du kannst. Höchstens alle sechs Tage und nie am Vortag." },
   { feld: "email_zusagenwarnung", titel: "Warnung bei zu wenigen Zusagen", nurLeitung: true, text: "Nur für die Mannschaftsführung: Übersicht, wenn für ein anstehendes Spiel zu wenige Spieler zugesagt haben." },
   { feld: "email_aufstellung", titel: "Spielaufstellung", text: "Nachricht, wenn du für ein Spiel aufgestellt wurdest — mit Reihenfolge und Doppelpaaren." },
 ];
@@ -6386,6 +6396,7 @@ const NAV_BASIS = [
   { key: "tabelle", label: "Tabelle", icon: Table2 },
   { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
+  { key: "analyse", label: "Analyse", icon: TrendingUp },
   { key: "turniere", label: "Vereinsturniere", icon: Award },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
@@ -6805,6 +6816,227 @@ function News({ profil }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* ---------- Analyse ----------
+   Wertet aus, was in der App bereits vorliegt: Rückmeldungen der Vergangenheit,
+   Antwortverhalten, Schichtpläne und die LPZ aus der Verbandsmeldung. Daraus
+   entsteht eine Einschätzung, wer beim nächsten Spiel voraussichtlich dabei ist.
+   Das ist eine Wahrscheinlichkeit, keine Zusage — entsprechend vorsichtig
+   formuliert die Anzeige. */
+
+function anteilProzent(zaehler, nenner) {
+  if (!nenner) return null;
+  return Math.round((zaehler / nenner) * 100);
+}
+
+function Analyse({ saison, profil }) {
+  const [ladend, setLadend] = useState(true);
+  const [spieler, setSpieler] = useState([]);
+  const [spiele, setSpiele] = useState([]);
+  const [meldungen, setMeldungen] = useState([]);
+  const [meldung, setMeldung] = useState([]);
+  const [benoetigt, setBenoetigt] = useState(4);
+  const [gewaehltesSpiel, setGewaehltesSpiel] = useState(null);
+
+  async function laden() {
+    setLadend(true);
+    const [{ data: spielerDaten }, { data: spieleDaten }, { data: info }, { data: mannschaft }] = await Promise.all([
+      supabase.from("profiles").select("*").eq("mannschaft_id", saison.mannschaft_id).order("nachname"),
+      supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).order("datum"),
+      supabase.from("mannschaft_info").select("spieler").eq("saison_id", saison.id).maybeSingle(),
+      supabase.from("mannschaften").select("benoetigte_spieler").eq("id", saison.mannschaft_id).maybeSingle(),
+    ]);
+
+    const spielIds = (spieleDaten ?? []).map((s) => s.id);
+    let meldungsDaten = [];
+    if (spielIds.length > 0) {
+      const { data } = await supabase
+        .from("spielerplanung_meldungen")
+        .select("spiel_id, spieler_id, status")
+        .in("spiel_id", spielIds);
+      meldungsDaten = data ?? [];
+    }
+
+    setSpieler(spielerDaten ?? []);
+    setSpiele(spieleDaten ?? []);
+    setMeldungen(meldungsDaten);
+    setMeldung(info?.spieler ?? []);
+    setBenoetigt(mannschaft?.benoetigte_spieler ?? 4);
+    setLadend(false);
+  }
+
+  useEffect(() => { if (saison) laden(); }, [saison?.id]);
+
+  const jetzt = new Date();
+  const kommende = spiele.filter((s) => effektivesSpielDatum(s) && new Date(effektivesSpielDatum(s)) > jetzt && !spielGesperrt(s));
+  const vergangene = spiele.filter((s) => effektivesSpielDatum(s) && new Date(effektivesSpielDatum(s)) <= jetzt);
+  const zielSpiel = kommende.find((s) => s.id === gewaehltesSpiel) ?? kommende[0] ?? null;
+
+  // Verlässlichkeit je Spieler aus den bisherigen Rückmeldungen
+  function statistik(spielerId) {
+    const eigene = meldungen.filter((m) => m.spieler_id === spielerId);
+    const beantwortet = eigene.filter((m) => m.status === "ja" || m.status === "nein");
+    const zusagen = eigene.filter((m) => m.status === "ja").length;
+    const absagen = eigene.filter((m) => m.status === "nein").length;
+
+    // Bezugsgröße: alle Spiele, für die es überhaupt schon Rückmeldungen gibt
+    const relevanteSpiele = spiele.filter((s) => meldungen.some((m) => m.spiel_id === s.id));
+    const antwortquote = anteilProzent(beantwortet.length, relevanteSpiele.length);
+    const zusagequote = anteilProzent(zusagen, beantwortet.length);
+    return { zusagen, absagen, beantwortet: beantwortet.length, antwortquote, zusagequote };
+  }
+
+  // Einschätzung für ein bestimmtes Spiel
+  function prognose(sp, spiel) {
+    const status = meldungen.find((m) => m.spiel_id === spiel.id && m.spieler_id === sp.id)?.status ?? "offen";
+    if (status === "ja") return { stufe: "zugesagt", text: "hat zugesagt", wert: 100 };
+    if (status === "nein") return { stufe: "abgesagt", text: "hat abgesagt", wert: 0 };
+
+    const st = statistik(sp.id);
+    const schicht = schichtFuerDatum(sp, effektivesSpielDatum(spiel));
+    const gruende = [];
+    let wert = st.zusagequote ?? 50;
+
+    if (st.beantwortet < 3) {
+      gruende.push("noch wenige Rückmeldungen — Einschätzung unsicher");
+    }
+    if (schicht === "Spätschicht" || schicht === "Nachtschicht") {
+      wert -= 30;
+      gruende.push(`${schicht} an diesem Tag`);
+    }
+    if (schicht === "Frei" || schicht === "Frühschicht") {
+      wert += 10;
+      gruende.push(`${schicht} an diesem Tag`);
+    }
+    if (st.antwortquote !== null && st.antwortquote < 50) {
+      gruende.push("antwortet oft gar nicht");
+    }
+    wert = Math.max(0, Math.min(100, Math.round(wert)));
+
+    return {
+      stufe: wert >= 65 ? "wahrscheinlich" : wert >= 35 ? "unklar" : "eher nicht",
+      text: `${wert} % nach bisherigem Verhalten`,
+      wert,
+      gruende,
+    };
+  }
+
+  if (ladend) return <Leerzustand text="Werte Rückmeldungen aus…" />;
+  if (spiele.length === 0) return <Leerzustand text="Noch keine Spiele hinterlegt." />;
+
+  const farben = {
+    zugesagt: { background: "#DDF0EA", color: COLORS.petrol },
+    wahrscheinlich: { background: "#DDF0EA", color: COLORS.petrol },
+    unklar: { background: "#FFF1D6", color: "#8A6100" },
+    "eher nicht": { background: "#FBE2DA", color: COLORS.orangeDeep },
+    abgesagt: { background: "#FBE2DA", color: COLORS.orangeDeep },
+  };
+
+  const erwartet = zielSpiel
+    ? spieler.reduce((summe, sp) => summe + (prognose(sp, zielSpiel).wert >= 65 ? 1 : 0), 0)
+    : 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={TrendingUp}>Voraussichtliche Besetzung</SectionLabel>
+        {kommende.length === 0 ? (
+          <p className="text-sm text-gray-400">Keine anstehenden Spiele.</p>
+        ) : (
+          <>
+            <label className="block text-xs text-gray-500 mb-1">Spiel</label>
+            <select
+              value={zielSpiel?.id ?? ""}
+              onChange={(e) => setGewaehltesSpiel(e.target.value)}
+              className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+            >
+              {kommende.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {formatDatum(effektivesSpielDatum(s))} · {s.ist_heimspiel ? "Heim" : "Auswärts"} gegen {s.ist_heimspiel ? s.gastteam : s.heimteam}
+                </option>
+              ))}
+            </select>
+
+            <div
+              className="p-3 rounded-md text-sm mb-3"
+              style={erwartet >= benoetigt ? { background: "#DDF0EA", color: COLORS.petrol } : { background: "#FFF1D6", color: "#8A6100" }}
+            >
+              <strong>{erwartet} von {benoetigt}</strong> Spielern voraussichtlich dabei.
+              {erwartet < benoetigt && " Es könnte eng werden — frag lieber früh nach."}
+            </div>
+
+            <div className="divide-y">
+              {[...spieler]
+                .sort((a, b) => prognose(b, zielSpiel).wert - prognose(a, zielSpiel).wert)
+                .map((sp) => {
+                  const p = prognose(sp, zielSpiel);
+                  const offiziell = offiziellePosition(sp, meldung);
+                  return (
+                    <div key={sp.id} className="py-2 flex items-start justify-between gap-3">
+                      <span className="flex items-center gap-2 min-w-0">
+                        <Avatar person={sp} groesse={28} />
+                        <span className="min-w-0">
+                          <span className="text-sm block truncate">{sp.vorname} {sp.nachname}</span>
+                          <span className="text-[11px] text-gray-400">
+                            {offiziell?.position ? `Position ${offiziell.position}` : "nicht gemeldet"}
+                            {offiziell?.lpz ? ` · LPZ ${offiziell.lpz}` : ""}
+                          </span>
+                          {p.gruende?.length > 0 && (
+                            <span className="text-[11px] text-gray-400 block">{p.gruende.join(" · ")}</span>
+                          )}
+                        </span>
+                      </span>
+                      <span className="text-right shrink-0">
+                        <span className="text-xs px-2 py-1 rounded-md font-semibold block" style={farben[p.stufe]}>
+                          {p.stufe}
+                        </span>
+                        <span className="text-[10px] text-gray-400">{p.text}</span>
+                      </span>
+                    </div>
+                  );
+                })}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="bg-white rounded-lg border p-5">
+        <SectionLabel icon={Users}>Verlässlichkeit bisher</SectionLabel>
+        <p className="text-xs text-gray-500 mb-3">
+          Ausgewertet werden alle Rückmeldungen dieser Saison — {vergangene.length} Spiele sind bereits gespielt.
+        </p>
+        <div className="divide-y">
+          {[...spieler]
+            .sort((a, b) => (statistik(b.id).zusagequote ?? 0) - (statistik(a.id).zusagequote ?? 0))
+            .map((sp) => {
+              const st = statistik(sp.id);
+              return (
+                <div key={sp.id} className="py-2 flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Avatar person={sp} groesse={24} />
+                    <span className="text-sm truncate">{sp.vorname} {sp.nachname}</span>
+                  </span>
+                  <span className="text-right shrink-0 text-xs">
+                    <span className="block" style={{ color: COLORS.anthracite }}>
+                      {st.zusagen} Zusagen · {st.absagen} Absagen
+                    </span>
+                    <span className="text-gray-400">
+                      {st.antwortquote === null ? "noch keine Daten" : `antwortet bei ${st.antwortquote} % der Spiele`}
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-400">
+        Die Einschätzung beruht allein auf dem bisherigen Verhalten in der App und ersetzt kein Nachfragen.
+        Wer selten einträgt, wirkt hier schlechter, als er ist.
+      </p>
     </div>
   );
 }
@@ -7454,7 +7686,7 @@ export default function App() {
   };
 
   const aktiveSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === profil.mannschaft_id) ?? null;
-  const mannschaftsAbhaengigeTabs = ["tabelle", "ergebnisse", "planung", "kader"];
+  const mannschaftsAbhaengigeTabs = ["tabelle", "ergebnisse", "planung", "kader", "analyse"];
   const effektiveMannschaftId = mannschaftsAbhaengigeTabs.includes(tab) ? (ausgewaehlteMannschaftId ?? profil.mannschaft_id) : profil.mannschaft_id;
   const angezeigteSaison = saisons.find((s) => s.aktiv && s.mannschaft_id === effektiveMannschaftId) ?? null;
   const eigeneMannschaft = mannschaften.find((m) => m.id === profil.mannschaft_id) ?? null;
@@ -7604,6 +7836,7 @@ export default function App() {
                   {tab === "ergebnisse" && <Ergebnisse saison={angezeigteSaison} profil={profil} />}
                   {tab === "planung" && <Spielerplanung saison={angezeigteSaison} profil={profil} />}
                   {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
+                  {tab === "analyse" && <Analyse saison={angezeigteSaison} profil={profil} />}
                 </>
               )}
 
