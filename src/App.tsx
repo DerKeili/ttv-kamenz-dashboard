@@ -941,6 +941,13 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
                 {geburtstag.vorname} {geburtstag.nachname}
               </p>
               <p className="text-sm text-gray-500 mt-1">{formatDatum(geburtstag.next.toISOString())}</p>
+              <button
+                onClick={() => geburtstagHerunterladen(geburtstag)}
+                className="text-xs mt-2 inline-flex items-center gap-1 font-medium underline"
+                style={{ color: COLORS.petrol }}
+              >
+                <Cake size={12} /> In meinen Kalender
+              </button>
             </>
           ) : (
             <p className="text-sm text-gray-400">Keine Geburtstage hinterlegt.</p>
@@ -2680,6 +2687,41 @@ async function dateiHerunterladen(url, name) {
   }
 }
 
+// Geburtstag als ganztägigen, jährlich wiederkehrenden Termin
+function geburtstagHerunterladen(person) {
+  if (!person?.geburtstag) return;
+  const geburt = new Date(person.geburtstag);
+  const monat = String(geburt.getMonth() + 1).padStart(2, "0");
+  const tag = String(geburt.getDate()).padStart(2, "0");
+  const jahr = new Date().getFullYear();
+  const naechsterTag = new Date(jahr, geburt.getMonth(), geburt.getDate() + 1);
+
+  const inhalt = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//TTV 97 Kamenz//Mannschafts-App//DE",
+    "BEGIN:VEVENT",
+    `UID:geburtstag-${person.id}@ttv97-kamenz`,
+    `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, "").split(".")[0]}Z`,
+    // Ganztägig: nur Datum, keine Uhrzeit
+    `DTSTART;VALUE=DATE:${jahr}${monat}${tag}`,
+    `DTEND;VALUE=DATE:${naechsterTag.getFullYear()}${String(naechsterTag.getMonth() + 1).padStart(2, "0")}${String(naechsterTag.getDate()).padStart(2, "0")}`,
+    "RRULE:FREQ=YEARLY",
+    `SUMMARY:${person.vorname} ${person.nachname} hat Geburtstag`,
+    `DESCRIPTION:Geboren am ${new Date(person.geburtstag).toLocaleDateString("de-DE")} — aus der TTV 97 Kamenz App`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+
+  const blob = new Blob([inhalt], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `Geburtstag ${person.vorname} ${person.nachname}.ics`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 function googleKalenderLink(e) {
   const start = zuIcsDatum(e.datum);
   const ende = zuIcsDatum(ereignisEndeOderPlusEineStunde(e));
@@ -3388,17 +3430,27 @@ function Kader({ saison, profil }) {
       ) : (
         <div className="grid sm:grid-cols-2 gap-3">
           {spieler.map((s) => (
-            <div key={s.id} className="bg-white rounded-lg border p-4 flex items-center gap-3">
+            <div key={s.id} className="bg-white rounded-lg border p-4 flex items-start gap-3">
               <Avatar person={s} groesse={40} />
-              <div>
+              <div className="min-w-0 flex-1">
                 <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>{s.vorname} {s.nachname}</p>
                 <p className="text-xs" style={{ color: s.rang === "Mannschaftsführer" ? COLORS.orange : "#999" }}>{s.rang}</p>
                 {s.kontakt_sichtbar && (
                   <div className="text-xs text-gray-400 mt-1">
                     {s.telefon_handy && <div>📱 {s.telefon_handy}</div>}
                     {s.telefon_festnetz && <div>☎️ {s.telefon_festnetz}</div>}
-                    <div>✉️ {s.email}</div>
+                    <div className="break-all">✉️ {s.email}</div>
                   </div>
+                )}
+                {s.geburtstag && (
+                  <button
+                    onClick={() => geburtstagHerunterladen(s)}
+                    className="text-xs mt-2 inline-flex items-center gap-1 font-medium underline"
+                    style={{ color: COLORS.petrol }}
+                    title="Jährlich wiederkehrenden Termin in den eigenen Kalender legen"
+                  >
+                    <Cake size={12} /> Geburtstag in meinen Kalender
+                  </button>
                 )}
               </div>
             </div>
@@ -4853,7 +4905,10 @@ function Nachrichten({ profil, zielSpielerId }) {
   const [partnerId, setPartnerId] = useState(zielSpielerId ?? null);
   const [entwurf, setEntwurf] = useState("");
   const [sendenLadend, setSendenLadend] = useState(false);
-  const [mannschaftsFilter, setMannschaftsFilter] = useState("alle"); // "alle" | "unzugeordnet" | mannschaftId
+  const [mannschaftsFilter, setMannschaftsFilter] = useState("alle");
+  const [bearbeiteNachricht, setBearbeiteNachricht] = useState(null);
+  const [bearbeitungsText, setBearbeitungsText] = useState("");
+  const [smileysOffen, setSmileysOffen] = useState(false); // "alle" | "unzugeordnet" | mannschaftId
 
   async function laden() {
     setLadend(true);
@@ -4945,10 +5000,41 @@ function Nachrichten({ profil, zielSpielerId }) {
                     className="max-w-[75%] rounded-lg px-3 py-2 text-sm"
                     style={eigene ? { background: COLORS.orange, color: "white" } : { background: "#F1F1EF", color: COLORS.anthracite }}
                   >
-                    <p className="whitespace-pre-wrap break-words">
-                      <TextMitLinks text={n.inhalt} farbe={eigene ? "#FFE8DC" : COLORS.petrol} />
-                    </p>
-                    <p className="text-[10px] mt-1 opacity-70">{new Date(n.gesendet_am).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
+                    {bearbeiteNachricht === n.id ? (
+                      <>
+                        <textarea
+                          value={bearbeitungsText}
+                          onChange={(e) => setBearbeitungsText(e.target.value)}
+                          rows={3}
+                          className="w-full rounded-md px-2 py-1 text-sm text-gray-800 resize-y"
+                        />
+                        <div className="flex gap-2 mt-1">
+                          <button onClick={() => nachrichtSpeichern(n)} className="text-[11px] underline">Speichern</button>
+                          <button onClick={() => setBearbeiteNachricht(null)} className="text-[11px] underline opacity-80">Abbrechen</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="whitespace-pre-wrap break-words">
+                          <TextMitLinks text={n.inhalt} farbe={eigene ? "#FFE8DC" : COLORS.petrol} />
+                        </p>
+                        <p className="text-[10px] mt-1 opacity-70 flex items-center gap-2 flex-wrap">
+                          <span>{new Date(n.gesendet_am).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                          {n.bearbeitet_am && <span>· bearbeitet</span>}
+                          {eigene && (
+                            <>
+                              <button
+                                onClick={() => { setBearbeiteNachricht(n.id); setBearbeitungsText(n.inhalt); }}
+                                className="underline"
+                              >
+                                bearbeiten
+                              </button>
+                              <button onClick={() => nachrichtLoeschen(n)} className="underline">löschen</button>
+                            </>
+                          )}
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -4959,7 +5045,27 @@ function Nachrichten({ profil, zielSpielerId }) {
           <Mail size={12} className="mt-0.5 shrink-0" />
           <span>{partner.vorname} bekommt eine E-Mail, dass eine neue Nachricht wartet — höchstens einmal pro Stunde.</span>
         </p>
+        {smileysOffen && (
+          <div className="px-3 pb-2 flex flex-wrap gap-1">
+            {SMILEYS.map((zeichen) => (
+              <button
+                key={zeichen}
+                onClick={() => { setEntwurf((vorher) => vorher + zeichen); setSmileysOffen(false); }}
+                className="text-xl w-9 h-9 rounded-md hover:bg-gray-100"
+              >
+                {zeichen}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2 p-3 border-t">
+          <button
+            onClick={() => setSmileysOffen((o) => !o)}
+            className="w-10 h-10 rounded-md border shrink-0 text-xl"
+            title="Smiley einfügen"
+          >
+            🙂
+          </button>
           <textarea
             value={entwurf}
             onChange={(e) => setEntwurf(e.target.value)}
@@ -4985,6 +5091,26 @@ function Nachrichten({ profil, zielSpielerId }) {
         </div>
       </div>
     );
+  }
+
+  async function nachrichtSpeichern(nachricht) {
+    const text = bearbeitungsText.trim();
+    if (!text) return;
+    const { error } = await supabase
+      .from("nachrichten")
+      .update({ inhalt: text, bearbeitet_am: new Date().toISOString() })
+      .eq("id", nachricht.id);
+    if (error) return;
+    setBearbeiteNachricht(null);
+    setBearbeitungsText("");
+    laden();
+  }
+
+  async function nachrichtLoeschen(nachricht) {
+    if (!window.confirm("Diese Nachricht wirklich löschen? Sie verschwindet auch beim Empfänger.")) return;
+    const { error } = await supabase.from("nachrichten").delete().eq("id", nachricht.id);
+    if (error) return;
+    laden();
   }
 
   // Übersicht aller Spieler / Unterhaltungen — nach Mannschaften gruppiert
@@ -5049,6 +5175,44 @@ function Nachrichten({ profil, zielSpielerId }) {
           {spielerListe.some((s) => !s.mannschaft_id) && filterKnopf("unzugeordnet", "Nicht zugewiesen")}
         </div>
       )}
+
+      {(() => {
+        // Zuletzt geschrieben — schneller Einstieg ohne Suchen in der Liste
+        const letzte = sortiertNachAktivitaet
+          .filter((s) => konversationMit(s.id).length > 0)
+          .slice(0, 3);
+        if (letzte.length === 0) return null;
+        return (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2 px-1">Zuletzt geschrieben</p>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {letzte.map((s) => {
+                const ungelesen = ungeleseneVon(s.id);
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => setPartnerId(s.id)}
+                    className="bg-white rounded-lg border p-3 flex flex-col items-center gap-1 min-w-[92px] relative"
+                  >
+                    <Avatar person={s} groesse={40} />
+                    <span className="text-[11px] text-center leading-tight" style={{ color: COLORS.anthracite }}>
+                      {s.vorname}
+                    </span>
+                    {ungelesen > 0 && (
+                      <span
+                        className="absolute top-1 right-1 text-white text-[9px] px-1.5 rounded-full"
+                        style={{ background: COLORS.orange }}
+                      >
+                        {ungelesen}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {spielerListe.length === 0 ? (
         <Leerzustand text="Keine anderen Spieler vorhanden." />
@@ -6639,6 +6803,9 @@ function KuendigungsAntraege({ profil, onErledigt }) {
     </div>
   );
 }
+
+// Kleine Auswahl — bewusst knapp, damit sie auf dem Handy in zwei Reihen passt
+const SMILEYS = ["🙂", "😄", "😅", "😉", "😎", "👍", "👎", "🙏", "💪", "🏓", "🎉", "🔥", "😬", "😢", "❤️", "⏰", "✅", "❌"];
 
 /* ---------- Text mit anklickbaren Links ----------
    Erkennt Web- und Mail-Adressen im Fließtext und macht sie anklickbar. Der Text
