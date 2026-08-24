@@ -6397,7 +6397,7 @@ const NAV_BASIS = [
   { key: "tabelle", label: "Tabelle", icon: Table2 },
   { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
-  { key: "analyse", label: "Analyse", icon: TrendingUp, nurLeitung: true },
+  { key: "analyse", label: "Analyse", icon: TrendingUp },
   { key: "turniere", label: "Vereinsturniere", icon: Award },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
@@ -6957,6 +6957,8 @@ function Analyse({ saison, profil }) {
         <div className="flex items-start justify-between gap-2 mb-3">
           <SectionLabel icon={TrendingUp}>Gegneranalyse</SectionLabel>
           <span className="flex flex-wrap gap-2 shrink-0">
+            {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
+            <>
             <button
               onClick={aktualisieren}
               disabled={aktualisiertLadend}
@@ -6973,6 +6975,8 @@ function Analyse({ saison, profil }) {
             >
               {einsatzLadend ? "Lädt…" : "Einsätze auswerten"}
             </button>
+            </>
+            )}
           </span>
         </div>
 
@@ -7057,8 +7061,8 @@ function Analyse({ saison, profil }) {
                   if (bild.berichte === 0) {
                     return (
                       <div className="p-3 rounded-md text-xs mb-4" style={{ background: COLORS.paper, color: "#777" }}>
-                        Noch keine Einsatzhistorie. Sobald in der Liga Begegnungen gespielt wurden, zeigt
-                        „Einsätze auswerten“, wer beim Gegner tatsächlich antritt.
+                        Noch keine Einsatzhistorie — in dieser Liga wurde bisher nicht gespielt. Nach den ersten
+                        Spieltagen steht hier, wer beim Gegner tatsächlich antritt und auf welcher Position.
                       </div>
                     );
                   }
@@ -7917,11 +7921,7 @@ export default function App() {
                   {tab === "ergebnisse" && <Ergebnisse saison={angezeigteSaison} profil={profil} />}
                   {tab === "planung" && <Spielerplanung saison={angezeigteSaison} profil={profil} />}
                   {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
-                  {tab === "analyse" && (
-                    darfLeiten
-                      ? <Analyse saison={angezeigteSaison} profil={profil} />
-                      : <Leerzustand text="Die Analyse ist der Mannschaftsführung vorbehalten." />
-                  )}
+                  {tab === "analyse" && <Analyse saison={angezeigteSaison} profil={profil} />}
                 </>
               )}
 
