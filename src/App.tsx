@@ -6859,15 +6859,19 @@ function Analyse({ saison, profil }) {
   const [gewaehltesSpiel, setGewaehltesSpiel] = useState(null);
   const [benoetigt, setBenoetigt] = useState(4);
   const [stand, setStand] = useState(null);
+  const [einsaetze, setEinsaetze] = useState([]);
+  const [einsatzLadend, setEinsatzLadend] = useState(false);
 
   async function laden() {
     setLadend(true);
-    const [{ data: spieleDaten }, { data: info }, { data: mannschaft }, { data: gegnerDaten }] = await Promise.all([
+    const [{ data: spieleDaten }, { data: info }, { data: mannschaft }, { data: gegnerDaten }, { data: einsatzDaten }] = await Promise.all([
       supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).order("datum"),
       supabase.from("mannschaft_info").select("spieler").eq("saison_id", saison.id).maybeSingle(),
       supabase.from("mannschaften").select("benoetigte_spieler, verband_name").eq("id", saison.mannschaft_id).maybeSingle(),
       supabase.from("gegner_spieler").select("*").eq("saison_id", saison.id).order("position"),
+      supabase.from("gegner_einsaetze").select("*").eq("saison_id", saison.id),
     ]);
+    setEinsaetze(einsatzDaten ?? []);
     setSpiele(spieleDaten ?? []);
     setEigene(info?.spieler ?? []);
     setBenoetigt(mannschaft?.benoetigte_spieler ?? 4);
@@ -6885,6 +6889,39 @@ function Analyse({ saison, profil }) {
     setAktualisiertLadend(false);
     if (error || data?.error) return setFehler(await echteFehlermeldung(error, data));
     laden();
+  }
+
+  async function einsaetzeHolen() {
+    setFehler(null);
+    setEinsatzLadend(true);
+    const { data, error } = await supabase.functions.invoke("fetch-einsaetze", { body: { saisonId: saison.id } });
+    setEinsatzLadend(false);
+    if (error || data?.error) return setFehler(await echteFehlermeldung(error, data));
+    laden();
+  }
+
+  // Wie oft war jemand dabei, und auf welcher Position meistens?
+  function einsatzBild(gegnerName) {
+    const passend = einsaetze.filter(
+      (e) => nameNormalisieren(e.mannschaft).includes(nameNormalisieren(gegnerName).slice(0, 12)) ||
+        nameNormalisieren(gegnerName).includes(nameNormalisieren(e.mannschaft).slice(0, 12))
+    );
+    const berichte = new Set(passend.map((e) => e.bericht_url)).size;
+    const nachSpieler = {};
+    passend.forEach((e) => {
+      const schluessel = nameNormalisieren(e.name);
+      if (!nachSpieler[schluessel]) nachSpieler[schluessel] = { name: e.name, einsaetze: 0, positionen: [] };
+      nachSpieler[schluessel].einsaetze += 1;
+      if (e.position) nachSpieler[schluessel].positionen.push(e.position);
+    });
+    const liste = Object.values(nachSpieler).map((s) => ({
+      ...s,
+      schnittPosition: s.positionen.length
+        ? Math.round((s.positionen.reduce((a, b) => a + b, 0) / s.positionen.length) * 10) / 10
+        : null,
+    }));
+    liste.sort((a, b) => b.einsaetze - a.einsaetze || (a.schnittPosition ?? 9) - (b.schnittPosition ?? 9));
+    return { berichte, liste };
   }
 
   const jetzt = new Date();
@@ -6919,14 +6956,24 @@ function Analyse({ saison, profil }) {
       <div className="bg-white rounded-lg border p-5">
         <div className="flex items-start justify-between gap-2 mb-3">
           <SectionLabel icon={TrendingUp}>Gegneranalyse</SectionLabel>
-          <button
-            onClick={aktualisieren}
-            disabled={aktualisiertLadend}
-            className="text-xs px-3 py-1.5 rounded-md text-white font-semibold shrink-0"
-            style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
-          >
-            {aktualisiertLadend ? "Lädt…" : "Gegnerdaten holen"}
-          </button>
+          <span className="flex flex-wrap gap-2 shrink-0">
+            <button
+              onClick={aktualisieren}
+              disabled={aktualisiertLadend}
+              className="text-xs px-3 py-1.5 rounded-md text-white font-semibold"
+              style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
+            >
+              {aktualisiertLadend ? "Lädt…" : "Gegnerdaten holen"}
+            </button>
+            <button
+              onClick={einsaetzeHolen}
+              disabled={einsatzLadend}
+              className="text-xs px-3 py-1.5 rounded-md font-semibold border"
+              style={{ borderColor: COLORS.petrol, color: COLORS.petrol, opacity: einsatzLadend ? 0.6 : 1 }}
+            >
+              {einsatzLadend ? "Lädt…" : "Einsätze auswerten"}
+            </button>
+          </span>
         </div>
 
         {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
@@ -7005,7 +7052,49 @@ function Analyse({ saison, profil }) {
                   })}
                 </div>
 
-                <p className="text-xs text-gray-500 mb-2">Kader {gegnerName}</p>
+                {(() => {
+                  const bild = einsatzBild(gegnerName);
+                  if (bild.berichte === 0) {
+                    return (
+                      <div className="p-3 rounded-md text-xs mb-4" style={{ background: COLORS.paper, color: "#777" }}>
+                        Noch keine Einsatzhistorie. Sobald in der Liga Begegnungen gespielt wurden, zeigt
+                        „Einsätze auswerten“, wer beim Gegner tatsächlich antritt.
+                      </div>
+                    );
+                  }
+                  const vermutlich = bild.liste.slice(0, benoetigt);
+                  return (
+                    <>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Einsätze bisher ({bild.berichte} {bild.berichte === 1 ? "Begegnung" : "Begegnungen"})
+                      </p>
+                      <div className="divide-y border rounded-md mb-2">
+                        {bild.liste.map((sp, i) => (
+                          <div key={i} className="flex items-center justify-between px-3 py-2 text-sm">
+                            <span className="flex-1 truncate">
+                              {sp.name}
+                              {vermutlich.includes(sp) && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full ml-2" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+                                  häufig dabei
+                                </span>
+                              )}
+                            </span>
+                            <span className="text-xs text-gray-400 shrink-0 text-right">
+                              {sp.einsaetze}× dabei
+                              {sp.schnittPosition && <span className="block">meist Position {sp.schnittPosition}</span>}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-gray-400 mb-4">
+                        Vermutliche Aufstellung: {vermutlich.map((s) => s.name).join(", ")} — abgeleitet aus der
+                        Häufigkeit der Einsätze, ohne Gewähr.
+                      </p>
+                    </>
+                  );
+                })()}
+
+                <p className="text-xs text-gray-500 mb-2">Gemeldeter Kader {gegnerName}</p>
                 <div className="divide-y border rounded-md">
                   {gegnerKader.map((g, i) => (
                     <div key={i} className="flex items-center justify-between px-3 py-2 text-sm">
