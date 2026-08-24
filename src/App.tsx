@@ -3622,6 +3622,7 @@ function Mannschaftsverwaltung({ profil, saisons, onSaisonsGeaendert }) {
     { key: "mannschaft_url", label: "Mannschafts-Link (Aufstellung)", hinweis: "Mannschaften → eure Mannschaft" },
     { key: "spielplan_hinrunde_url", label: "Spielplan-Link Hinrunde", hinweis: "Spielplan → Vorrunde" },
     { key: "spielplan_rueckrunde_url", label: "Spielplan-Link Rückrunde", hinweis: "Spielplan → Rückrunde" },
+    { key: "liga_mannschaften_url", label: "Mannschaften-Link der Liga", hinweis: "Mannschaften → Übersicht aller Mannschaften (für die Gegneranalyse)" },
   ];
 
   const saisonsFuerMannschaft = saisons.filter((s) => s.mannschaft_id === ausgewaehlteMannschaftId);
@@ -6396,7 +6397,7 @@ const NAV_BASIS = [
   { key: "tabelle", label: "Tabelle", icon: Table2 },
   { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
-  { key: "analyse", label: "Analyse", icon: TrendingUp },
+  { key: "analyse", label: "Analyse", icon: TrendingUp, nurLeitung: true },
   { key: "turniere", label: "Vereinsturniere", icon: Award },
   { key: "kalender", label: "Kalender", icon: CalendarDays },
   { key: "kader", label: "Kader", icon: Users },
@@ -6820,129 +6821,121 @@ function News({ profil }) {
   );
 }
 
-/* ---------- Analyse ----------
-   Wertet aus, was in der App bereits vorliegt: Rückmeldungen der Vergangenheit,
-   Antwortverhalten, Schichtpläne und die LPZ aus der Verbandsmeldung. Daraus
-   entsteht eine Einschätzung, wer beim nächsten Spiel voraussichtlich dabei ist.
-   Das ist eine Wahrscheinlichkeit, keine Zusage — entsprechend vorsichtig
-   formuliert die Anzeige. */
+/* ---------- Gegneranalyse ----------
+   Vergleicht die eigene Mannschaft mit dem jeweiligen Gegner anhand der LPZ aus
+   der Verbandsmeldung. Ausgewertet wird paarkreuzweise, weil sich daran die
+   Aufstellung orientiert: Wo sind wir stärker, wo müssen wir Punkte holen?
+   Grundlage sind die gemeldeten Spieler — wer am Spieltag tatsächlich aufläuft,
+   steht damit noch nicht fest. */
 
-function anteilProzent(zaehler, nenner) {
-  if (!nenner) return null;
-  return Math.round((zaehler / nenner) * 100);
+function lpzZahl(wert) {
+  const n = Number(String(wert ?? "").replace(/[^\d]/g, ""));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function paarkreuzWerte(spielerListe) {
+  // Paarkreuze: 1/2, 3/4, 5/6 — so wird im Punktspiel gespielt
+  const werte = spielerListe.map((sp) => lpzZahl(sp.lpz)).filter((w) => w !== null);
+  const paare = [];
+  for (let i = 0; i < werte.length; i += 2) {
+    const teil = werte.slice(i, i + 2);
+    if (teil.length === 0) continue;
+    paare.push({
+      nr: paare.length + 1,
+      schnitt: Math.round(teil.reduce((a, b) => a + b, 0) / teil.length),
+      anzahl: teil.length,
+    });
+  }
+  return paare;
 }
 
 function Analyse({ saison, profil }) {
   const [ladend, setLadend] = useState(true);
-  const [spieler, setSpieler] = useState([]);
+  const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
   const [spiele, setSpiele] = useState([]);
-  const [meldungen, setMeldungen] = useState([]);
-  const [meldung, setMeldung] = useState([]);
-  const [benoetigt, setBenoetigt] = useState(4);
+  const [eigene, setEigene] = useState([]);
+  const [gegnerAlle, setGegnerAlle] = useState([]);
   const [gewaehltesSpiel, setGewaehltesSpiel] = useState(null);
+  const [benoetigt, setBenoetigt] = useState(4);
+  const [stand, setStand] = useState(null);
 
   async function laden() {
     setLadend(true);
-    const [{ data: spielerDaten }, { data: spieleDaten }, { data: info }, { data: mannschaft }] = await Promise.all([
-      supabase.from("profiles").select("*").eq("mannschaft_id", saison.mannschaft_id).order("nachname"),
+    const [{ data: spieleDaten }, { data: info }, { data: mannschaft }, { data: gegnerDaten }] = await Promise.all([
       supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).order("datum"),
       supabase.from("mannschaft_info").select("spieler").eq("saison_id", saison.id).maybeSingle(),
-      supabase.from("mannschaften").select("benoetigte_spieler").eq("id", saison.mannschaft_id).maybeSingle(),
+      supabase.from("mannschaften").select("benoetigte_spieler, verband_name").eq("id", saison.mannschaft_id).maybeSingle(),
+      supabase.from("gegner_spieler").select("*").eq("saison_id", saison.id).order("position"),
     ]);
-
-    const spielIds = (spieleDaten ?? []).map((s) => s.id);
-    let meldungsDaten = [];
-    if (spielIds.length > 0) {
-      const { data } = await supabase
-        .from("spielerplanung_meldungen")
-        .select("spiel_id, spieler_id, status")
-        .in("spiel_id", spielIds);
-      meldungsDaten = data ?? [];
-    }
-
-    setSpieler(spielerDaten ?? []);
     setSpiele(spieleDaten ?? []);
-    setMeldungen(meldungsDaten);
-    setMeldung(info?.spieler ?? []);
+    setEigene(info?.spieler ?? []);
     setBenoetigt(mannschaft?.benoetigte_spieler ?? 4);
+    setGegnerAlle(gegnerDaten ?? []);
+    setStand((gegnerDaten ?? [])[0]?.aktualisiert_am ?? null);
     setLadend(false);
   }
 
   useEffect(() => { if (saison) laden(); }, [saison?.id]);
 
+  async function aktualisieren() {
+    setFehler(null);
+    setAktualisiertLadend(true);
+    const { data, error } = await supabase.functions.invoke("fetch-gegner", { body: { saisonId: saison.id } });
+    setAktualisiertLadend(false);
+    if (error || data?.error) return setFehler(await echteFehlermeldung(error, data));
+    laden();
+  }
+
   const jetzt = new Date();
   const kommende = spiele.filter((s) => effektivesSpielDatum(s) && new Date(effektivesSpielDatum(s)) > jetzt && !spielGesperrt(s));
-  const vergangene = spiele.filter((s) => effektivesSpielDatum(s) && new Date(effektivesSpielDatum(s)) <= jetzt);
   const zielSpiel = kommende.find((s) => s.id === gewaehltesSpiel) ?? kommende[0] ?? null;
+  const gegnerName = zielSpiel ? (zielSpiel.ist_heimspiel ? zielSpiel.gastteam : zielSpiel.heimteam) : null;
 
-  // Verlässlichkeit je Spieler aus den bisherigen Rückmeldungen
-  function statistik(spielerId) {
-    const eigene = meldungen.filter((m) => m.spieler_id === spielerId);
-    const beantwortet = eigene.filter((m) => m.status === "ja" || m.status === "nein");
-    const zusagen = eigene.filter((m) => m.status === "ja").length;
-    const absagen = eigene.filter((m) => m.status === "nein").length;
+  // Gegnerkader zum ausgewählten Spiel — Namensvergleich tolerant, die
+  // Schreibweisen im Spielplan und in der Mannschaftsliste weichen leicht ab
+  const gegnerKader = gegnerName
+    ? gegnerAlle.filter((g) => nameNormalisieren(g.mannschaft).includes(nameNormalisieren(gegnerName).slice(0, 12)) ||
+        nameNormalisieren(gegnerName).includes(nameNormalisieren(g.mannschaft).slice(0, 12)))
+    : [];
 
-    // Bezugsgröße: alle Spiele, für die es überhaupt schon Rückmeldungen gibt
-    const relevanteSpiele = spiele.filter((s) => meldungen.some((m) => m.spiel_id === s.id));
-    const antwortquote = anteilProzent(beantwortet.length, relevanteSpiele.length);
-    const zusagequote = anteilProzent(zusagen, beantwortet.length);
-    return { zusagen, absagen, beantwortet: beantwortet.length, antwortquote, zusagequote };
-  }
+  const eigeneWerte = eigene.map((sp) => lpzZahl(sp.lpz)).filter(Boolean);
+  const gegnerWerte = gegnerKader.map((sp) => lpzZahl(sp.lpz)).filter(Boolean);
+  const eigenSchnitt = eigeneWerte.length ? Math.round(eigeneWerte.reduce((a, b) => a + b, 0) / eigeneWerte.length) : null;
+  const gegnerSchnitt = gegnerWerte.length ? Math.round(gegnerWerte.reduce((a, b) => a + b, 0) / gegnerWerte.length) : null;
 
-  // Einschätzung für ein bestimmtes Spiel
-  function prognose(sp, spiel) {
-    const status = meldungen.find((m) => m.spiel_id === spiel.id && m.spieler_id === sp.id)?.status ?? "offen";
-    if (status === "ja") return { stufe: "zugesagt", text: "hat zugesagt", wert: 100 };
-    if (status === "nein") return { stufe: "abgesagt", text: "hat abgesagt", wert: 0 };
+  // Verglichen wird über die Sollstärke, sonst verzerren unterschiedlich große Kader
+  const eigenSumme = eigeneWerte.slice(0, benoetigt).reduce((a, b) => a + b, 0);
+  const gegnerSumme = gegnerWerte.slice(0, benoetigt).reduce((a, b) => a + b, 0);
+  const unterschied = eigenSumme && gegnerSumme ? eigenSumme - gegnerSumme : null;
 
-    const st = statistik(sp.id);
-    const schicht = schichtFuerDatum(sp, effektivesSpielDatum(spiel));
-    const gruende = [];
-    let wert = st.zusagequote ?? 50;
+  const eigenePaare = paarkreuzWerte(eigene);
+  const gegnerPaare = paarkreuzWerte(gegnerKader);
 
-    if (st.beantwortet < 3) {
-      gruende.push("noch wenige Rückmeldungen — Einschätzung unsicher");
-    }
-    if (schicht === "Spätschicht" || schicht === "Nachtschicht") {
-      wert -= 30;
-      gruende.push(`${schicht} an diesem Tag`);
-    }
-    if (schicht === "Frei" || schicht === "Frühschicht") {
-      wert += 10;
-      gruende.push(`${schicht} an diesem Tag`);
-    }
-    if (st.antwortquote !== null && st.antwortquote < 50) {
-      gruende.push("antwortet oft gar nicht");
-    }
-    wert = Math.max(0, Math.min(100, Math.round(wert)));
-
-    return {
-      stufe: wert >= 65 ? "wahrscheinlich" : wert >= 35 ? "unklar" : "eher nicht",
-      text: `${wert} % nach bisherigem Verhalten`,
-      wert,
-      gruende,
-    };
-  }
-
-  if (ladend) return <Leerzustand text="Werte Rückmeldungen aus…" />;
-  if (spiele.length === 0) return <Leerzustand text="Noch keine Spiele hinterlegt." />;
-
-  const farben = {
-    zugesagt: { background: "#DDF0EA", color: COLORS.petrol },
-    wahrscheinlich: { background: "#DDF0EA", color: COLORS.petrol },
-    unklar: { background: "#FFF1D6", color: "#8A6100" },
-    "eher nicht": { background: "#FBE2DA", color: COLORS.orangeDeep },
-    abgesagt: { background: "#FBE2DA", color: COLORS.orangeDeep },
-  };
-
-  const erwartet = zielSpiel
-    ? spieler.reduce((summe, sp) => summe + (prognose(sp, zielSpiel).wert >= 65 ? 1 : 0), 0)
-    : 0;
+  if (ladend) return <Leerzustand text="Lade Gegnerdaten…" />;
 
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-lg border p-5">
-        <SectionLabel icon={TrendingUp}>Voraussichtliche Besetzung</SectionLabel>
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <SectionLabel icon={TrendingUp}>Gegneranalyse</SectionLabel>
+          <button
+            onClick={aktualisieren}
+            disabled={aktualisiertLadend}
+            className="text-xs px-3 py-1.5 rounded-md text-white font-semibold shrink-0"
+            style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
+          >
+            {aktualisiertLadend ? "Lädt…" : "Gegnerdaten holen"}
+          </button>
+        </div>
+
+        {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+        {stand && (
+          <p className="text-[11px] text-gray-400 mb-3">
+            Gegnerdaten vom {new Date(stand).toLocaleString("de-DE")}
+          </p>
+        )}
+
         {kommende.length === 0 ? (
           <p className="text-sm text-gray-400">Keine anstehenden Spiele.</p>
         ) : (
@@ -6960,82 +6953,78 @@ function Analyse({ saison, profil }) {
               ))}
             </select>
 
-            <div
-              className="p-3 rounded-md text-sm mb-3"
-              style={erwartet >= benoetigt ? { background: "#DDF0EA", color: COLORS.petrol } : { background: "#FFF1D6", color: "#8A6100" }}
-            >
-              <strong>{erwartet} von {benoetigt}</strong> Spielern voraussichtlich dabei.
-              {erwartet < benoetigt && " Es könnte eng werden — frag lieber früh nach."}
-            </div>
+            {gegnerKader.length === 0 ? (
+              <div className="p-3 rounded-md text-sm" style={{ background: "#FFF1D6", color: "#8A6100" }}>
+                Für <strong>{gegnerName}</strong> liegen noch keine Spielerdaten vor. Hinterlege unter
+                Mannschaften den „Mannschaften-Link der Liga" und tippe oben auf „Gegnerdaten holen".
+              </div>
+            ) : (
+              <>
+                <div
+                  className="p-3 rounded-md text-sm mb-3"
+                  style={unterschied > 0 ? { background: "#DDF0EA", color: COLORS.petrol } : { background: "#FBE2DA", color: COLORS.orangeDeep }}
+                >
+                  {unterschied === null ? (
+                    "Für den Vergleich fehlen LPZ-Werte."
+                  ) : unterschied === 0 ? (
+                    <>Beide Mannschaften sind auf dem Papier <strong>gleich stark</strong>.</>
+                  ) : (
+                    <>
+                      Auf dem Papier seid ihr <strong>{Math.abs(unterschied)} LPZ-Punkte {unterschied > 0 ? "stärker" : "schwächer"}</strong>
+                      {" "}(Summe der besten {benoetigt} Spieler). Schnitt: ihr {eigenSchnitt}, {gegnerName} {gegnerSchnitt}.
+                    </>
+                  )}
+                </div>
 
-            <div className="divide-y">
-              {[...spieler]
-                .sort((a, b) => prognose(b, zielSpiel).wert - prognose(a, zielSpiel).wert)
-                .map((sp) => {
-                  const p = prognose(sp, zielSpiel);
-                  const offiziell = offiziellePosition(sp, meldung);
-                  return (
-                    <div key={sp.id} className="py-2 flex items-start justify-between gap-3">
-                      <span className="flex items-center gap-2 min-w-0">
-                        <Avatar person={sp} groesse={28} />
-                        <span className="min-w-0">
-                          <span className="text-sm block truncate">{sp.vorname} {sp.nachname}</span>
-                          <span className="text-[11px] text-gray-400">
-                            {offiziell?.position ? `Position ${offiziell.position}` : "nicht gemeldet"}
-                            {offiziell?.lpz ? ` · LPZ ${offiziell.lpz}` : ""}
-                          </span>
-                          {p.gruende?.length > 0 && (
-                            <span className="text-[11px] text-gray-400 block">{p.gruende.join(" · ")}</span>
-                          )}
+                <p className="text-xs text-gray-500 mb-2">Vergleich nach Paarkreuzen</p>
+                <div className="space-y-2 mb-4">
+                  {eigenePaare.map((p, i) => {
+                    const g = gegnerPaare[i];
+                    const diff = g ? p.schnitt - g.schnitt : null;
+                    return (
+                      <div key={i} className="flex items-center justify-between gap-3 text-sm p-2 rounded-md border">
+                        <span className="text-xs text-gray-500 shrink-0">
+                          Paarkreuz {p.nr}<span className="block text-[10px]">Position {p.nr * 2 - 1}/{p.nr * 2}</span>
                         </span>
-                      </span>
-                      <span className="text-right shrink-0">
-                        <span className="text-xs px-2 py-1 rounded-md font-semibold block" style={farben[p.stufe]}>
-                          {p.stufe}
+                        <span className="flex-1 text-center">
+                          <span className="font-semibold">{p.schnitt}</span>
+                          <span className="text-gray-400 mx-2">gegen</span>
+                          <span className="font-semibold">{g ? g.schnitt : "–"}</span>
                         </span>
-                        <span className="text-[10px] text-gray-400">{p.text}</span>
-                      </span>
+                        <span
+                          className="text-xs px-2 py-1 rounded-md font-semibold shrink-0"
+                          style={diff === null ? { background: "#F1F1EF", color: "#999" }
+                            : diff > 20 ? { background: "#DDF0EA", color: COLORS.petrol }
+                            : diff < -20 ? { background: "#FBE2DA", color: COLORS.orangeDeep }
+                            : { background: "#FFF1D6", color: "#8A6100" }}
+                        >
+                          {diff === null ? "?" : diff > 20 ? "Vorteil" : diff < -20 ? "Nachteil" : "ausgeglichen"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <p className="text-xs text-gray-500 mb-2">Kader {gegnerName}</p>
+                <div className="divide-y border rounded-md">
+                  {gegnerKader.map((g, i) => (
+                    <div key={i} className="flex items-center justify-between px-3 py-2 text-sm">
+                      <span className="text-gray-400 w-6">{g.position}.</span>
+                      <span className="flex-1 truncate">{g.name}</span>
+                      <span className="text-xs text-gray-400">{g.lpz ? `LPZ ${g.lpz}` : "ohne LPZ"}</span>
                     </div>
-                  );
-                })}
-            </div>
+                  ))}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
 
-      <div className="bg-white rounded-lg border p-5">
-        <SectionLabel icon={Users}>Verlässlichkeit bisher</SectionLabel>
-        <p className="text-xs text-gray-500 mb-3">
-          Ausgewertet werden alle Rückmeldungen dieser Saison — {vergangene.length} Spiele sind bereits gespielt.
-        </p>
-        <div className="divide-y">
-          {[...spieler]
-            .sort((a, b) => (statistik(b.id).zusagequote ?? 0) - (statistik(a.id).zusagequote ?? 0))
-            .map((sp) => {
-              const st = statistik(sp.id);
-              return (
-                <div key={sp.id} className="py-2 flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2 min-w-0">
-                    <Avatar person={sp} groesse={24} />
-                    <span className="text-sm truncate">{sp.vorname} {sp.nachname}</span>
-                  </span>
-                  <span className="text-right shrink-0 text-xs">
-                    <span className="block" style={{ color: COLORS.anthracite }}>
-                      {st.zusagen} Zusagen · {st.absagen} Absagen
-                    </span>
-                    <span className="text-gray-400">
-                      {st.antwortquote === null ? "noch keine Daten" : `antwortet bei ${st.antwortquote} % der Spiele`}
-                    </span>
-                  </span>
-                </div>
-              );
-            })}
-        </div>
-      </div>
-
       <p className="text-xs text-gray-400">
-        Die Einschätzung beruht allein auf dem bisherigen Verhalten in der App und ersetzt kein Nachfragen.
-        Wer selten einträgt, wirkt hier schlechter, als er ist.
+        Grundlage sind die beim Verband gemeldeten Spieler mit ihren LPZ-Werten. Wer am Spieltag tatsächlich
+        antritt, kann davon abweichen — gerade untere Mannschaften spielen oft mit Ersatz. Die Einschätzung
+        ersetzt also keine Aufstellung nach Gefühl und Erfahrung.
       </p>
     </div>
   );
@@ -7666,9 +7655,12 @@ export default function App() {
     return <OnboardingTour profil={profil} onFertig={() => setProfil({ ...profil, onboarding_gesehen: true })} />;
   }
 
-  const nav = (profil.ist_admin || istTeamLeiter(profil))
-    ? [...NAV_BASIS, { key: "mannschaften", label: "Mannschaften", icon: Shield }, { key: "spieler", label: "Spieler", icon: UserPlus }]
-    : NAV_BASIS;
+  const darfLeiten = profil.ist_admin || istTeamLeiter(profil);
+  // Punkte mit nurLeitung sieht nur die Mannschaftsführung
+  const sichtbareBasis = NAV_BASIS.filter((p) => !p.nurLeitung || darfLeiten);
+  const nav = darfLeiten
+    ? [...sichtbareBasis, { key: "mannschaften", label: "Mannschaften", icon: Shield }, { key: "spieler", label: "Spieler", icon: UserPlus }]
+    : sichtbareBasis;
 
   const titles = {
     dashboard: "Dashboard",
@@ -7836,7 +7828,11 @@ export default function App() {
                   {tab === "ergebnisse" && <Ergebnisse saison={angezeigteSaison} profil={profil} />}
                   {tab === "planung" && <Spielerplanung saison={angezeigteSaison} profil={profil} />}
                   {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
-                  {tab === "analyse" && <Analyse saison={angezeigteSaison} profil={profil} />}
+                  {tab === "analyse" && (
+                    darfLeiten
+                      ? <Analyse saison={angezeigteSaison} profil={profil} />
+                      : <Leerzustand text="Die Analyse ist der Mannschaftsführung vorbehalten." />
+                  )}
                 </>
               )}
 
