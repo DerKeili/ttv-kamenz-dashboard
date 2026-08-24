@@ -3833,6 +3833,7 @@ function Spielerverwaltung({ profil }) {
       // damit sie sich von "noch nichts gewählt" unterscheidet
       mannschaftId: s.mannschaft_id ?? (profil.ist_admin ? "ohne" : ""),
       istAdmin: s.ist_admin ?? false,
+      darfNews: s.darf_news ?? false,
     });
   }
 
@@ -3844,6 +3845,7 @@ function Spielerverwaltung({ profil }) {
         spielerId: bearbeiteSpielerId,
         ...bearbeiteSpielerForm,
         mannschaftId: bearbeiteSpielerForm.mannschaftId === "ohne" ? null : bearbeiteSpielerForm.mannschaftId,
+        darfNews: bearbeiteSpielerForm.darfNews,
       },
     });
     setSpielerBearbeitenLadend(false);
@@ -4135,6 +4137,20 @@ function Spielerverwaltung({ profil }) {
                       Administrator-Rechte (voller Zugriff auf alle Mannschaften)
                     </label>
                   )}
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={bearbeiteSpielerForm.darfNews}
+                      onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, darfNews: e.target.checked })}
+                      className="mt-1"
+                    />
+                    <span>
+                      Darf Neuigkeiten schreiben
+                      <span className="block text-[11px] text-gray-400">
+                        Auch ohne Mannschaftsführer-Rolle — etwa für jemanden, der die Vereinsnachrichten pflegt.
+                      </span>
+                    </span>
+                  </label>
                   {spielerBearbeitenFehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{spielerBearbeitenFehler}</p>}
                   <div className="flex gap-2">
                     <button onClick={spielerBearbeitenSpeichern} disabled={spielerBearbeitenLadend} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange, opacity: spielerBearbeitenLadend ? 0.6 : 1 }}>
@@ -4162,6 +4178,11 @@ function Spielerverwaltung({ profil }) {
                       {s.ist_admin && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full text-white ml-2" style={{ background: COLORS.orange }}>
                           Admin
+                        </span>
+                      )}
+                      {s.darf_news && !s.ist_admin && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ml-2" style={{ background: "#E4F2EE", color: COLORS.petrol }}>
+                          Neuigkeiten
                         </span>
                       )}
                       {/* Zeigt, wer sich noch nie selbst angemeldet und ein eigenes Passwort vergeben hat */}
@@ -4924,7 +4945,9 @@ function Nachrichten({ profil, zielSpielerId }) {
                     className="max-w-[75%] rounded-lg px-3 py-2 text-sm"
                     style={eigene ? { background: COLORS.orange, color: "white" } : { background: "#F1F1EF", color: COLORS.anthracite }}
                   >
-                    <p>{n.inhalt}</p>
+                    <p className="whitespace-pre-wrap break-words">
+                      <TextMitLinks text={n.inhalt} farbe={eigene ? "#FFE8DC" : COLORS.petrol} />
+                    </p>
                     <p className="text-[10px] mt-1 opacity-70">{new Date(n.gesendet_am).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
                   </div>
                 </div>
@@ -4936,13 +4959,20 @@ function Nachrichten({ profil, zielSpielerId }) {
           <Mail size={12} className="mt-0.5 shrink-0" />
           <span>{partner.vorname} bekommt eine E-Mail, dass eine neue Nachricht wartet — höchstens einmal pro Stunde.</span>
         </p>
-        <div className="flex items-center gap-2 p-3 border-t">
-          <input
+        <div className="flex items-end gap-2 p-3 border-t">
+          <textarea
             value={entwurf}
             onChange={(e) => setEntwurf(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && senden()}
-            placeholder="Nachricht schreiben…"
-            className="flex-1 border rounded-md px-3 py-2 text-sm"
+            onKeyDown={(e) => {
+              // Enter sendet, Umschalt+Enter macht einen Absatz
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                senden();
+              }
+            }}
+            rows={3}
+            placeholder="Nachricht schreiben… (Enter sendet, Umschalt+Enter für neue Zeile)"
+            className="flex-1 border rounded-md px-3 py-2 text-sm resize-y min-h-[72px] max-h-[40vh]"
           />
           <button
             onClick={senden}
@@ -6610,6 +6640,48 @@ function KuendigungsAntraege({ profil, onErledigt }) {
   );
 }
 
+/* ---------- Text mit anklickbaren Links ----------
+   Erkennt Web- und Mail-Adressen im Fließtext und macht sie anklickbar. Der Text
+   wird dabei nicht als HTML ausgewertet, sondern in Stücke zerlegt — damit kann
+   niemand über einen Beitrag fremden Code einschleusen. */
+
+const LINK_MUSTER = /(https?:\/\/[^\s<]+|www\.[^\s<]+|[\w.+-]+@[\w-]+\.[\w.-]+)/gi;
+
+function TextMitLinks({ text, farbe }) {
+  const teile = String(text ?? "").split(LINK_MUSTER);
+  return (
+    <>
+      {teile.map((teil, i) => {
+        if (!teil) return null;
+        const istMail = /^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(teil);
+        const istWeb = /^(https?:\/\/|www\.)/i.test(teil);
+        if (!istMail && !istWeb) return <span key={i}>{teil}</span>;
+
+        // Satzzeichen am Ende gehören zum Satz, nicht zur Adresse
+        const treffer = teil.match(/[.,;:!?)]+$/);
+        const endung = treffer ? treffer[0] : "";
+        const adresse = endung ? teil.slice(0, -endung.length) : teil;
+        const ziel = istMail ? `mailto:${adresse}` : adresse.startsWith("http") ? adresse : `https://${adresse}`;
+
+        return (
+          <span key={i}>
+            <a
+              href={ziel}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline break-all"
+              style={{ color: farbe ?? COLORS.petrol }}
+            >
+              {adresse}
+            </a>
+            {endung}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 /* ---------- Neuigkeiten (News) auf dem Dashboard ----------
    Sichtbar für alle. Schreiben, ändern und löschen dürfen nur Admins sowie
    Mannschaftsführer und ihre Stellvertreter. Angezeigt werden zunächst die drei
@@ -6630,7 +6702,7 @@ function News({ profil }) {
   const [speichernLadend, setSpeichernLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
 
-  const darfSchreiben = profil.ist_admin || istTeamLeiter(profil);
+  const darfSchreiben = profil.ist_admin || istTeamLeiter(profil) || profil.darf_news === true;
 
   async function laden() {
     setLadend(true);
@@ -6734,7 +6806,7 @@ function News({ profil }) {
           </select>
           {!profil.ist_admin && (
             <p className="text-[11px] text-gray-400 mb-3">
-              Als Mannschaftsführer schreibst du für deine eigene Mannschaft. Vereinsweite Beiträge kann ein Admin anlegen.
+              Du schreibst für deine eigene Mannschaft. Vereinsweite Beiträge kann ein Admin anlegen.
             </p>
           )}
           {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
@@ -6799,7 +6871,9 @@ function News({ profil }) {
                       </div>
                     )}
                   </div>
-                  <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap">{b.inhalt}</p>
+                  <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap">
+                    <TextMitLinks text={b.inhalt} />
+                  </p>
                 </div>
               );
             })}
