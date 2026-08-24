@@ -6954,15 +6954,15 @@ function Analyse({ saison, profil }) {
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-lg border p-5">
-        <div className="flex items-start justify-between gap-2 mb-3">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 mb-3">
           <SectionLabel icon={TrendingUp}>Gegneranalyse</SectionLabel>
-          <span className="flex flex-wrap gap-2 shrink-0">
+          <span className="flex flex-wrap gap-2">
             {darfMannschaftVerwalten(profil, saison.mannschaft_id) && (
             <>
             <button
               onClick={aktualisieren}
               disabled={aktualisiertLadend}
-              className="text-xs px-3 py-1.5 rounded-md text-white font-semibold"
+              className="text-xs px-3 py-1.5 rounded-md text-white font-semibold flex-1 sm:flex-none whitespace-nowrap"
               style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
             >
               {aktualisiertLadend ? "Lädt…" : "Gegnerdaten holen"}
@@ -6970,7 +6970,7 @@ function Analyse({ saison, profil }) {
             <button
               onClick={einsaetzeHolen}
               disabled={einsatzLadend}
-              className="text-xs px-3 py-1.5 rounded-md font-semibold border"
+              className="text-xs px-3 py-1.5 rounded-md font-semibold border flex-1 sm:flex-none whitespace-nowrap"
               style={{ borderColor: COLORS.petrol, color: COLORS.petrol, opacity: einsatzLadend ? 0.6 : 1 }}
             >
               {einsatzLadend ? "Lädt…" : "Einsätze auswerten"}
@@ -7033,17 +7033,17 @@ function Analyse({ saison, profil }) {
                     const g = gegnerPaare[i];
                     const diff = g ? p.schnitt - g.schnitt : null;
                     return (
-                      <div key={i} className="flex items-center justify-between gap-3 text-sm p-2 rounded-md border">
+                      <div key={i} className="flex flex-wrap items-center justify-between gap-2 text-sm p-2 rounded-md border">
                         <span className="text-xs text-gray-500 shrink-0">
                           Paarkreuz {p.nr}<span className="block text-[10px]">Position {p.nr * 2 - 1}/{p.nr * 2}</span>
                         </span>
-                        <span className="flex-1 text-center">
+                        <span className="text-center whitespace-nowrap">
                           <span className="font-semibold">{p.schnitt}</span>
                           <span className="text-gray-400 mx-2">gegen</span>
                           <span className="font-semibold">{g ? g.schnitt : "–"}</span>
                         </span>
                         <span
-                          className="text-xs px-2 py-1 rounded-md font-semibold shrink-0"
+                          className="text-xs px-2 py-1 rounded-md font-semibold shrink-0 ml-auto"
                           style={diff === null ? { background: "#F1F1EF", color: "#999" }
                             : diff > 20 ? { background: "#DDF0EA", color: COLORS.petrol }
                             : diff < -20 ? { background: "#FBE2DA", color: COLORS.orangeDeep }
