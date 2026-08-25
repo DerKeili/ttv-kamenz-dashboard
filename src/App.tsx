@@ -1899,6 +1899,31 @@ function Spielerplanung({ saison, profil }) {
         <Leerzustand text={`Noch keine Spiele für die ${runde} hinterlegt.`} />
       ) : (
         <>
+          {darfPlanen && (
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg border"
+              style={{ background: schreibschutzAus ? "#FBE2DA" : COLORS.paper }}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {schreibschutzAus ? <Unlock size={15} style={{ color: COLORS.orangeDeep }} /> : <Lock size={15} className="text-gray-400" />}
+                <p className="text-xs" style={{ color: schreibschutzAus ? COLORS.orangeDeep : "#6b7280" }}>
+                  {schreibschutzAus
+                    ? "Schreibschutz aufgehoben — du kannst jetzt für deine Spieler eintragen. Jeder Eintrag wird mit deinem Namen gekennzeichnet."
+                    : "Schreibschutz aktiv — du kannst nur für dich selbst eintragen."}
+                </p>
+              </div>
+              <button
+                onClick={schreibschutzUmschalten}
+                className="text-xs px-3 py-1.5 rounded-md font-semibold shrink-0"
+                style={schreibschutzAus
+                  ? { background: COLORS.orangeDeep, color: "white" }
+                  : { border: `1px solid ${COLORS.petrol}`, color: COLORS.petrol }}
+              >
+                {schreibschutzAus ? "Wieder sperren" : "Schreibschutz aufheben"}
+              </button>
+            </div>
+          )}
+
           {/* Hochformat auf dem Handy: Karten statt Tabelle — eine Karte je Spieltag */}
           <div className="sm:hidden space-y-3">
             {spiele.map((s) => {
@@ -2066,31 +2091,6 @@ function Spielerplanung({ saison, profil }) {
           </div>
 
           <div className="hidden sm:block bg-white rounded-lg border overflow-auto max-h-[75vh]">
-            {darfPlanen && (
-              <div
-                className="flex flex-wrap items-center justify-between gap-2 p-3 border-b"
-                style={{ background: schreibschutzAus ? "#FBE2DA" : COLORS.paper }}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  {schreibschutzAus ? <Unlock size={15} style={{ color: COLORS.orangeDeep }} /> : <Lock size={15} className="text-gray-400" />}
-                  <p className="text-xs" style={{ color: schreibschutzAus ? COLORS.orangeDeep : "#6b7280" }}>
-                    {schreibschutzAus
-                      ? "Schreibschutz aufgehoben — du kannst jetzt für deine Spieler eintragen. Jeder Eintrag wird mit deinem Namen gekennzeichnet."
-                      : "Schreibschutz aktiv — du kannst nur für dich selbst eintragen."}
-                  </p>
-                </div>
-                <button
-                  onClick={schreibschutzUmschalten}
-                  className="text-xs px-3 py-1.5 rounded-md font-semibold shrink-0"
-                  style={schreibschutzAus
-                    ? { background: COLORS.orangeDeep, color: "white" }
-                    : { border: `1px solid ${COLORS.petrol}`, color: COLORS.petrol }}
-                >
-                  {schreibschutzAus ? "Wieder sperren" : "Schreibschutz aufheben"}
-                </button>
-              </div>
-            )}
-
             {verlegung && (
               <div className="p-4 border-b" style={{ background: COLORS.paper }}>
                 <div className="flex items-center gap-2 mb-2">
@@ -4738,10 +4738,10 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
 
   return (
     <div id={`umfrage-${umfrage.id}`} className="bg-white rounded-lg border p-5" style={hervorgehoben ? { boxShadow: `0 0 0 2px ${COLORS.orange}` } : {}}>
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-2">
-          <Vote size={16} style={{ color: COLORS.orange }} />
-          <h3 className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
+      <div className="flex flex-wrap items-start justify-between gap-2 mb-1">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          <Vote size={16} className="mt-0.5 shrink-0" style={{ color: COLORS.orange }} />
+          <h3 className="font-semibold text-sm min-w-0" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
           {umfrage.art === "verlegung" && (
             <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white flex items-center gap-1" style={{ background: COLORS.konflikt }}>
               <CalendarClock size={10} /> Verlegung
@@ -4759,10 +4759,10 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
           )}
         </div>
         {profil.ist_admin && (
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0 ml-auto">
             {loeschenBestaetigen ? (
               <>
-                <span className="text-xs text-gray-500">Wirklich löschen?</span>
+                <span className="text-xs text-gray-500 w-full sm:w-auto">Wirklich löschen?</span>
                 <button onClick={onLoeschen} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>
                   Ja
                 </button>
