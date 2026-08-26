@@ -1885,6 +1885,7 @@ function Spielerplanung({ saison, profil }) {
           benoetigt={benoetigteSpieler}
           darfBearbeiten={darfPlanen}
           vorhanden={aufstellungen[aufstellungFuer.id] ?? null}
+          mannschaftName={mannschaftsName}
           onSchliessen={() => setAufstellungFuer(null)}
           onGespeichert={() => { setAufstellungFuer(null); laden(); }}
         />
@@ -7395,7 +7396,116 @@ function wertigkeit(doppel, positionen) {
   return doppel.reduce((summe, id) => summe + (positionen.findIndex((p) => p.spieler_id === id) + 1), 0);
 }
 
-function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbeiten, vorhanden, onSchliessen, onGespeichert }) {
+// Spielreihenfolge im 4er-Paarkreuz (System Werner Scheffler), wie im Vordruck
+const REIHENFOLGE_VIERER = [
+  ["D1", "D1"], ["D2", "D2"],
+  ["E1", "E2"], ["E2", "E1"], ["E3", "E4"], ["E4", "E3"],
+  ["E1", "E1"], ["E2", "E2"], ["E3", "E3"], ["E4", "E4"],
+  ["E3", "E1"], ["E1", "E3"], ["E2", "E4"], ["E4", "E2"],
+];
+
+// Erzeugt einen druckbaren Aufstellungsbogen und öffnet den Druckdialog.
+// Über "Als PDF sichern" landet er in den Dateien — ohne zusätzliche Bibliothek.
+function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person }) {
+  const termin = effektivesSpielDatum(spiel);
+  const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+  const heim = spiel.ist_heimspiel ? mannschaftName : gegner;
+  const gast = spiel.ist_heimspiel ? gegner : mannschaftName;
+
+  const name = (id) => {
+    const p = person(id);
+    return p ? `${p.nachname}, ${p.vorname}` : "";
+  };
+
+  const einzelZeilen = reihenfolge
+    .map((r, i) => `<tr><td class="nr">${i + 1}</td><td>${name(r.spieler_id)}</td></tr>`)
+    .join("");
+
+  const doppelZeilen = doppel
+    .map((d) => `<tr><td class="nr">D${d.nr}</td><td>${d.spieler.map(name).join("<br>")}</td></tr>`)
+    .join("");
+
+  // Begegnungsplan nur beim Vierer-System — bei sechs Spielern weicht er ab
+  const planZeilen =
+    reihenfolge.length === 4
+      ? REIHENFOLGE_VIERER.map(([a, b]) => {
+          const eigenerCode = spiel.ist_heimspiel ? a : b;
+          let wer = "";
+          if (eigenerCode.startsWith("D")) {
+            const d = doppel.find((x) => `D${x.nr}` === eigenerCode);
+            wer = d ? d.spieler.map((id) => person(id)?.nachname ?? "").join(" / ") : "";
+          } else {
+            const index = Number(eigenerCode.slice(1)) - 1;
+            wer = person(reihenfolge[index]?.spieler_id)?.nachname ?? "";
+          }
+          return `<tr><td class="nr">${a}</td><td class="nr">${b}</td><td>${wer}</td><td class="leer"></td><td class="leer"></td></tr>`;
+        }).join("")
+      : "";
+
+  const inhalt = `<!doctype html><html lang="de"><head><meta charset="utf-8">
+<title>Aufstellung ${heim} gegen ${gast}</title>
+<style>
+  @page { size: A4 portrait; margin: 14mm; }
+  body { font-family: Helvetica, Arial, sans-serif; color: #1a1a18; font-size: 11pt; }
+  h1 { font-size: 15pt; margin: 0 0 2mm; }
+  .kopf { border-bottom: 2px solid #0F2E2A; padding-bottom: 3mm; margin-bottom: 5mm; }
+  .zeile { display: flex; gap: 8mm; flex-wrap: wrap; font-size: 10pt; color: #444; }
+  h2 { font-size: 12pt; margin: 6mm 0 2mm; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
+  td, th { border: 1px solid #999; padding: 2mm 3mm; text-align: left; }
+  th { background: #e8e8e4; font-size: 10pt; }
+  .nr { width: 12mm; font-weight: bold; text-align: center; }
+  .leer { width: 22mm; }
+  .fuss { margin-top: 8mm; font-size: 9pt; color: #666; }
+  .unterschrift { margin-top: 14mm; display: flex; gap: 12mm; }
+  .unterschrift div { flex: 1; border-top: 1px solid #999; padding-top: 2mm; font-size: 9pt; color: #666; }
+</style></head><body>
+  <div class="kopf">
+    <h1>${heim} &ndash; ${gast}</h1>
+    <div class="zeile">
+      <span>${wochentagLang(termin)}, ${formatDatum(termin)}${uhrzeit(termin) ? ` um ${uhrzeit(termin)}` : ""}</span>
+      <span>${spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}</span>
+    </div>
+  </div>
+
+  <h2>Einzel &ndash; ${mannschaftName}</h2>
+  <table><thead><tr><th class="nr">Nr.</th><th>Name, Vorname</th></tr></thead><tbody>${einzelZeilen}</tbody></table>
+
+  <h2>Doppel</h2>
+  <table><thead><tr><th class="nr">Nr.</th><th>Namen</th></tr></thead><tbody>${doppelZeilen}</tbody></table>
+
+  ${planZeilen ? `<h2>Spielfolge (Vierer&#8209;System)</h2>
+  <table><thead><tr><th class="nr">A</th><th class="nr">B</th><th>${mannschaftName}</th><th class="leer">Sätze</th><th class="leer">Punkte</th></tr></thead>
+  <tbody>${planZeilen}</tbody></table>` : ""}
+
+  <div class="unterschrift"><div>Unterschrift Mannschaftsführer</div><div>Unterschrift Gegner</div></div>
+  <p class="fuss">
+    Erstellt mit der Mannschafts-App des TTV 97 Kamenz e.V. Dies ist eine Aufstellungshilfe,
+    kein amtlicher Spielbericht &ndash; Passnummern und Unterschriften bitte am Spieltag ergänzen.
+  </p>
+</body></html>`;
+
+  // Über ein verstecktes Fenster drucken, damit die App im Vordergrund bleibt
+  const rahmen = document.createElement("iframe");
+  rahmen.style.position = "fixed";
+  rahmen.style.right = "0";
+  rahmen.style.bottom = "0";
+  rahmen.style.width = "0";
+  rahmen.style.height = "0";
+  rahmen.style.border = "0";
+  document.body.appendChild(rahmen);
+  const dok = rahmen.contentWindow.document;
+  dok.open();
+  dok.write(inhalt);
+  dok.close();
+  rahmen.onload = () => {
+    rahmen.contentWindow.focus();
+    rahmen.contentWindow.print();
+    setTimeout(() => rahmen.remove(), 60000);
+  };
+}
+
+function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbeiten, vorhanden, mannschaftName, onSchliessen, onGespeichert }) {
   const [reihenfolge, setReihenfolge] = useState([]);
   const [doppel, setDoppel] = useState([]);
   const [speichern, setSpeichern] = useState(false);
@@ -7608,6 +7718,16 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
           )}
 
           {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+
+          {(vorhanden || !darfBearbeiten) && reihenfolge.length > 0 && (
+            <button
+              onClick={() => aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person })}
+              className="w-full px-4 py-2 rounded-md text-sm font-semibold border flex items-center justify-center gap-2"
+              style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+            >
+              <FileText size={14} /> Aufstellungsbogen drucken oder als PDF sichern
+            </button>
+          )}
 
           {darfBearbeiten ? (
             <div className="flex gap-2">
