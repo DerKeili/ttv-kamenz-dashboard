@@ -1684,7 +1684,7 @@ function Spielerplanung({ saison, profil }) {
       if (helferIds.length > 0) {
         const { data: helfer } = await supabase
           .from("profiles")
-          .select("id, vorname, nachname, avatar_url, mannschaft_id")
+          .select("id, vorname, nachname, avatar_url, mannschaft_id, passnummer")
           .in("id", helferIds);
         const { data: teams } = await supabase.from("mannschaften").select("id, name");
         aushilfenListe = (aushilfenDaten ?? []).map((a) => {
@@ -3832,7 +3832,7 @@ function Spielerverwaltung({ profil }) {
   const [mannschaften, setMannschaften] = useState([]);
   const [spielerListe, setSpielerListe] = useState([]);
   const [kontakte, setKontakte] = useState([]);
-  const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", rang: "Spieler", mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
+  const [form, setForm] = useState({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", passnummer: "", rang: "Spieler", mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
   const [einmalpasswort, setEinmalpasswort] = useState(null);
   const [erstellterSpieler, setErstellterSpieler] = useState(null);
   const [fehler, setFehler] = useState(null);
@@ -3887,6 +3887,7 @@ function Spielerverwaltung({ profil }) {
       mannschaftId: s.mannschaft_id ?? (profil.ist_admin ? "ohne" : ""),
       istAdmin: s.ist_admin ?? false,
       darfNews: s.darf_news ?? false,
+      passnummer: s.passnummer ?? "",
     });
   }
 
@@ -3899,6 +3900,7 @@ function Spielerverwaltung({ profil }) {
         ...bearbeiteSpielerForm,
         mannschaftId: bearbeiteSpielerForm.mannschaftId === "ohne" ? null : bearbeiteSpielerForm.mannschaftId,
         darfNews: bearbeiteSpielerForm.darfNews,
+        passnummer: bearbeiteSpielerForm.passnummer,
       },
     });
     setSpielerBearbeitenLadend(false);
@@ -3983,6 +3985,7 @@ function Spielerverwaltung({ profil }) {
         telefonHandy: form.telefonHandy,
         telefonFestnetz: form.telefonFestnetz,
         rang: form.rang,
+        passnummer: form.passnummer,
         mannschaftId: form.mannschaftId === "ohne" ? null : form.mannschaftId,
         einmalpasswort: einmalig,
       },
@@ -4001,7 +4004,7 @@ function Spielerverwaltung({ profil }) {
       setBearbeitenKontaktId(null);
     }
 
-    setForm({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", rang: "Spieler", mannschaftId: form.mannschaftId });
+    setForm({ vorname: "", nachname: "", geburtstag: "", email: "", telefonHandy: "", telefonFestnetz: "", passnummer: "", rang: "Spieler", mannschaftId: form.mannschaftId });
     ladenAlles();
   }
 
@@ -4052,6 +4055,10 @@ function Spielerverwaltung({ profil }) {
           <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">E-Mail *</label>
             <input placeholder="E-Mail" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+          </div>
+          <div className="min-w-0">
+            <label className="block text-xs text-gray-400 mb-1">Passnummer</label>
+            <input placeholder="optional" value={form.passnummer} onChange={(e) => setForm({ ...form, passnummer: e.target.value })} inputMode="numeric" className="w-full border rounded-md px-3 py-2 text-sm" />
           </div>
           <div className="min-w-0">
             <label className="block text-xs text-gray-400 mb-1">Handynummer</label>
@@ -4161,6 +4168,16 @@ function Spielerverwaltung({ profil }) {
                     <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">E-Mail</label>
                       <input value={bearbeiteSpielerForm.email} onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, email: e.target.value })} placeholder="E-Mail" className="w-full border rounded-md px-3 py-2 text-sm" />
+                    </div>
+                    <div className="min-w-0">
+                      <label className="block text-xs text-gray-400 mb-1">Passnummer</label>
+                      <input
+                        value={bearbeiteSpielerForm.passnummer}
+                        onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, passnummer: e.target.value })}
+                        placeholder="z. B. 54712"
+                        inputMode="numeric"
+                        className="w-full border rounded-md px-3 py-2 text-sm"
+                      />
                     </div>
                     <div className="min-w-0">
                       <label className="block text-xs text-gray-400 mb-1">Rolle</label>
@@ -7416,13 +7433,14 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
     const p = person(id);
     return p ? `${p.nachname}, ${p.vorname}` : "";
   };
+  const passnr = (id) => person(id)?.passnummer ?? "";
 
   const einzelZeilen = reihenfolge
-    .map((r, i) => `<tr><td class="nr">${i + 1}</td><td>${name(r.spieler_id)}</td></tr>`)
+    .map((r, i) => `<tr><td class="nr">${i + 1}</td><td>${name(r.spieler_id)}</td><td class="pass">${passnr(r.spieler_id)}</td></tr>`)
     .join("");
 
   const doppelZeilen = doppel
-    .map((d) => `<tr><td class="nr">D${d.nr}</td><td>${d.spieler.map(name).join("<br>")}</td></tr>`)
+    .map((d) => `<tr><td class="nr">D${d.nr}</td><td>${d.spieler.map(name).join("<br>")}</td><td class="pass">${d.spieler.map(passnr).join("<br>")}</td></tr>`)
     .join("");
 
   // Begegnungsplan nur beim Vierer-System — bei sechs Spielern weicht er ab
@@ -7456,6 +7474,7 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   th { background: #e8e8e4; font-size: 10pt; }
   .nr { width: 12mm; font-weight: bold; text-align: center; }
   .leer { width: 22mm; }
+  .pass { width: 24mm; }
   .fuss { margin-top: 8mm; font-size: 9pt; color: #666; }
   .unterschrift { margin-top: 14mm; display: flex; gap: 12mm; }
   .unterschrift div { flex: 1; border-top: 1px solid #999; padding-top: 2mm; font-size: 9pt; color: #666; }
@@ -7469,10 +7488,10 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   </div>
 
   <h2>Einzel &ndash; ${mannschaftName}</h2>
-  <table><thead><tr><th class="nr">Nr.</th><th>Name, Vorname</th></tr></thead><tbody>${einzelZeilen}</tbody></table>
+  <table><thead><tr><th class="nr">Nr.</th><th>Name, Vorname</th><th class="pass">Passnr.</th></tr></thead><tbody>${einzelZeilen}</tbody></table>
 
   <h2>Doppel</h2>
-  <table><thead><tr><th class="nr">Nr.</th><th>Namen</th></tr></thead><tbody>${doppelZeilen}</tbody></table>
+  <table><thead><tr><th class="nr">Nr.</th><th>Namen</th><th class="pass">Passnr.</th></tr></thead><tbody>${doppelZeilen}</tbody></table>
 
   ${planZeilen ? `<h2>Spielfolge (Vierer&#8209;System)</h2>
   <table><thead><tr><th class="nr">A</th><th class="nr">B</th><th>${mannschaftName}</th><th class="leer">Sätze</th><th class="leer">Punkte</th></tr></thead>
@@ -7481,7 +7500,7 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   <div class="unterschrift"><div>Unterschrift Mannschaftsführer</div><div>Unterschrift Gegner</div></div>
   <p class="fuss">
     Erstellt mit der Mannschafts-App des TTV 97 Kamenz e.V. Dies ist eine Aufstellungshilfe,
-    kein amtlicher Spielbericht &ndash; Passnummern und Unterschriften bitte am Spieltag ergänzen.
+    kein amtlicher Spielbericht &ndash; Unterschriften und Ergebnisse bitte am Spieltag ergänzen.
   </p>
 </body></html>`;
 
