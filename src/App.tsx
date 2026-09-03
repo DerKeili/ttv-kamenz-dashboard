@@ -4534,6 +4534,14 @@ function Umfragen({ profil, zielUmfrageId }) {
       supabase.functions.invoke("notify-aushilfe", {
         body: { art: "eingeplant", spielId: umfrage.bezug_spiel_id, spielerId },
       }); // bewusst nicht awaited
+
+      // Steht die Aushilfe fest, sollen die übrigen Gefragten nicht weiter warten
+      if (umfrage.aktiv !== false && window.confirm(
+        "Eingeplant. Soll die Anfrage jetzt abgeschlossen werden?\n\n" +
+        "Die Umfrage wird beendet und alle Gefragten erfahren per E-Mail, wer aushilft."
+      )) {
+        await anfrageAbschliessen(umfrage);
+      }
     } else {
       const { error } = await supabase
         .from("spiel_aushilfen")
@@ -4541,6 +4549,20 @@ function Umfragen({ profil, zielUmfrageId }) {
         .eq("spiel_id", umfrage.bezug_spiel_id)
         .eq("spieler_id", spielerId);
       if (error) return setFehler(error.message);
+    }
+    laden();
+  }
+
+  // Aushilfe-Anfrage beenden und alle Gefragten über das Ergebnis informieren
+  async function anfrageAbschliessen(umfrage) {
+    setFehler(null);
+    const { error } = await supabase.from("umfragen").update({ aktiv: false }).eq("id", umfrage.id);
+    if (error) return setFehler(error.message);
+    const { data, error: mailFehler } = await supabase.functions.invoke("notify-aushilfe-abschluss", {
+      body: { umfrageId: umfrage.id },
+    });
+    if (mailFehler || data?.error) {
+      setFehler(`Die Umfrage wurde beendet, die Info-Mail schlug aber fehl: ${await echteFehlermeldung(mailFehler, data)}`);
     }
     laden();
   }
@@ -4858,6 +4880,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               onTerminAnsetzen={terminAnsetzen}
               aushilfen={aushilfen.filter((a) => a.spiel_id === u.bezug_spiel_id)}
               onAushilfeUmschalten={aushilfeUmschalten}
+              onAnfrageAbschliessen={() => anfrageAbschliessen(u)}
             />
           );
         })
@@ -4874,7 +4897,7 @@ function terminAusOption(option) {
   return `${jahr}-${monat}-${tag}`;
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten, onAnfrageAbschliessen }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
@@ -5092,6 +5115,15 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
                       <p className="text-[10px] text-gray-400">
                         Wer eingeplant wird, erscheint in eurer Spielerplanung und bekommt eine E-Mail.
                       </p>
+                      {aushilfen.length > 0 && umfrage.aktiv !== false && (
+                        <button
+                          onClick={onAnfrageAbschliessen}
+                          className="mt-1 text-[11px] px-2 py-1 rounded-md font-semibold border"
+                          style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+                        >
+                          Anfrage abschließen & alle informieren
+                        </button>
+                      )}
                     </div>
                   )}
                 {umfrage.art === "verlegung" && darfMannschaftVerwalten(profil, umfrage.mannschaft_id) && terminAusOption(option) && (
