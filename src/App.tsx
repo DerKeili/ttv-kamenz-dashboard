@@ -1154,7 +1154,7 @@ function UmfrageEskalation({ profil }) {
         ]);
 
         const zusagen = (antworten ?? []).filter((a) =>
-          (a.ausgewaehlte_optionen ?? []).some((o) => String(o).toLowerCase().startsWith("ja"))
+          istZusage(a, umfrage)
         );
 
         // Es hat jemand zugesagt → alles gut, keine Eskalation nötig.
@@ -1781,9 +1781,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       }
       setAnfragen((anfragenDaten ?? []).map((u) => ({
         ...u,
-        zusagen: antworten.filter(
-          (a) => a.umfrage_id === u.id && (a.ausgewaehlte_optionen ?? []).some((o) => String(o).toLowerCase().startsWith("ja"))
-        ).length,
+        zusagen: antworten.filter((a) => a.umfrage_id === u.id && istZusage(a, u)).length,
         antwortenGesamt: antworten.filter((a) => a.umfrage_id === u.id).length,
       })));
     }
@@ -4506,7 +4504,7 @@ function Umfragen({ profil, zielUmfrageId }) {
   async function abstimmen(umfrageId, mehrfachauswahl, gewaehlt) {
     const umfrage = umfragen.find((u) => u.id === umfrageId);
     // Sagt jemand bei einer Aushilfe-Anfrage zu, erfährt die Mannschaftsführung davon sofort
-    if (umfrage?.art === "aushilfe" && (gewaehlt ?? []).some((o) => String(o).toLowerCase().startsWith("ja"))) {
+    if (umfrage?.art === "aushilfe" && istZusage({ ausgewaehlte_optionen: gewaehlt }, umfrage)) {
       supabase.functions.invoke("notify-aushilfe", {
         body: { art: "zusage", spielId: umfrage.bezug_spiel_id, spielerId: profil.id, umfrageId },
       }); // bewusst nicht awaited
@@ -7607,6 +7605,20 @@ function Analyse({ saison, profil }) {
    Mannschaften spielen auf den hinteren Plätzen.
    Doppel: Doppel 1 ist frei wählbar, Doppel 2 und 3 müssen nach Wertigkeit
    folgen — Wertigkeit ist die Summe der beiden Einzelplätze. */
+
+// Antworten speichern den Index der gewählten Option, nicht deren Text.
+// Bei Aushilfe-Umfragen ist Option 0 immer "Ja, ich kann aushelfen".
+function istZusage(antwort, umfrage) {
+  const gewaehlt = antwort?.ausgewaehlte_optionen ?? [];
+  const optionen = umfrage?.optionen ?? [];
+  return gewaehlt.some((wert) => {
+    if (typeof wert === "number") {
+      return String(optionen[wert] ?? "").toLowerCase().startsWith("ja");
+    }
+    // Ältere Einträge könnten den Text enthalten — beides abfangen
+    return String(wert).toLowerCase().startsWith("ja");
+  });
+}
 
 function nameNormalisieren(text) {
   return String(text ?? "")
