@@ -1568,8 +1568,21 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   // Aushilfe-Anfrage direkt aus der Spielerplanung heraus starten
   async function aushilfeAnfragen(spiel) {
     setFehler(null);
+    if (anfrageLadendId) return; // verhindert doppeltes Senden bei schnellem Tippen
     const fehlend = benoetigteSpieler - countJa(spiel.id);
     if (fehlend <= 0) return;
+
+    // Läuft für dieses Spiel schon eine Anfrage? Sonst gehen Umfragen doppelt raus.
+    const laufende = anfragen.find((a) => a.bezug_spiel_id === spiel.id && a.aktiv !== false);
+    if (laufende) {
+      const seit = new Date(laufende.erstellt_am).toLocaleString("de-DE", {
+        day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      });
+      const text = laufende.zusagen > 0
+        ? `Es läuft bereits eine Anfrage seit dem ${seit} Uhr mit ${laufende.zusagen} Zusage(n).\n\nNoch eine Anfrage senden? Die Spieler bekommen dann eine zweite Umfrage und eine zweite E-Mail.`
+        : `Es läuft bereits eine Anfrage seit dem ${seit} Uhr, bisher ohne Zusage.\n\nNoch eine Anfrage senden? Die Spieler bekommen dann eine zweite Umfrage und eine zweite E-Mail.`;
+      if (!window.confirm(text)) return;
+    }
 
     const { data: eigene } = await supabase
       .from("mannschaften")
@@ -1643,6 +1656,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     }); // bewusst nicht awaited
 
     setFehler(null);
+    await laden(); // wichtig: sonst zeigt der Knopf weiter "Aushilfe anfragen"
     window.alert(`Anfrage an die ${untere.name} ist raus (${empfaengerIds.length} Spieler). Sobald jemand zusagt, bekommst du eine E-Mail und kannst ihn in den Umfragen einplanen.`);
     } catch (f) {
       // Ohne diesen Fang blieb der Knopf bei einem unerwarteten Fehler auf "sende…" stehen
@@ -1911,7 +1925,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       return (
         <button
           onClick={() => aushilfeAnfragen(spiel)}
-          disabled={anfrageLadendId === spiel.id}
+          disabled={Boolean(anfrageLadendId)}
           className={`${groesse} underline font-semibold`}
           style={{ color: COLORS.petrol }}
         >
@@ -1949,7 +1963,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
         {darfPlanen && eingeplant === 0 && (
           <button
             onClick={() => aushilfeAnfragen(spiel)}
-            disabled={anfrageLadendId === spiel.id}
+            disabled={Boolean(anfrageLadendId)}
             className="underline text-gray-400"
             style={{ fontSize: "10px" }}
           >
