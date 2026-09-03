@@ -1515,6 +1515,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [verlegungLadend, setVerlegungLadend] = useState(false);
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
   const [aushilfen, setAushilfen] = useState([]);
+  const [abschlussLaeuft, setAbschlussLaeuft] = useState(null);
   const [anfrageLadendId, setAnfrageLadendId] = useState(null);
   const [anfragen, setAnfragen] = useState([]);
   const [aufstellungen, setAufstellungen] = useState({});
@@ -4555,16 +4556,22 @@ function Umfragen({ profil, zielUmfrageId }) {
 
   // Aushilfe-Anfrage beenden und alle Gefragten über das Ergebnis informieren
   async function anfrageAbschliessen(umfrage) {
+    if (abschlussLaeuft) return; // verhindert doppelten Versand bei mehrfachem Tippen
     setFehler(null);
-    const { error } = await supabase.from("umfragen").update({ aktiv: false }).eq("id", umfrage.id);
-    if (error) return setFehler(error.message);
-    const { data, error: mailFehler } = await supabase.functions.invoke("notify-aushilfe-abschluss", {
-      body: { umfrageId: umfrage.id },
-    });
-    if (mailFehler || data?.error) {
-      setFehler(`Die Umfrage wurde beendet, die Info-Mail schlug aber fehl: ${await echteFehlermeldung(mailFehler, data)}`);
+    setAbschlussLaeuft(umfrage.id);
+    try {
+      const { error } = await supabase.from("umfragen").update({ aktiv: false }).eq("id", umfrage.id);
+      if (error) return setFehler(error.message);
+      const { data, error: mailFehler } = await supabase.functions.invoke("notify-aushilfe-abschluss", {
+        body: { umfrageId: umfrage.id },
+      });
+      if (mailFehler || data?.error) {
+        setFehler(`Die Umfrage wurde beendet, die Info-Mail schlug aber fehl: ${await echteFehlermeldung(mailFehler, data)}`);
+      }
+      await laden();
+    } finally {
+      setAbschlussLaeuft(null);
     }
-    laden();
   }
 
   async function terminAnsetzen(umfrage, datumTag) {
@@ -4881,6 +4888,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               aushilfen={aushilfen.filter((a) => a.spiel_id === u.bezug_spiel_id)}
               onAushilfeUmschalten={aushilfeUmschalten}
               onAnfrageAbschliessen={() => anfrageAbschliessen(u)}
+              abschlussLaeuft={abschlussLaeuft === u.id}
             />
           );
         })
@@ -4897,7 +4905,7 @@ function terminAusOption(option) {
   return `${jahr}-${monat}-${tag}`;
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten, onAnfrageAbschliessen }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten, onAnfrageAbschliessen, abschlussLaeuft = false }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
@@ -5118,10 +5126,11 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
                       {aushilfen.length > 0 && umfrage.aktiv !== false && (
                         <button
                           onClick={onAnfrageAbschliessen}
+                          disabled={abschlussLaeuft}
                           className="mt-1 text-[11px] px-2 py-1 rounded-md font-semibold border"
-                          style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+                          style={{ borderColor: COLORS.petrol, color: COLORS.petrol, opacity: abschlussLaeuft ? 0.5 : 1 }}
                         >
-                          Anfrage abschließen & alle informieren
+                          {abschlussLaeuft ? "Sende Mails…" : "Anfrage abschließen & alle informieren"}
                         </button>
                       )}
                     </div>
