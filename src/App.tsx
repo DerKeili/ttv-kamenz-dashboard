@@ -1501,7 +1501,7 @@ function Tabelle({ saison, profil }) {
 
 /* ---------- Spielerplanung ---------- */
 
-function Spielerplanung({ saison, profil }) {
+function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [runde, setRunde] = useState("Hinrunde");
   const [spiele, setSpiele] = useState([]);
   const [spieler, setSpieler] = useState([]);
@@ -1516,6 +1516,7 @@ function Spielerplanung({ saison, profil }) {
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
   const [aushilfen, setAushilfen] = useState([]);
   const [anfrageLadendId, setAnfrageLadendId] = useState(null);
+  const [anfragen, setAnfragen] = useState([]);
   const [aufstellungen, setAufstellungen] = useState({});
   const [aufstellungFuer, setAufstellungFuer] = useState(null);
   const [meldung, setMeldung] = useState([]);
@@ -1746,6 +1747,33 @@ function Spielerplanung({ saison, profil }) {
     }
     setAushilfen(aushilfenListe);
 
+    // Bereits gestellte Aushilfe-Anfragen samt Zusagen — damit sichtbar wird,
+    // ob schon gefragt wurde und was dabei herauskam
+    if (spielIds.length > 0) {
+      const { data: anfragenDaten } = await supabase
+        .from("umfragen")
+        .select("id, titel, erstellt_am, aktiv, bezug_spiel_id, mannschaft_id, optionen")
+        .eq("art", "aushilfe")
+        .in("bezug_spiel_id", spielIds);
+
+      const anfrageIds = (anfragenDaten ?? []).map((u) => u.id);
+      let antworten = [];
+      if (anfrageIds.length > 0) {
+        const { data: antwortenDaten } = await supabase
+          .from("umfrage_antworten")
+          .select("umfrage_id, spieler_id, ausgewaehlte_optionen")
+          .in("umfrage_id", anfrageIds);
+        antworten = antwortenDaten ?? [];
+      }
+      setAnfragen((anfragenDaten ?? []).map((u) => ({
+        ...u,
+        zusagen: antworten.filter(
+          (a) => a.umfrage_id === u.id && (a.ausgewaehlte_optionen ?? []).some((o) => String(o).toLowerCase().startsWith("ja"))
+        ).length,
+        antwortenGesamt: antworten.filter((a) => a.umfrage_id === u.id).length,
+      })));
+    }
+
     // Fertige Aufstellungen und die offizielle Mannschaftsmeldung des Verbands
     if (spielIds.length > 0) {
       const { data: aufstellungsDaten } = await supabase
@@ -1870,6 +1898,66 @@ function Spielerplanung({ saison, profil }) {
         },
       }); // bewusst nicht awaited – E-Mail-Versand soll die Oberfläche nicht blockieren
     }
+  }
+
+  // Zustand der Aushilfe-Anfrage für ein Spiel: nicht gefragt, läuft, oder erledigt
+  function AushilfeStatus({ spiel, klein = false }) {
+    const anfrage = anfragen.find((a) => a.bezug_spiel_id === spiel.id);
+    const eingeplant = aushilfen.filter((a) => a.spiel_id === spiel.id).length;
+    const groesse = klein ? "text-[10px]" : "text-xs";
+
+    if (!anfrage) {
+      if (!darfPlanen) return null;
+      return (
+        <button
+          onClick={() => aushilfeAnfragen(spiel)}
+          disabled={anfrageLadendId === spiel.id}
+          className={`${groesse} underline font-semibold`}
+          style={{ color: COLORS.petrol }}
+        >
+          {anfrageLadendId === spiel.id ? "sende…" : "Aushilfe anfragen"}
+        </button>
+      );
+    }
+
+    const gestellt = new Date(anfrage.erstellt_am).toLocaleString("de-DE", {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+
+    return (
+      <span className={`${groesse} text-right`}>
+        {eingeplant > 0 ? (
+          <span className="font-semibold" style={{ color: COLORS.petrol }}>
+            ✓ {eingeplant === 1 ? "1 Aushilfe eingeplant" : `${eingeplant} Aushilfen eingeplant`}
+          </span>
+        ) : anfrage.zusagen > 0 ? (
+          <button
+            onClick={() => onOeffneUmfragen?.(anfrage.id)}
+            className="font-semibold underline"
+            style={{ color: COLORS.orangeDeep }}
+          >
+            {anfrage.zusagen === 1 ? "1 Zusage" : `${anfrage.zusagen} Zusagen`} — jetzt einplanen
+          </button>
+        ) : (
+          <span className="text-gray-400">
+            {anfrage.antwortenGesamt > 0 ? "bisher nur Absagen" : "noch keine Rückmeldung"}
+          </span>
+        )}
+        <span className="block text-gray-400" style={{ fontSize: "10px" }}>
+          angefragt am {gestellt} Uhr
+        </span>
+        {darfPlanen && eingeplant === 0 && (
+          <button
+            onClick={() => aushilfeAnfragen(spiel)}
+            disabled={anfrageLadendId === spiel.id}
+            className="underline text-gray-400"
+            style={{ fontSize: "10px" }}
+          >
+            {anfrageLadendId === spiel.id ? "sende…" : "erneut anfragen"}
+          </button>
+        )}
+      </span>
+    );
   }
 
   // Wer steht für dieses Spiel zur Verfügung? Zusagen plus eingeplante Aushilfen
@@ -2111,16 +2199,7 @@ function Spielerplanung({ saison, profil }) {
                         {ja}/{benoetigteSpieler} zugesagt
                       </span>
                       <span className="flex flex-col items-end gap-1">
-                        {kritisch && darfPlanen && !gesperrt && (
-                          <button
-                            onClick={() => aushilfeAnfragen(s)}
-                            disabled={anfrageLadendId === s.id}
-                            className="text-xs underline font-semibold"
-                            style={{ color: COLORS.petrol }}
-                          >
-                            {anfrageLadendId === s.id ? "sende…" : "Aushilfe anfragen"}
-                          </button>
-                        )}
+                        {kritisch && !gesperrt && <AushilfeStatus spiel={s} />}
                         {!gesperrt && (aufstellungen[s.id] || (darfPlanen && ja >= benoetigteSpieler)) && (
                           <button
                             onClick={() => setAufstellungFuer(s)}
@@ -2404,15 +2483,10 @@ function Spielerplanung({ saison, profil }) {
                           {kritisch && <AlertTriangle size={12} />}
                           {ja}/{benoetigteSpieler} zugesagt
                         </div>
-                        {kritisch && darfPlanen && !spielGesperrt(s) && (
-                          <button
-                            onClick={() => aushilfeAnfragen(s)}
-                            disabled={anfrageLadendId === s.id}
-                            className="mt-1 text-[10px] underline font-semibold block mx-auto"
-                            style={{ color: COLORS.petrol }}
-                          >
-                            {anfrageLadendId === s.id ? "sende…" : "Aushilfe anfragen"}
-                          </button>
+                        {kritisch && !spielGesperrt(s) && (
+                          <div className="mt-1 flex justify-center">
+                            <AushilfeStatus spiel={s} klein />
+                          </div>
                         )}
                         {!spielGesperrt(s) && (aufstellungen[s.id] || (darfPlanen && ja >= benoetigteSpieler)) && (
                           <button
@@ -8355,7 +8429,13 @@ export default function App() {
                 <>
                   {tab === "tabelle" && <Tabelle saison={angezeigteSaison} profil={profil} />}
                   {tab === "ergebnisse" && <Ergebnisse saison={angezeigteSaison} profil={profil} />}
-                  {tab === "planung" && <Spielerplanung saison={angezeigteSaison} profil={profil} />}
+                  {tab === "planung" && (
+                    <Spielerplanung
+                      saison={angezeigteSaison}
+                      profil={profil}
+                      onOeffneUmfragen={(umfrageId) => { setZielUmfrageId(umfrageId); setTab("umfragen"); }}
+                    />
+                  )}
                   {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
                   {tab === "analyse" && <Analyse saison={angezeigteSaison} profil={profil} />}
                 </>
