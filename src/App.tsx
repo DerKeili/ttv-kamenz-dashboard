@@ -277,16 +277,26 @@ function schichtSichtbarFuer(spieler, profil) {
   return spieler?.id === profil?.id || spieler?.schicht_sichtbar === true;
 }
 
+// Hat die Person heute Geburtstag? (Jahr spielt keine Rolle)
+function hatHeuteGeburtstag(person) {
+  if (!person?.geburtstag) return false;
+  const gd = new Date(person.geburtstag);
+  const heute = new Date();
+  return gd.getDate() === heute.getDate() && gd.getMonth() === heute.getMonth();
+}
+
 function naechsterGeburtstag(spielerListe) {
   if (!spielerListe || spielerListe.length === 0) return null;
   const heute = new Date();
+  // Auf Mitternacht setzen, damit der heutige Geburtstag den ganzen Tag stehen bleibt
+  const heuteBeginn = new Date(heute.getFullYear(), heute.getMonth(), heute.getDate());
   const mitTag = spielerListe
     .filter((s) => s.geburtstag)
     .map((s) => {
       const gd = new Date(s.geburtstag);
       let next = new Date(heute.getFullYear(), gd.getMonth(), gd.getDate());
-      if (next < heute) next = new Date(heute.getFullYear() + 1, gd.getMonth(), gd.getDate());
-      return { ...s, next };
+      if (next < heuteBeginn) next = new Date(heute.getFullYear() + 1, gd.getMonth(), gd.getDate());
+      return { ...s, next, istHeute: next.getTime() === heuteBeginn.getTime() };
     });
   mitTag.sort((a, b) => a.next - b.next);
   return mitTag[0] ?? null;
@@ -899,6 +909,20 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
 
   return (
     <div className="space-y-6">
+      {hatHeuteGeburtstag(profil) && (
+        <div
+          className="rounded-lg p-4 text-white"
+          style={{ background: `linear-gradient(135deg, #F0895C, ${COLORS.orange} 60%, ${COLORS.orangeDeep})` }}
+        >
+          <p className="font-bold text-lg" style={{ fontFamily: "Oswald, sans-serif" }}>
+            🎉 Alles Gute zum Geburtstag, {profil.vorname}!
+          </p>
+          <p className="text-sm opacity-90 mt-1">
+            Der ganze TTV 97 Kamenz gratuliert dir — feier schön und bleib gesund.
+          </p>
+        </div>
+      )}
+
       <News profil={profil} />
 
       <div className="grid md:grid-cols-3 gap-4">
@@ -940,7 +964,9 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
               <p className="text-lg font-bold" style={{ color: COLORS.petrolDark, fontFamily: "Oswald, sans-serif" }}>
                 {geburtstag.vorname} {geburtstag.nachname}
               </p>
-              <p className="text-sm text-gray-500 mt-1">{formatDatum(geburtstag.next.toISOString())}</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {geburtstag.istHeute ? "🎉 heute!" : formatDatum(geburtstag.next.toISOString())}
+              </p>
               <button
                 onClick={() => geburtstagHerunterladen(geburtstag)}
                 className="text-xs mt-2 inline-flex items-center gap-1 font-medium underline"
@@ -1569,6 +1595,7 @@ function Spielerplanung({ saison, profil }) {
     )) return;
 
     setAnfrageLadendId(spiel.id);
+    try {
     const { data: neueUmfrage, error } = await supabase
       .from("umfragen")
       .insert({
@@ -1587,21 +1614,41 @@ function Spielerplanung({ saison, profil }) {
       .single();
 
     if (error || !neueUmfrage) {
-      setAnfrageLadendId(null);
-      return setFehler(error?.message ?? "Die Umfrage konnte nicht angelegt werden.");
+      return setFehler(`Die Umfrage konnte nicht angelegt werden: ${error?.message ?? "unbekannter Grund"}`);
     }
 
-    const { data: empfaenger } = await supabase.from("profiles").select("id").eq("mannschaft_id", untere.id);
-    const empfaengerIds = (empfaenger ?? []).map((e) => e.id);
-    if (empfaengerIds.length > 0) {
-      await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
-      supabase.functions.invoke("notify-neue-umfrage", {
-        body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
-      }); // bewusst nicht awaited
+    const { data: empfaenger, error: empfaengerFehler } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("mannschaft_id", untere.id);
+    if (empfaengerFehler) {
+      return setFehler(`Die Umfrage wurde angelegt, die Empfänger konnten aber nicht geladen werden: ${empfaengerFehler.message}`);
     }
-    setAnfrageLadendId(null);
+
+    const empfaengerIds = (empfaenger ?? []).map((e) => e.id);
+    if (empfaengerIds.length === 0) {
+      return setFehler(`Die ${untere.name} hat keine Spieler mit Zugang — es konnte niemand angefragt werden.`);
+    }
+
+    const { error: zieleFehler } = await supabase
+      .from("umfrage_ziele")
+      .insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
+    if (zieleFehler) {
+      return setFehler(`Die Umfrage wurde angelegt, konnte aber niemandem zugeordnet werden: ${zieleFehler.message}`);
+    }
+
+    supabase.functions.invoke("notify-neue-umfrage", {
+      body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
+    }); // bewusst nicht awaited
+
     setFehler(null);
-    window.alert(`Anfrage an die ${untere.name} ist raus. Sobald jemand zusagt, bekommst du eine E-Mail und kannst ihn in den Umfragen einplanen.`);
+    window.alert(`Anfrage an die ${untere.name} ist raus (${empfaengerIds.length} Spieler). Sobald jemand zusagt, bekommst du eine E-Mail und kannst ihn in den Umfragen einplanen.`);
+    } catch (f) {
+      // Ohne diesen Fang blieb der Knopf bei einem unerwarteten Fehler auf "sende…" stehen
+      setFehler(`Unerwarteter Fehler: ${f?.message ?? String(f)}`);
+    } finally {
+      setAnfrageLadendId(null);
+    }
   }
 
   async function verlegungSpeichern(mitTermin) {
@@ -7460,25 +7507,22 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
         }).join("")
       : "";
 
-  const inhalt = `<!doctype html><html lang="de"><head><meta charset="utf-8">
-<title>Aufstellung ${heim} gegen ${gast}</title>
-<style>
-  @page { size: A4 portrait; margin: 14mm; }
-  body { font-family: Helvetica, Arial, sans-serif; color: #1a1a18; font-size: 11pt; }
-  h1 { font-size: 15pt; margin: 0 0 2mm; }
-  .kopf { border-bottom: 2px solid #0F2E2A; padding-bottom: 3mm; margin-bottom: 5mm; }
-  .zeile { display: flex; gap: 8mm; flex-wrap: wrap; font-size: 10pt; color: #444; }
-  h2 { font-size: 12pt; margin: 6mm 0 2mm; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
-  td, th { border: 1px solid #999; padding: 2mm 3mm; text-align: left; }
-  th { background: #e8e8e4; font-size: 10pt; }
-  .nr { width: 12mm; font-weight: bold; text-align: center; }
-  .leer { width: 22mm; }
-  .pass { width: 24mm; }
-  .fuss { margin-top: 8mm; font-size: 9pt; color: #666; }
-  .unterschrift { margin-top: 14mm; display: flex; gap: 12mm; }
-  .unterschrift div { flex: 1; border-top: 1px solid #999; padding-top: 2mm; font-size: 9pt; color: #666; }
-</style></head><body>
+  const inhalt = `<style>
+  #druckbereich { font-family: Helvetica, Arial, sans-serif; color: #1a1a18; font-size: 11pt; background: #fff; }
+  #druckbereich h1 { font-size: 15pt; margin: 0 0 2mm; }
+  #druckbereich .kopf { border-bottom: 2px solid #0F2E2A; padding-bottom: 3mm; margin-bottom: 5mm; }
+  #druckbereich .zeile { display: flex; gap: 8mm; flex-wrap: wrap; font-size: 10pt; color: #444; }
+  #druckbereich h2 { font-size: 12pt; margin: 6mm 0 2mm; }
+  #druckbereich table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
+  #druckbereich td, #druckbereich th { border: 1px solid #999; padding: 2mm 3mm; text-align: left; }
+  #druckbereich th { background: #e8e8e4; font-size: 10pt; }
+  #druckbereich .nr { width: 12mm; font-weight: bold; text-align: center; }
+  #druckbereich .leer { width: 22mm; }
+  #druckbereich .pass { width: 24mm; }
+  #druckbereich .fuss { margin-top: 8mm; font-size: 9pt; color: #666; }
+  #druckbereich .unterschrift { margin-top: 14mm; display: flex; gap: 12mm; }
+  #druckbereich .unterschrift div { flex: 1; border-top: 1px solid #999; padding-top: 2mm; font-size: 9pt; color: #666; }
+</style>
   <div class="kopf">
     <h1>${heim} &ndash; ${gast}</h1>
     <div class="zeile">
@@ -7501,27 +7545,39 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   <p class="fuss">
     Erstellt mit der Mannschafts-App des TTV 97 Kamenz e.V. Dies ist eine Aufstellungshilfe,
     kein amtlicher Spielbericht &ndash; Unterschriften und Ergebnisse bitte am Spieltag ergänzen.
-  </p>
-</body></html>`;
+  </p>`;
 
-  // Über ein verstecktes Fenster drucken, damit die App im Vordergrund bleibt
-  const rahmen = document.createElement("iframe");
-  rahmen.style.position = "fixed";
-  rahmen.style.right = "0";
-  rahmen.style.bottom = "0";
-  rahmen.style.width = "0";
-  rahmen.style.height = "0";
-  rahmen.style.border = "0";
-  document.body.appendChild(rahmen);
-  const dok = rahmen.contentWindow.document;
-  dok.open();
-  dok.write(inhalt);
-  dok.close();
-  rahmen.onload = () => {
-    rahmen.contentWindow.focus();
-    rahmen.contentWindow.print();
-    setTimeout(() => rahmen.remove(), 60000);
-  };
+  // iOS blockiert das Drucken aus einem versteckten Rahmen. Deshalb blenden wir den
+  // Bogen kurzzeitig in die Seite selbst ein und verstecken beim Drucken alles andere.
+  const alterBereich = document.getElementById("druckbereich");
+  if (alterBereich) alterBereich.remove();
+  const alterStil = document.getElementById("druckstil");
+  if (alterStil) alterStil.remove();
+
+  const stil = document.createElement("style");
+  stil.id = "druckstil";
+  stil.textContent = `
+    #druckbereich { display: none; }
+    @media print {
+      body > *:not(#druckbereich) { display: none !important; }
+      #druckbereich { display: block !important; position: static; }
+      @page { size: A4 portrait; margin: 14mm; }
+    }
+  `;
+  document.head.appendChild(stil);
+
+  const bereich = document.createElement("div");
+  bereich.id = "druckbereich";
+  bereich.innerHTML = inhalt;
+  document.body.appendChild(bereich);
+
+  window.print();
+
+  // Nach dem Druckdialog wieder aufräumen
+  setTimeout(() => {
+    bereich.remove();
+    stil.remove();
+  }, 1000);
 }
 
 function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbeiten, vorhanden, mannschaftName, onSchliessen, onGespeichert }) {
