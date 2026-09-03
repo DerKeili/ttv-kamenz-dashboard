@@ -1297,7 +1297,7 @@ function MannschaftsUebersicht({ profil }) {
     const { data: neueUmfrage, error } = await supabase
       .from("umfragen")
       .insert({
-        titel: `Aushilfe gesucht: ${eintrag.mannschaft.name} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
+        titel: `Aushilfe ${wochentagKurz(effektivesSpielDatum(eintrag.spiel))}, ${formatDatum(effektivesSpielDatum(eintrag.spiel))} gegen ${gegner} — ${eintrag.mannschaft.name} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
         beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${eintrag.spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
         optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
         mehrfachauswahl: false,
@@ -1613,7 +1613,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     const { data: neueUmfrage, error } = await supabase
       .from("umfragen")
       .insert({
-        titel: `Aushilfe gesucht: ${eigene?.name ?? "Mannschaft"} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
+        titel: `Aushilfe ${wochentagKurz(termin)}, ${formatDatum(termin)} gegen ${gegner} — ${eigene?.name ?? "Mannschaft"} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
         beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
         optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
         mehrfachauswahl: false,
@@ -4599,6 +4599,13 @@ function Umfragen({ profil, zielUmfrageId }) {
     laden();
   }
 
+  async function umfrageSpeichern(umfrageId, werte) {
+    setFehler(null);
+    const { error } = await supabase.from("umfragen").update(werte).eq("id", umfrageId);
+    if (error) return setFehler(error.message);
+    laden();
+  }
+
   async function beenden(umfrageId) {
     await supabase.from("umfragen").update({ endet_am: new Date().toISOString() }).eq("id", umfrageId);
     laden();
@@ -4848,6 +4855,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               hervorgehoben={u.id === zielUmfrageId}
               onAbstimmen={(gewaehlt) => abstimmen(u.id, u.mehrfachauswahl, gewaehlt)}
               onBeenden={() => beenden(u.id)}
+              onSpeichern={(werte) => umfrageSpeichern(u.id, werte)}
               onLoeschen={() => loeschen(u.id)}
               onTerminAnsetzen={terminAnsetzen}
               aushilfen={aushilfen.filter((a) => a.spiel_id === u.bezug_spiel_id)}
@@ -4868,10 +4876,13 @@ function terminAusOption(option) {
   return `${jahr}-${monat}-${tag}`;
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, aushilfen = [], onAushilfeUmschalten }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
+  const [bearbeiten, setBearbeiten] = useState(false);
+  const [entwurf, setEntwurf] = useState({ titel: "", beschreibung: "", endetAm: "" });
+  const [speichertGerade, setSpeichertGerade] = useState(false);
 
   const zeitAbgelaufen = Boolean(umfrage.endet_am) && new Date(umfrage.endet_am) <= new Date();
   const alleAbgestimmt = zielAnzahl > 0 && antworten.length >= zielAnzahl;
@@ -4911,7 +4922,7 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
             </span>
           )}
         </div>
-        {profil.ist_admin && (
+        {(profil.ist_admin || umfrage.erstellt_von === profil.id) && (
           <div className="flex flex-wrap items-center gap-2 shrink-0 ml-auto">
             {loeschenBestaetigen ? (
               <>
@@ -4925,6 +4936,20 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
               </>
             ) : (
               <>
+                <button
+                  onClick={() => {
+                    setEntwurf({
+                      titel: umfrage.titel ?? "",
+                      beschreibung: umfrage.beschreibung ?? "",
+                      endetAm: umfrage.endet_am ? umfrage.endet_am.slice(0, 10) : "",
+                    });
+                    setBearbeiten(true);
+                  }}
+                  className="text-xs underline"
+                  style={{ color: COLORS.petrol }}
+                >
+                  Bearbeiten
+                </button>
                 {!istBeendet && (
                   <button onClick={onBeenden} className="text-xs underline" style={{ color: COLORS.petrol }}>
                     Jetzt beenden
@@ -4938,7 +4963,66 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
           </div>
         )}
       </div>
-      {umfrage.beschreibung && <p className="text-sm text-gray-500 mb-3">{umfrage.beschreibung}</p>}
+      {bearbeiten ? (
+        <div className="space-y-2 mb-3 p-3 rounded-md" style={{ background: COLORS.paper }}>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Titel</label>
+            <input
+              value={entwurf.titel}
+              onChange={(e) => setEntwurf({ ...entwurf, titel: e.target.value })}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Beschreibung</label>
+            <textarea
+              value={entwurf.beschreibung}
+              onChange={(e) => setEntwurf({ ...entwurf, beschreibung: e.target.value })}
+              rows={3}
+              className="w-full border rounded-md px-3 py-2 text-sm resize-y"
+            />
+          </div>
+          <div className="min-w-0">
+            <label className="block text-xs text-gray-400 mb-1">Läuft bis</label>
+            <input
+              type="date"
+              value={entwurf.endetAm}
+              onChange={(e) => setEntwurf({ ...entwurf, endetAm: e.target.value })}
+              style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+            />
+          </div>
+          <p className="text-[11px] text-gray-400">
+            Die Antwortmöglichkeiten bleiben unverändert — sonst würden bereits abgegebene Stimmen
+            nicht mehr zur Frage passen. Es geht auch keine neue E-Mail raus.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={async () => {
+                if (!entwurf.titel.trim()) return;
+                setSpeichertGerade(true);
+                await onSpeichern?.({
+                  titel: entwurf.titel.trim(),
+                  beschreibung: entwurf.beschreibung.trim() || null,
+                  endet_am: entwurf.endetAm ? new Date(`${entwurf.endetAm}T23:59:59`).toISOString() : null,
+                });
+                setSpeichertGerade(false);
+                setBearbeiten(false);
+              }}
+              disabled={speichertGerade}
+              className="px-3 py-1.5 rounded-md text-white text-xs font-semibold"
+              style={{ background: COLORS.orange, opacity: speichertGerade ? 0.6 : 1 }}
+            >
+              {speichertGerade ? "Speichere…" : "Speichern"}
+            </button>
+            <button onClick={() => setBearbeiten(false)} className="px-3 py-1.5 rounded-md text-xs border">
+              Abbrechen
+            </button>
+          </div>
+        </div>
+      ) : (
+        umfrage.beschreibung && <p className="text-sm text-gray-500 mb-3">{umfrage.beschreibung}</p>
+      )}
       {!istBeendet && umfrage.endet_am && (
         <p className="text-xs text-gray-400 mb-2">Endet am {formatDatum(umfrage.endet_am)}</p>
       )}
