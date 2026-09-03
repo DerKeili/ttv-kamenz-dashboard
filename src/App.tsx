@@ -1515,7 +1515,6 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [verlegungLadend, setVerlegungLadend] = useState(false);
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
   const [aushilfen, setAushilfen] = useState([]);
-  const [abschlussLaeuft, setAbschlussLaeuft] = useState(null);
   const [anfrageLadendId, setAnfrageLadendId] = useState(null);
   const [anfragen, setAnfragen] = useState([]);
   const [aufstellungen, setAufstellungen] = useState({});
@@ -4452,6 +4451,7 @@ function Umfragen({ profil, zielUmfrageId }) {
   const [umfragen, setUmfragen] = useState([]);
   const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({});
   const [aushilfen, setAushilfen] = useState([]);
+  const [abschlussLaeuft, setAbschlussLaeuft] = useState(null);
   const [zieleNachUmfrage, setZieleNachUmfrage] = useState({}); // { [umfrageId]: spielerId[] } – leer = "alle"
   const [spielerListe, setSpielerListe] = useState([]);
   const [mannschaften, setMannschaften] = useState([]);
