@@ -4931,28 +4931,31 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
 
   return (
     <div id={`umfrage-${umfrage.id}`} className="bg-white rounded-lg border p-5" style={hervorgehoben ? { boxShadow: `0 0 0 2px ${COLORS.orange}` } : {}}>
-      <div className="flex flex-wrap items-start justify-between gap-2 mb-1">
-        <div className="flex items-start gap-2 min-w-0 flex-1">
+      <div className="mb-1">
+        {/* Titel über die volle Breite, damit er nicht Wort für Wort umbricht */}
+        <div className="flex items-start gap-2 min-w-0">
           <Vote size={16} className="mt-0.5 shrink-0" style={{ color: COLORS.orange }} />
-          <h3 className="font-semibold text-sm min-w-0" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
+          <h3 className="font-semibold text-sm min-w-0 flex-1" style={{ color: COLORS.anthracite }}>{umfrage.titel}</h3>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 mt-1.5 pl-6">
           {umfrage.art === "verlegung" && (
-            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white flex items-center gap-1" style={{ background: COLORS.konflikt }}>
+            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white flex items-center gap-1 shrink-0" style={{ background: COLORS.konflikt }}>
               <CalendarClock size={10} /> Verlegung
             </span>
           )}
           {umfrage.art === "aushilfe" && (
-            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full shrink-0" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
               Aushilfe
             </span>
           )}
           {istBeendet && (
-            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white" style={{ background: COLORS.anthracite }}>
+            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: COLORS.anthracite }}>
               Beendet
             </span>
           )}
-        </div>
         {(profil.ist_admin || umfrage.erstellt_von === profil.id) && (
-          <div className="flex flex-wrap items-center gap-2 shrink-0 ml-auto">
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
             {loeschenBestaetigen ? (
               <>
                 <span className="text-xs text-gray-500 w-full sm:w-auto">Wirklich löschen?</span>
@@ -4991,6 +4994,7 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
             )}
           </div>
         )}
+        </div>
       </div>
       {bearbeiten ? (
         <div className="space-y-2 mb-3 p-3 rounded-md" style={{ background: COLORS.paper }}>
