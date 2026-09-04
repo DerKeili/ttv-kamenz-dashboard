@@ -1262,7 +1262,7 @@ function MannschaftsUebersicht({ profil }) {
           .eq("mannschaft_id", m.id)
           .eq("aktiv", true)
           .maybeSingle();
-        if (!saison) return { mannschaft: m, spiel: null, jaAnzahl: 0 };
+        if (!saison) return { mannschaft: m, spiel: null, jaAnzahl: 0, aushilfenAnzahl: 0, anfrageLaeuft: false };
 
         const { data: spiel } = await supabase
           .from("verbands_spiele")
@@ -1272,11 +1272,28 @@ function MannschaftsUebersicht({ profil }) {
           .order("datum")
           .limit(1)
           .maybeSingle();
-        if (!spiel) return { mannschaft: m, spiel: null, jaAnzahl: 0 };
+        if (!spiel) return { mannschaft: m, spiel: null, jaAnzahl: 0, aushilfenAnzahl: 0, anfrageLaeuft: false };
 
-        const { data: meldungen } = await supabase.from("spielerplanung_meldungen").select("status").eq("spiel_id", spiel.id);
-        const jaAnzahl = (meldungen ?? []).filter((x) => x.status === "ja").length;
-        return { mannschaft: m, spiel, jaAnzahl };
+        // Zusagen, eingeplante Aushilfen und bereits gestellte Anfragen zusammen holen —
+        // ohne die Aushilfen meldet das Dashboard "es fehlt jemand", obwohl der
+        // Ersatz über die Spielerplanung längst bestätigt wurde.
+        const [{ data: meldungen }, { data: aushilfenDaten }, { data: anfragenDaten }] = await Promise.all([
+          supabase.from("spielerplanung_meldungen").select("spieler_id, status").eq("spiel_id", spiel.id),
+          supabase.from("spiel_aushilfen").select("spieler_id").eq("spiel_id", spiel.id),
+          supabase.from("umfragen").select("id, aktiv").eq("art", "aushilfe").eq("bezug_spiel_id", spiel.id),
+        ]);
+
+        const jaIds = (meldungen ?? []).filter((x) => x.status === "ja").map((x) => x.spieler_id);
+        const helferIds = [...new Set((aushilfenDaten ?? []).map((a) => a.spieler_id))];
+        const jaAnzahl = new Set([...jaIds, ...helferIds]).size;
+
+        return {
+          mannschaft: m,
+          spiel,
+          jaAnzahl,
+          aushilfenAnzahl: helferIds.length,
+          anfrageLaeuft: (anfragenDaten ?? []).some((a) => a.aktiv !== false),
+        };
       })
     );
 
@@ -1331,7 +1348,7 @@ function MannschaftsUebersicht({ profil }) {
       <SectionLabel icon={Users}>Nächste Spiele aller Mannschaften</SectionLabel>
       <div className="space-y-3">
         {uebersicht.map((eintrag) => {
-          const { mannschaft, spiel, jaAnzahl } = eintrag;
+          const { mannschaft, spiel, jaAnzahl, aushilfenAnzahl = 0, anfrageLaeuft = false } = eintrag;
           const benoetigt = mannschaft.benoetigte_spieler ?? 4;
           const fehlend = spiel ? Math.max(0, benoetigt - jaAnzahl) : 0;
           const untereMannschaft = mannschaft.hierarchie_stufe
@@ -1352,9 +1369,16 @@ function MannschaftsUebersicht({ profil }) {
                 )}
               </div>
               {spiel ? (
-                <p className="text-xs text-gray-500 mt-1">
-                  {formatDatum(spiel.datum)} · gegen {spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam}
-                </p>
+                <>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {formatDatum(spiel.datum)} · gegen {spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam}
+                  </p>
+                  {aushilfenAnzahl > 0 && (
+                    <p className="text-[11px] mt-0.5" style={{ color: COLORS.petrol }}>
+                      ✓ {aushilfenAnzahl === 1 ? "1 Aushilfe eingeplant" : `${aushilfenAnzahl} Aushilfen eingeplant`} (mitgezählt)
+                    </p>
+                  )}
+                </>
               ) : (
                 <p className="text-xs text-gray-400 mt-1">Kein anstehendes Spiel terminiert.</p>
               )}
@@ -1363,6 +1387,12 @@ function MannschaftsUebersicht({ profil }) {
                 untereMannschaft ? (
                   gesendetIds.includes(mannschaft.id) ? (
                     <p className="text-xs mt-2" style={{ color: COLORS.petrol }}>Umfrage an {untereMannschaft.name} verschickt.</p>
+                  ) : anfrageLaeuft ? (
+                    // Für dieses Spiel läuft schon eine Aushilfe-Anfrage — sonst
+                    // gingen zweite Umfrage und zweite E-Mail an alle raus.
+                    <p className="text-xs mt-2 text-gray-500">
+                      Eine Aushilfe-Anfrage läuft bereits — Stand und Auswahl siehst du in der Spielerplanung.
+                    </p>
                   ) : (
                     <>
                     <button
@@ -1898,7 +1928,13 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
 
     if (fremdeZeile) schreibschutzZeitVerlaengern();
 
-    const jaAnzahl = Object.values(aktualisierteMeldungenFuerSpiel).filter((v) => v === "ja").length;
+    // Eingeplante Aushilfen zählen als verfügbare Spieler — sonst geht die
+    // Warn-E-Mail raus, obwohl der Ersatz schon feststeht.
+    const jaIdsFuerSpiel = Object.entries(aktualisierteMeldungenFuerSpiel)
+      .filter(([, v]) => v === "ja")
+      .map(([id]) => id);
+    const helferIdsFuerSpiel = aushilfen.filter((a) => a.spiel_id === spielId).map((a) => a.spieler_id);
+    const jaAnzahl = new Set([...jaIdsFuerSpiel, ...helferIdsFuerSpiel]).size;
     if (neuerStatus === "nein" || jaAnzahl < benoetigteSpieler) {
       const spielerName = spieler.find((s) => s.id === spielerId);
       supabase.functions.invoke("notify-spielplan-warnung", {
@@ -1983,8 +2019,22 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     return [...eigene, ...helfer];
   }
 
+  // Wie viele Spieler stehen für ein Spiel bereit? Eigene Zusagen PLUS bereits
+  // eingeplante Aushilfen. Ohne die Aushilfen meldet die Ampel weiterhin
+  // "es fehlt jemand", obwohl der Ersatz längst feststeht.
+  // Über ein Set, damit ein Helfer, der zusätzlich eine eigene Meldung hat,
+  // nicht doppelt gezählt wird.
   function countJa(spielId) {
-    return Object.values(meldungen[spielId] ?? {}).filter((v) => v === "ja").length;
+    const jaIds = Object.entries(meldungen[spielId] ?? {})
+      .filter(([, v]) => v === "ja")
+      .map(([spielerId]) => spielerId);
+    const helferIds = aushilfen.filter((a) => a.spiel_id === spielId).map((a) => a.spieler_id);
+    return new Set([...jaIds, ...helferIds]).size;
+  }
+
+  // Nur die eingeplanten Aushilfen — für den Hinweis "davon 1 Aushilfe"
+  function countAushilfen(spielId) {
+    return new Set(aushilfen.filter((a) => a.spiel_id === spielId).map((a) => a.spieler_id)).size;
   }
 
   if (ladend) return <Leerzustand text="Lade Spielerplanung…" />;
@@ -2209,6 +2259,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                       >
                         {kritisch && <AlertTriangle size={12} />}
                         {ja}/{benoetigteSpieler} zugesagt
+                        {helfer.length > 0 && (
+                          <span className="font-normal opacity-80">
+                            (davon {helfer.length === 1 ? "1 Aushilfe" : `${helfer.length} Aushilfen`})
+                          </span>
+                        )}
                       </span>
                       <span className="flex flex-col items-end gap-1">
                         {kritisch && !gesperrt && <AushilfeStatus spiel={s} />}
@@ -2495,6 +2550,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                           {kritisch && <AlertTriangle size={12} />}
                           {ja}/{benoetigteSpieler} zugesagt
                         </div>
+                        {countAushilfen(s.id) > 0 && (
+                          <div className="text-[9px] text-gray-400 mt-0.5">
+                            inkl. {countAushilfen(s.id) === 1 ? "1 Aushilfe" : `${countAushilfen(s.id)} Aushilfen`}
+                          </div>
+                        )}
                         {kritisch && !spielGesperrt(s) && (
                           <div className="mt-1 flex justify-center">
                             <AushilfeStatus spiel={s} klein />
