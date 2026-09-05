@@ -717,7 +717,7 @@ function baueOnboardingSchritte(profil) {
       icon: Vote,
       titel: "Umfragen & Nachrichten",
       text: verwaltet
-        ? "Bei Umfragen einfach abstimmen — oder als " + (admin ? "Admin" : "Mannschaftsführer") + " selbst welche erstellen. Fehlen einer Mannschaft Spieler, fragt die App automatisch bei der darunter liegenden Mannschaft nach; meldet sich dort in drei Tagen niemand, schlägt sie von allein freie Ausweichtermine für eine Spielverlegung zur Abstimmung vor. Im Nachrichten-Postfach schreibst du direkt mit anderen Spielern, nach Mannschaften sortiert."
+        ? "Bei Umfragen einfach abstimmen — oder als " + (admin ? "Admin" : "Mannschaftsführer") + " selbst welche erstellen. Fehlen einer Mannschaft Spieler, fragt die App automatisch bei der darunter liegenden Mannschaft nach; meldet sich dort bis zum Ende der Anfrage-Frist niemand, schlägt sie von allein freie Ausweichtermine für eine Spielverlegung zur Abstimmung vor. Im Nachrichten-Postfach schreibst du direkt mit anderen Spielern, nach Mannschaften sortiert."
         : "Bei Umfragen einfach abstimmen — manchmal fragt eine andere Mannschaft nach Aushilfe, manchmal geht es um einen Ausweichtermin für ein Spiel. Im Nachrichten-Postfach schreibst du direkt mit anderen Spielern, nach Mannschaften sortiert.",
     },
     {
@@ -1061,7 +1061,8 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
 
    Ablauf:
    1. Eine Mannschaft bittet die darunter liegende Mannschaft per Umfrage um Aushilfe.
-   2. Meldet sich innerhalb von 3 Tagen niemand mit "Ja" (oder haben vorher schon alle
+   2. Meldet sich bis zum Ende der Laufzeit niemand mit "Ja" (Vorgabe 5 Tage, beim
+      Anlegen frei einstellbar — oder haben vorher schon alle
       Angefragten abgesagt), wird die Umfrage automatisch beendet.
    3. Sofort danach entsteht eine neue Umfrage für die eigene Mannschaft mit konkreten
       Ausweichterminen, auf die das Spiel verlegt werden könnte (Mehrfachauswahl).
@@ -1073,8 +1074,111 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
    Geprüft wird beim Start der App durch Admins und Mannschaftsführer — nur sie haben
    die nötigen Schreibrechte. */
 
-const AUSHILFE_FRIST_TAGE = 3;
+// Laufzeit einer Aushilfe-Anfrage: 5 Tage als Vorgabe, beim Start jedes Mal
+// abgefragt und frei einstellbar.
+const AUSHILFE_FRIST_TAGE_STANDARD = 5;
+const AUSHILFE_FRIST_TAGE_MIN = 1;
+const AUSHILFE_FRIST_TAGE_MAX = 21;
 const VERLEGUNG_MAX_VORSCHLAEGE = 5;
+
+// Mögliche Laufzeit für eine Anfrage: nie über den Spieltag hinaus, danach
+// nützt eine Zusage nichts mehr.
+function aushilfeMaxTage(spielDatum) {
+  const tageBisSpiel = spielDatum
+    ? Math.floor((new Date(spielDatum).getTime() - Date.now()) / 86400000)
+    : AUSHILFE_FRIST_TAGE_MAX;
+  return Math.max(AUSHILFE_FRIST_TAGE_MIN, Math.min(AUSHILFE_FRIST_TAGE_MAX, tageBisSpiel));
+}
+
+/* Dialog vor dem Absenden einer Aushilfe-Anfrage.
+   Hier wird gewählt, welche der tiefer eingestuften Mannschaften gefragt werden
+   und wie lange die Umfrage laufen soll. Je angekreuzter Mannschaft entsteht
+   eine eigene Umfrage — so bleibt die Sichtbarkeit je Mannschaft sauber getrennt. */
+function AushilfeAnfrageDialog({ info, onAbbrechen, onSenden }) {
+  const [gewaehlt, setGewaehlt] = useState(() => info.mannschaften.slice(0, 1).map((m) => m.id));
+  const [tage, setTage] = useState(String(Math.min(AUSHILFE_FRIST_TAGE_STANDARD, info.maxTage)));
+  const [sendet, setSendet] = useState(false);
+
+  const tageZahl = Math.round(Number(String(tage).trim().replace(",", ".")));
+  const tageGueltig = Number.isFinite(tageZahl) && tageZahl >= AUSHILFE_FRIST_TAGE_MIN && tageZahl <= info.maxTage;
+  const bereit = gewaehlt.length > 0 && tageGueltig && !sendet;
+
+  function umschalten(id) {
+    setGewaehlt((alt) => (alt.includes(id) ? alt.filter((x) => x !== id) : [...alt, id]));
+  }
+
+  const endet = tageGueltig ? new Date(Date.now() + tageZahl * 24 * 60 * 60 * 1000) : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="bg-white rounded-lg max-w-md w-full p-6 max-h-[85vh] overflow-y-auto">
+        <h3 className="font-bold mb-1" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>
+          Aushilfe anfragen
+        </h3>
+        <p className="text-sm text-gray-600 mb-4">
+          {info.gegner} am {info.datumText}{info.zeit ? ` um ${info.zeit}` : ""} — es {info.fehlend === 1 ? "fehlt 1 Spieler" : `fehlen ${info.fehlend} Spieler`}.
+        </p>
+
+        <p className="text-sm font-semibold mb-2" style={{ color: COLORS.anthracite }}>Wen fragen?</p>
+        <div className="space-y-2 mb-4">
+          {info.mannschaften.map((m) => (
+            <label key={m.id} className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={gewaehlt.includes(m.id)}
+                onChange={() => umschalten(m.id)}
+                style={{ accentColor: COLORS.orange }}
+              />
+              <span>{m.name}</span>
+            </label>
+          ))}
+        </div>
+        {gewaehlt.length === 0 && (
+          <p className="text-xs mb-4" style={{ color: COLORS.orangeDeep }}>Bitte mindestens eine Mannschaft auswählen.</p>
+        )}
+        {gewaehlt.length > 1 && (
+          <p className="text-xs text-gray-500 mb-4">
+            Jede angekreuzte Mannschaft bekommt eine eigene Umfrage. Melden sich mehrere, entscheidest du beim Einplanen.
+          </p>
+        )}
+
+        <p className="text-sm font-semibold mb-2" style={{ color: COLORS.anthracite }}>Wie lange soll die Anfrage laufen?</p>
+        <div className="flex items-center gap-2 mb-1">
+          <input
+            type="number"
+            min={AUSHILFE_FRIST_TAGE_MIN}
+            max={info.maxTage}
+            value={tage}
+            onChange={(e) => setTage(e.target.value)}
+            className="w-20 px-3 py-2 border rounded-md text-sm"
+            style={{ WebkitAppearance: "none" }}
+          />
+          <span className="text-sm text-gray-600">Tage</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-5">
+          {tageGueltig && endet
+            ? `Endet am ${formatDatum(endet.toISOString())}.`
+            : `Bitte eine Zahl zwischen ${AUSHILFE_FRIST_TAGE_MIN} und ${info.maxTage} eintragen.`}
+          {info.maxTage < AUSHILFE_FRIST_TAGE_STANDARD ? " Länger geht nicht — danach ist Spieltag." : ""}
+        </p>
+
+        <div className="flex gap-2 justify-end">
+          <button onClick={onAbbrechen} disabled={sendet} className="px-4 py-2 rounded-md text-sm border">
+            Abbrechen
+          </button>
+          <button
+            onClick={() => { setSendet(true); onSenden({ mannschaftIds: gewaehlt, tage: tageZahl }); }}
+            disabled={!bereit}
+            className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+            style={{ background: COLORS.orange, opacity: bereit ? 1 : 0.5 }}
+          >
+            {sendet ? "sende…" : "Anfrage senden"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function tagesSchluessel(datum) {
   const d = new Date(datum);
@@ -1139,7 +1243,9 @@ function UmfrageEskalation({ profil }) {
     let abgebrochen = false;
 
     (async () => {
-      const grenze = new Date(Date.now() - AUSHILFE_FRIST_TAGE * 24 * 60 * 60 * 1000).toISOString();
+      // Maßgeblich ist das je Umfrage gespeicherte Enddatum, nicht mehr eine feste
+      // Frist — die Laufzeit wird beim Anlegen individuell festgelegt.
+      const jetztIso = new Date().toISOString();
       const { data: aushilfen } = await supabase
         .from("umfragen")
         .select("*")
@@ -1163,10 +1269,62 @@ function UmfrageEskalation({ profil }) {
           continue;
         }
 
-        const fristAbgelaufen = umfrage.erstellt_am <= grenze;
+        const fristAbgelaufen = Boolean(umfrage.endet_am) && umfrage.endet_am <= jetztIso;
         const alleHabenAbgesagt =
           (ziele ?? []).length > 0 && (antworten ?? []).length >= (ziele ?? []).length;
         if (!fristAbgelaufen && !alleHabenAbgesagt) continue;
+
+        // Für ein Spiel können mehrere Mannschaften parallel gefragt worden sein.
+        // Erst wenn keine davon etwas bringt, wird verlegt.
+        const geschwister = aushilfen.filter(
+          (a) => a.bezug_spiel_id === umfrage.bezug_spiel_id && a.id !== umfrage.id
+        );
+        if (geschwister.length > 0) {
+          const { data: geschwisterAntworten } = await supabase
+            .from("umfrage_antworten")
+            .select("umfrage_id, spieler_id, ausgewaehlte_optionen")
+            .in("umfrage_id", geschwister.map((g) => g.id));
+
+          // Läuft eine Parallel-Anfrage noch? Dann abwarten.
+          const nochOffen = geschwister.some(
+            (g) => !g.endet_am || g.endet_am > jetztIso
+          );
+          if (nochOffen) continue;
+
+          // Hat dort jemand zugesagt? Dann ist die Lücke gefüllt.
+          const zusageWoanders = geschwister.some((g) =>
+            (geschwisterAntworten ?? [])
+              .filter((a) => a.umfrage_id === g.id)
+              .some((a) => istZusage(a, g))
+          );
+          if (zusageWoanders) {
+            await supabase.from("umfragen").update({ eskalation_erledigt: true }).eq("id", umfrage.id);
+            continue;
+          }
+        }
+
+        // Ist bereits eine Aushilfe eingeplant, ist nichts mehr zu tun.
+        const { data: bereitsEingeplant } = await supabase
+          .from("spiel_aushilfen")
+          .select("spieler_id")
+          .eq("spiel_id", umfrage.bezug_spiel_id)
+          .limit(1);
+        if (bereitsEingeplant && bereitsEingeplant.length > 0) {
+          await supabase.from("umfragen").update({ eskalation_erledigt: true }).eq("id", umfrage.id);
+          continue;
+        }
+
+        // Wurde für dieses Spiel schon eine Verlegungs-Umfrage angelegt? Dann nicht noch eine.
+        const { data: schonVerlegt } = await supabase
+          .from("umfragen")
+          .select("id")
+          .eq("art", "verlegung")
+          .eq("bezug_spiel_id", umfrage.bezug_spiel_id)
+          .limit(1);
+        if (schonVerlegt && schonVerlegt.length > 0) {
+          await supabase.from("umfragen").update({ eskalation_erledigt: true }).eq("id", umfrage.id);
+          continue;
+        }
 
         // Wettlauf vermeiden: nur wer die Markierung setzt, legt die Folge-Umfrage an.
         const { data: markiert } = await supabase
@@ -1199,7 +1357,7 @@ function UmfrageEskalation({ profil }) {
           .insert({
             titel: `Spielverlegung nötig: ${gegner} am ${formatDatum(spiel.datum)}`,
             beschreibung:
-              `Für dieses Spiel hat sich aus der darunter liegenden Mannschaft niemand als Aushilfe gemeldet. ` +
+              `Für dieses Spiel hat sich aus den angefragten Mannschaften niemand als Aushilfe gemeldet. ` +
               `Deshalb soll das Spiel verlegt werden. ` +
               (termine.length > 0
                 ? `Die folgenden Termine sind laut Spielplan und Vereinskalender frei — bitte alle Termine ankreuzen, an denen du kannst (Mehrfachauswahl möglich).`
@@ -1245,6 +1403,7 @@ function MannschaftsUebersicht({ profil }) {
   const [ladend, setLadend] = useState(true);
   const [sendenLadendId, setSendenLadendId] = useState(null);
   const [gesendetIds, setGesendetIds] = useState([]);
+  const [anfrageDialog, setAnfrageDialog] = useState(null);
 
   async function laden() {
     setLadend(true);
@@ -1303,40 +1462,67 @@ function MannschaftsUebersicht({ profil }) {
 
   useEffect(() => { laden(); }, []);
 
-  async function umfrageAnUntereSenden(eintrag, untereMannschaft, fehlend) {
+  // Schritt 1: Auswahl der Mannschaften und der Laufzeit
+  function anfrageOeffnen(eintrag, moeglicheMannschaften, fehlend) {
+    const termin = effektivesSpielDatum(eintrag.spiel);
+    setAnfrageDialog({
+      eintrag,
+      fehlend,
+      termin,
+      mannschaften: moeglicheMannschaften,
+      maxTage: aushilfeMaxTage(termin),
+      gegner: eintrag.spiel.ist_heimspiel ? eintrag.spiel.gastteam : eintrag.spiel.heimteam,
+      datumText: `${wochentagLang(termin)}, ${formatDatum(termin)}`,
+      zeit: uhrzeit(termin),
+    });
+  }
+
+  // Schritt 2: je gewählter Mannschaft eine eigene Umfrage anlegen
+  async function anfrageSenden({ mannschaftIds, tage }) {
+    const info = anfrageDialog;
+    if (!info) return;
+    setAnfrageDialog(null);
+
+    const { eintrag, fehlend, termin, gegner, datumText, zeit } = info;
     setSendenLadendId(eintrag.mannschaft.id);
-    const gegner = eintrag.spiel.ist_heimspiel ? eintrag.spiel.gastteam : eintrag.spiel.heimteam;
-    const datumText = `${wochentagLang(effektivesSpielDatum(eintrag.spiel))}, ${formatDatum(effektivesSpielDatum(eintrag.spiel))}`;
-    const zeit = uhrzeit(effektivesSpielDatum(eintrag.spiel));
-    const frist = new Date(Date.now() + AUSHILFE_FRIST_TAGE * 24 * 60 * 60 * 1000);
+
+    const frist = new Date(Date.now() + tage * 24 * 60 * 60 * 1000);
     const anzahlText = fehlend === 1 ? "wird noch 1 Spieler" : `werden noch ${fehlend} Spieler`;
+    const gefragt = info.mannschaften.filter((m) => mannschaftIds.includes(m.id));
+    let mindestensEine = false;
 
-    const { data: neueUmfrage, error } = await supabase
-      .from("umfragen")
-      .insert({
-        titel: `Aushilfe ${wochentagKurz(effektivesSpielDatum(eintrag.spiel))}, ${formatDatum(effektivesSpielDatum(eintrag.spiel))} gegen ${gegner} — ${eintrag.mannschaft.name} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
-        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${eintrag.spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
-        optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
-        mehrfachauswahl: false,
-        erstellt_von: profil.id,
-        art: "aushilfe",
-        bezug_spiel_id: eintrag.spiel.id,
-        ziel_mannschaft_id: eintrag.mannschaft.id,
-        endet_am: frist.toISOString(),
-      })
-      .select()
-      .single();
+    for (const ziel of gefragt) {
+      const { data: neueUmfrage, error } = await supabase
+        .from("umfragen")
+        .insert({
+          titel: `Aushilfe ${wochentagKurz(termin)}, ${formatDatum(termin)} gegen ${gegner} — ${eintrag.mannschaft.name} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
+          beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${eintrag.spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
+          optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
+          mehrfachauswahl: false,
+          erstellt_von: profil.id,
+          // Sichtbarkeit auf die gefragte Mannschaft begrenzen
+          mannschaft_id: ziel.id,
+          art: "aushilfe",
+          bezug_spiel_id: eintrag.spiel.id,
+          ziel_mannschaft_id: eintrag.mannschaft.id,
+          endet_am: frist.toISOString(),
+        })
+        .select()
+        .single();
 
-    if (!error && neueUmfrage) {
-      const { data: spielerUnten } = await supabase.from("profiles").select("id").eq("mannschaft_id", untereMannschaft.id);
+      if (error || !neueUmfrage) continue;
+
+      const { data: spielerUnten } = await supabase.from("profiles").select("id").eq("mannschaft_id", ziel.id);
       if (spielerUnten && spielerUnten.length > 0) {
         await supabase.from("umfrage_ziele").insert(spielerUnten.map((s) => ({ umfrage_id: neueUmfrage.id, spieler_id: s.id })));
         supabase.functions.invoke("notify-neue-umfrage", {
-          body: { titel: neueUmfrage.titel, empfaengerIds: spielerUnten.map((s) => s.id) },
+          body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds: spielerUnten.map((s) => s.id) },
         }); // bewusst nicht awaited
       }
-      setGesendetIds((prev) => [...prev, eintrag.mannschaft.id]);
+      mindestensEine = true;
     }
+
+    if (mindestensEine) setGesendetIds((prev) => [...prev, eintrag.mannschaft.id]);
     setSendenLadendId(null);
   }
 
@@ -1345,15 +1531,27 @@ function MannschaftsUebersicht({ profil }) {
 
   return (
     <div className="bg-white rounded-lg border p-5">
+      {anfrageDialog && (
+        <AushilfeAnfrageDialog
+          info={anfrageDialog}
+          onAbbrechen={() => setAnfrageDialog(null)}
+          onSenden={anfrageSenden}
+        />
+      )}
       <SectionLabel icon={Users}>Nächste Spiele aller Mannschaften</SectionLabel>
       <div className="space-y-3">
         {uebersicht.map((eintrag) => {
           const { mannschaft, spiel, jaAnzahl, aushilfenAnzahl = 0, anfrageLaeuft = false } = eintrag;
           const benoetigt = mannschaft.benoetigte_spieler ?? 4;
           const fehlend = spiel ? Math.max(0, benoetigt - jaAnzahl) : 0;
-          const untereMannschaft = mannschaft.hierarchie_stufe
-            ? uebersicht.find((e) => e.mannschaft.hierarchie_stufe === mannschaft.hierarchie_stufe + 1)?.mannschaft
-            : null;
+          // Alle tiefer eingestuften Mannschaften kommen als Aushilfe infrage,
+          // nicht nur die direkt darunter liegende.
+          const moeglicheAushilfen = mannschaft.hierarchie_stufe
+            ? uebersicht
+                .map((e) => e.mannschaft)
+                .filter((m) => (m.hierarchie_stufe ?? 0) > mannschaft.hierarchie_stufe)
+                .sort((a, b) => (a.hierarchie_stufe ?? 0) - (b.hierarchie_stufe ?? 0))
+            : [];
 
           return (
             <div key={mannschaft.id} className="border rounded-md p-3">
@@ -1384,9 +1582,9 @@ function MannschaftsUebersicht({ profil }) {
               )}
 
               {spiel && fehlend > 0 && darfMannschaftVerwalten(profil, mannschaft.id) && (
-                untereMannschaft ? (
+                moeglicheAushilfen.length > 0 ? (
                   gesendetIds.includes(mannschaft.id) ? (
-                    <p className="text-xs mt-2" style={{ color: COLORS.petrol }}>Umfrage an {untereMannschaft.name} verschickt.</p>
+                    <p className="text-xs mt-2" style={{ color: COLORS.petrol }}>Aushilfe-Anfrage verschickt.</p>
                   ) : anfrageLaeuft ? (
                     // Für dieses Spiel läuft schon eine Aushilfe-Anfrage — sonst
                     // gingen zweite Umfrage und zweite E-Mail an alle raus.
@@ -1396,16 +1594,20 @@ function MannschaftsUebersicht({ profil }) {
                   ) : (
                     <>
                     <button
-                      onClick={() => umfrageAnUntereSenden(eintrag, untereMannschaft, fehlend)}
+                      onClick={() => anfrageOeffnen(eintrag, moeglicheAushilfen, fehlend)}
                       disabled={sendenLadendId === mannschaft.id}
                       className="text-xs mt-2 px-3 py-1.5 rounded-md text-white font-semibold"
                       style={{ background: COLORS.orangeDeep, opacity: sendenLadendId === mannschaft.id ? 0.6 : 1 }}
                     >
-                      {sendenLadendId === mannschaft.id ? "Sende…" : `Umfrage an ${untereMannschaft.name} senden`}
+                      {sendenLadendId === mannschaft.id ? "Sende…" : "Aushilfe anfragen"}
                     </button>
                     <p className="text-[11px] text-gray-400 mt-1 flex items-start gap-1">
                       <Mail size={11} className="mt-0.5 shrink-0" />
-                      <span>Alle Spieler der {untereMannschaft.name} bekommen die Anfrage zusätzlich per E-Mail.</span>
+                      <span>
+                        Du wählst im nächsten Schritt, welche Mannschaft gefragt wird
+                        ({moeglicheAushilfen.map((m) => m.name).join(", ")}) und wie lange die Anfrage läuft.
+                        Die Spieler bekommen sie zusätzlich per E-Mail.
+                      </span>
                     </p>
                     </>
                   )
@@ -1546,6 +1748,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
   const [aushilfen, setAushilfen] = useState([]);
   const [anfrageLadendId, setAnfrageLadendId] = useState(null);
+  const [anfrageDialog, setAnfrageDialog] = useState(null); // Auswahl der Mannschaften + Laufzeit
   const [anfragen, setAnfragen] = useState([]);
   const [aufstellungen, setAufstellungen] = useState({});
   const [aufstellungFuer, setAufstellungFuer] = useState(null);
@@ -1595,7 +1798,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     });
   }
 
-  // Aushilfe-Anfrage direkt aus der Spielerplanung heraus starten
+  // Aushilfe-Anfrage direkt aus der Spielerplanung heraus starten.
+  // Schritt 1: prüfen und den Auswahldialog öffnen.
   async function aushilfeAnfragen(spiel) {
     setFehler(null);
     if (anfrageLadendId) return; // verhindert doppeltes Senden bei schnellem Tippen
@@ -1619,75 +1823,111 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       .select("id, name, hierarchie_stufe")
       .eq("id", saison.mannschaft_id)
       .maybeSingle();
+
+    // Alle tiefer eingestuften Mannschaften kommen infrage, nicht nur die direkt
+    // darunter — aus der 3. darf genauso jemand in der 1. aushelfen.
     const { data: untere } = await supabase
       .from("mannschaften")
-      .select("id, name")
-      .eq("hierarchie_stufe", (eigene?.hierarchie_stufe ?? 0) + 1)
-      .maybeSingle();
-    if (!untere) return setFehler("Es gibt keine darunter liegende Mannschaft, die aushelfen könnte.");
+      .select("id, name, hierarchie_stufe")
+      .gt("hierarchie_stufe", eigene?.hierarchie_stufe ?? 0)
+      .order("hierarchie_stufe", { ascending: true });
 
-    const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+    if (!untere || untere.length === 0) {
+      return setFehler("Es gibt keine darunter liegende Mannschaft, die aushelfen könnte.");
+    }
+
     const termin = effektivesSpielDatum(spiel);
-    const datumText = `${wochentagLang(termin)}, ${formatDatum(termin)}`;
-    const zeit = uhrzeit(termin);
-    const frist = new Date(Date.now() + AUSHILFE_FRIST_TAGE * 24 * 60 * 60 * 1000);
+    setAnfrageDialog({
+      spiel,
+      eigene,
+      fehlend,
+      termin,
+      mannschaften: untere,
+      maxTage: aushilfeMaxTage(termin),
+      gegner: spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam,
+      datumText: `${wochentagLang(termin)}, ${formatDatum(termin)}`,
+      zeit: uhrzeit(termin),
+    });
+  }
+
+  // Schritt 2: für jede gewählte Mannschaft eine eigene Umfrage anlegen.
+  async function aushilfeAnfrageSenden({ mannschaftIds, tage }) {
+    const info = anfrageDialog;
+    if (!info) return;
+    setAnfrageDialog(null);
+    setAnfrageLadendId(info.spiel.id);
+
+    const { spiel, eigene, fehlend, termin, gegner, datumText, zeit } = info;
+    const frist = new Date(Date.now() + tage * 24 * 60 * 60 * 1000);
     const anzahlText = fehlend === 1 ? "wird noch 1 Spieler" : `werden noch ${fehlend} Spieler`;
+    const gefragt = info.mannschaften.filter((m) => mannschaftIds.includes(m.id));
 
-    if (!window.confirm(
-      `Anfrage an die ${untere.name} senden?\n\n${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""}\n` +
-      `Es fehlen aktuell ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}.`
-    )) return;
-
-    setAnfrageLadendId(spiel.id);
     try {
-    const { data: neueUmfrage, error } = await supabase
-      .from("umfragen")
-      .insert({
-        titel: `Aushilfe ${wochentagKurz(termin)}, ${formatDatum(termin)} gegen ${gegner} — ${eigene?.name ?? "Mannschaft"} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
-        beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
-        optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
-        mehrfachauswahl: false,
-        erstellt_von: profil.id,
-        mannschaft_id: untere.id,
-        art: "aushilfe",
-        bezug_spiel_id: spiel.id,
-        ziel_mannschaft_id: saison.mannschaft_id,
-        endet_am: frist.toISOString(),
-      })
-      .select()
-      .single();
+      const erfolge = [];
+      const probleme = [];
 
-    if (error || !neueUmfrage) {
-      return setFehler(`Die Umfrage konnte nicht angelegt werden: ${error?.message ?? "unbekannter Grund"}`);
-    }
+      for (const ziel of gefragt) {
+        const { data: neueUmfrage, error } = await supabase
+          .from("umfragen")
+          .insert({
+            titel: `Aushilfe ${wochentagKurz(termin)}, ${formatDatum(termin)} gegen ${gegner} — ${eigene?.name ?? "Mannschaft"} braucht ${fehlend === 1 ? "1 Spieler" : `${fehlend} Spieler`}`,
+            beschreibung: `Für das Spiel gegen ${gegner} am ${datumText}${zeit ? ` um ${zeit}` : ""} ${anzahlText} gebraucht (${spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}). Hast du an dem Tag Zeit auszuhelfen? Der Mannschaftsführer meldet sich, wenn du eingeplant wirst. (Die Umfrage endet automatisch am ${formatDatum(frist.toISOString())}.)`,
+            optionen: ["Ja, ich kann aushelfen", "Nein, leider nicht"],
+            mehrfachauswahl: false,
+            erstellt_von: profil.id,
+            mannschaft_id: ziel.id,
+            art: "aushilfe",
+            bezug_spiel_id: spiel.id,
+            ziel_mannschaft_id: saison.mannschaft_id,
+            endet_am: frist.toISOString(),
+          })
+          .select()
+          .single();
 
-    const { data: empfaenger, error: empfaengerFehler } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("mannschaft_id", untere.id);
-    if (empfaengerFehler) {
-      return setFehler(`Die Umfrage wurde angelegt, die Empfänger konnten aber nicht geladen werden: ${empfaengerFehler.message}`);
-    }
+        if (error || !neueUmfrage) {
+          probleme.push(`${ziel.name}: ${error?.message ?? "Umfrage konnte nicht angelegt werden"}`);
+          continue;
+        }
 
-    const empfaengerIds = (empfaenger ?? []).map((e) => e.id);
-    if (empfaengerIds.length === 0) {
-      return setFehler(`Die ${untere.name} hat keine Spieler mit Zugang — es konnte niemand angefragt werden.`);
-    }
+        const { data: empfaenger, error: empfaengerFehler } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("mannschaft_id", ziel.id);
+        if (empfaengerFehler) {
+          probleme.push(`${ziel.name}: Empfänger konnten nicht geladen werden (${empfaengerFehler.message})`);
+          continue;
+        }
 
-    const { error: zieleFehler } = await supabase
-      .from("umfrage_ziele")
-      .insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
-    if (zieleFehler) {
-      return setFehler(`Die Umfrage wurde angelegt, konnte aber niemandem zugeordnet werden: ${zieleFehler.message}`);
-    }
+        const empfaengerIds = (empfaenger ?? []).map((e) => e.id);
+        if (empfaengerIds.length === 0) {
+          probleme.push(`${ziel.name}: kein Spieler mit Zugang, niemand angefragt`);
+          continue;
+        }
 
-    supabase.functions.invoke("notify-neue-umfrage", {
-      body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
-    }); // bewusst nicht awaited
+        const { error: zieleFehler } = await supabase
+          .from("umfrage_ziele")
+          .insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
+        if (zieleFehler) {
+          probleme.push(`${ziel.name}: Zuordnung fehlgeschlagen (${zieleFehler.message})`);
+          continue;
+        }
 
-    setFehler(null);
-    await laden(); // wichtig: sonst zeigt der Knopf weiter "Aushilfe anfragen"
-    window.alert(`Anfrage an die ${untere.name} ist raus (${empfaengerIds.length} Spieler). Sobald jemand zusagt, bekommst du eine E-Mail und kannst ihn in den Umfragen einplanen.`);
+        supabase.functions.invoke("notify-neue-umfrage", {
+          body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
+        }); // bewusst nicht awaited
+
+        erfolge.push(`${ziel.name} (${empfaengerIds.length} Spieler)`);
+      }
+
+      await laden(); // wichtig: sonst zeigt der Knopf weiter "Aushilfe anfragen"
+      setFehler(probleme.length > 0 ? probleme.join(" · ") : null);
+
+      if (erfolge.length > 0) {
+        window.alert(
+          `Anfrage ist raus an: ${erfolge.join(", ")}.\n\n` +
+          `Sobald jemand zusagt, bekommst du eine E-Mail und kannst ihn in den Umfragen einplanen.`
+        );
+      }
     } catch (f) {
       // Ohne diesen Fang blieb der Knopf bei einem unerwarteten Fehler auf "sende…" stehen
       setFehler(`Unerwarteter Fehler: ${f?.message ?? String(f)}`);
@@ -2085,6 +2325,14 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           mannschaftName={mannschaftsName}
           onSchliessen={() => setAufstellungFuer(null)}
           onGespeichert={() => { setAufstellungFuer(null); laden(); }}
+        />
+      )}
+
+      {anfrageDialog && (
+        <AushilfeAnfrageDialog
+          info={anfrageDialog}
+          onAbbrechen={() => setAnfrageDialog(null)}
+          onSenden={aushilfeAnfrageSenden}
         />
       )}
 
