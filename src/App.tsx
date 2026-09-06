@@ -4828,11 +4828,84 @@ function Umfragen({ profil, zielUmfrageId }) {
   // Aus einer Verlegungs-Umfrage heraus einen Termin verbindlich ansetzen.
   // Das betroffene Spiel wird auf den neuen Termin gelegt und die Umfrage beendet.
   // Aushilfen für ein Spiel ein- oder wieder ausplanen
+  // Hat der Spieler am selben Tag schon etwas anderes? Verbandsseitig ist die Zahl
+  // der Aushilfe-Einsätze unbegrenzt, zwei Spiele gleichzeitig gehen aber trotzdem nicht.
+  async function terminkonfliktText(spielerId, spielId) {
+    const { data: spiel } = await supabase
+      .from("verbands_spiele")
+      .select("datum, verlegt_auf")
+      .eq("id", spielId)
+      .maybeSingle();
+    const termin = spiel ? effektivesSpielDatum(spiel) : null;
+    if (!termin) return null;
+    const tag = tagesSchluessel(termin);
+    const treffer = [];
+
+    // 1. Spiele der eigenen Stammmannschaft am selben Tag
+    const { data: spielerDaten } = await supabase
+      .from("profiles")
+      .select("mannschaft_id")
+      .eq("id", spielerId)
+      .maybeSingle();
+
+    if (spielerDaten?.mannschaft_id) {
+      const { data: saisons } = await supabase
+        .from("saisons")
+        .select("id")
+        .eq("mannschaft_id", spielerDaten.mannschaft_id)
+        .eq("aktiv", true);
+      const saisonIds = (saisons ?? []).map((sa) => sa.id);
+      if (saisonIds.length > 0) {
+        const { data: eigeneSpiele } = await supabase
+          .from("verbands_spiele")
+          .select("id, datum, verlegt_auf, heimteam, gastteam, ist_heimspiel")
+          .in("saison_id", saisonIds);
+        (eigeneSpiele ?? []).forEach((sp) => {
+          const d = effektivesSpielDatum(sp);
+          if (sp.id !== spielId && d && tagesSchluessel(d) === tag) {
+            treffer.push(`eigenes Spiel gegen ${sp.ist_heimspiel ? sp.gastteam : sp.heimteam}`);
+          }
+        });
+      }
+    }
+
+    // 2. Bereits woanders als Aushilfe eingeplant
+    const { data: andereEinsaetze } = await supabase
+      .from("spiel_aushilfen")
+      .select("spiel_id")
+      .eq("spieler_id", spielerId)
+      .neq("spiel_id", spielId);
+    const andereIds = [...new Set((andereEinsaetze ?? []).map((a) => a.spiel_id))];
+    if (andereIds.length > 0) {
+      const { data: andereSpiele } = await supabase
+        .from("verbands_spiele")
+        .select("id, datum, verlegt_auf, heimteam, gastteam, ist_heimspiel")
+        .in("id", andereIds);
+      (andereSpiele ?? []).forEach((sp) => {
+        const d = effektivesSpielDatum(sp);
+        if (d && tagesSchluessel(d) === tag) {
+          treffer.push(`schon als Aushilfe eingeplant gegen ${sp.ist_heimspiel ? sp.gastteam : sp.heimteam}`);
+        }
+      });
+    }
+
+    if (treffer.length === 0) return null;
+    return (
+      `Achtung — am ${formatDatum(termin)} steht für diesen Spieler schon etwas an:\n\n` +
+      treffer.map((t) => `• ${t}`).join("\n") +
+      `\n\nTrotzdem einplanen?`
+    );
+  }
+
   async function aushilfeUmschalten(umfrage, spielerId, einplanen) {
     setFehler(null);
     if (!umfrage.bezug_spiel_id) return setFehler("Zu dieser Umfrage ist kein Spiel hinterlegt.");
 
     if (einplanen) {
+      // Terminkollision prüfen, bevor der Einsatz gespeichert wird
+      const konflikt = await terminkonfliktText(spielerId, umfrage.bezug_spiel_id);
+      if (konflikt && !window.confirm(konflikt)) return;
+
       const { error } = await supabase.from("spiel_aushilfen").insert({
         spiel_id: umfrage.bezug_spiel_id,
         spieler_id: spielerId,
