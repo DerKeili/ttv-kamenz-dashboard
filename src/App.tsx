@@ -7826,8 +7826,16 @@ function Analyse({ saison, profil }) {
     return { berichte, liste };
   }
 
-  const jetzt = new Date();
-  const kommende = spiele.filter((s) => effektivesSpielDatum(s) && new Date(effektivesSpielDatum(s)) > jetzt && !spielGesperrt(s));
+  // Ein Spiel bleibt in der Auswahl, bis das Ergebnis eingetragen ist. Sonst
+  // verschwindet es mitten am Spieltag aus der Analyse, obwohl es gerade läuft.
+  const heuteSchluessel = tagesSchluessel(new Date());
+  const kommende = spiele.filter((s) => {
+    const termin = effektivesSpielDatum(s);
+    if (!termin || spielGesperrt(s)) return false;
+    if (s.ergebnis) return false; // gespielt und ausgewertet
+    const tag = tagesSchluessel(termin);
+    return tag >= heuteSchluessel; // heute zählt noch dazu, unabhängig von der Uhrzeit
+  });
   const zielSpiel = kommende.find((s) => s.id === gewaehltesSpiel) ?? kommende[0] ?? null;
   const gegnerName = zielSpiel ? (zielSpiel.ist_heimspiel ? zielSpiel.gastteam : zielSpiel.heimteam) : null;
 
