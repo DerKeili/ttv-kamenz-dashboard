@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText, TrendingUp
+  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText, TrendingUp, ChevronDown
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -2903,6 +2903,29 @@ function Ergebnisse({ saison, profil }) {
   const [zuletztAktualisiert, setZuletztAktualisiert] = useState(null);
   const autoSchluessel = saison ? `spielplan-${saison.id}-${runde}` : null;
 
+  // Aufgeklappter Spielbericht: Daten je Spiel, damit einmal Geholtes beim
+  // erneuten Aufklappen sofort da ist.
+  const [offenerBericht, setOffenerBericht] = useState(null);
+  const [berichte, setBerichte] = useState({});
+  const [berichtLadendId, setBerichtLadendId] = useState(null);
+  const [berichtFehler, setBerichtFehler] = useState({});
+
+  async function berichtUmschalten(spiel) {
+    if (offenerBericht === spiel.id) return setOffenerBericht(null);
+    setOffenerBericht(spiel.id);
+    if (berichte[spiel.id] || berichtLadendId === spiel.id) return;
+
+    setBerichtLadendId(spiel.id);
+    setBerichtFehler((alt) => ({ ...alt, [spiel.id]: null }));
+    const { data, error } = await supabase.functions.invoke("fetch-spielbericht", { body: { spielId: spiel.id } });
+    setBerichtLadendId(null);
+    if (error || data?.error) {
+      setBerichtFehler((alt) => ({ ...alt, [spiel.id]: await echteFehlermeldung(error, data) }));
+      return;
+    }
+    setBerichte((alt) => ({ ...alt, [spiel.id]: data.daten }));
+  }
+
   async function laden(still = false) {
     if (!still) setLadend(true);
     const { data } = await supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum");
@@ -3003,8 +3026,14 @@ function Ergebnisse({ saison, profil }) {
         <div className="bg-white rounded-lg border divide-y">
           {spiele.map((s) => {
             const info = ergebnisInfo(s);
+            const gespielt = info.ton !== "offen" && Boolean(s.bericht_url);
+            const offen = offenerBericht === s.id;
             return (
-              <div key={s.id} className="flex items-center gap-4 p-4">
+              <div key={s.id}>
+              <div
+                className={`flex items-center gap-4 p-4 ${gespielt ? "cursor-pointer hover:bg-gray-50" : ""}`}
+                onClick={gespielt ? () => berichtUmschalten(s) : undefined}
+              >
                 <div className="flex-1">
                   <p className="font-medium text-sm" style={{ color: COLORS.anthracite }}>
                     {s.heimteam} <span className="text-gray-400 font-normal">vs</span> {s.gastteam}
@@ -3022,16 +3051,159 @@ function Ergebnisse({ saison, profil }) {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {info.ton === "offen" && effektivesSpielDatum(s) && !spielGesperrt(s) && (
-                    <KalenderExportMenu ereignis={spielAlsTermin(s, "TTV 97 Kamenz")} />
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <KalenderExportMenu ereignis={spielAlsTermin(s, "TTV 97 Kamenz")} />
+                    </span>
                   )}
                   <span className="text-sm font-bold px-3 py-1.5 rounded-md" style={tonFarben[info.ton]}>
                     {info.text}
                   </span>
+                  {gespielt && (
+                    <ChevronDown
+                      size={16}
+                      className="text-gray-400 transition-transform"
+                      style={{ transform: offen ? "rotate(180deg)" : "none" }}
+                    />
+                  )}
                 </div>
+              </div>
+
+              {offen && (
+                <div className="px-4 pb-4 -mt-1">
+                  {berichtLadendId === s.id ? (
+                    <p className="text-xs text-gray-400">Lade Spielbericht…</p>
+                  ) : berichtFehler[s.id] ? (
+                    <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{berichtFehler[s.id]}</p>
+                  ) : berichte[s.id] ? (
+                    <Spielbericht daten={berichte[s.id]} spiel={s} />
+                  ) : null}
+                  {s.bericht_url && (
+                    <a
+                      href={s.bericht_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-xs underline inline-block mt-3"
+                      style={{ color: COLORS.petrol }}
+                    >
+                      Kompletten Bericht beim Verband öffnen
+                    </a>
+                  )}
+                </div>
+              )}
               </div>
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Spielbericht ----------
+   Zeigt Aufstellung und alle Einzel-/Doppelergebnisse aus dem Verbandsbericht.
+   Aus Sicht der eigenen Mannschaft: bei Auswärtsspielen ist "Mannschaft A" der
+   Gegner, deshalb wird die Zuordnung über ist_heimspiel gedreht. */
+function Spielbericht({ daten, spiel }) {
+  if (!daten) return null;
+  const heim = spiel.ist_heimspiel;
+
+  // "A" ist im Bericht immer die Heimmannschaft
+  const unsereAufstellung = heim ? daten.aufstellung?.heim : daten.aufstellung?.gast;
+  const gegnerAufstellung = heim ? daten.aufstellung?.gast : daten.aufstellung?.heim;
+  const unsereDoppel = heim ? daten.doppel?.heim : daten.doppel?.gast;
+  const gegnerDoppel = heim ? daten.doppel?.gast : daten.doppel?.heim;
+
+  const doppel = (daten.spiele ?? []).filter((p) => p.nrHeim?.startsWith("D"));
+  const einzel = (daten.spiele ?? []).filter((p) => p.nrHeim?.startsWith("E"));
+
+  function Zeile({ partie }) {
+    // gewonnen bezieht sich im Bericht immer auf die Heimmannschaft
+    const unsGewonnen = heim ? partie.gewonnen : !partie.gewonnen;
+    const linkeName = heim ? partie.spielerHeim : partie.spielerGast;
+    const rechteName = heim ? partie.spielerGast : partie.spielerHeim;
+    const satz = heim ? partie.satz : partie.satz.split(":").reverse().join(":");
+    const saetze = heim ? partie.saetze : partie.saetze.map((x) => x.split(":").reverse().join(":"));
+
+    return (
+      <div className="flex items-center gap-2 py-1.5 border-b last:border-b-0 text-xs">
+        <span className="w-6 shrink-0 font-semibold" style={{ color: COLORS.petrol }}>
+          {heim ? partie.nrHeim : partie.nrGast}
+        </span>
+        <span className="flex-1 min-w-0 truncate" style={{ fontWeight: unsGewonnen ? 600 : 400 }}>
+          {linkeName || "—"}
+        </span>
+        <span className="text-gray-300">vs</span>
+        <span className="flex-1 min-w-0 truncate text-gray-600">{rechteName || "—"}</span>
+        <span className="hidden sm:block text-gray-400 shrink-0 tabular-nums">{saetze.join("  ")}</span>
+        <span
+          className="w-10 text-right shrink-0 font-bold tabular-nums"
+          style={{ color: unsGewonnen ? COLORS.petrol : COLORS.orangeDeep }}
+        >
+          {satz}
+        </span>
+      </div>
+    );
+  }
+
+  function Aufstellung({ titel, spieler, doppelPaare }) {
+    if (!spieler || spieler.length === 0) return null;
+    return (
+      <div className="flex-1 min-w-0">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1">{titel}</p>
+        {spieler.map((sp) => (
+          <p key={sp.pos} className="text-xs truncate">
+            <span className="text-gray-400 mr-1.5">{sp.pos}</span>
+            {sp.name || "—"}
+          </p>
+        ))}
+        {doppelPaare?.length > 0 && (
+          <div className="mt-1.5">
+            {doppelPaare.map((d) => (
+              <p key={d.pos} className="text-[11px] text-gray-500 truncate">
+                <span className="text-gray-400 mr-1.5">{d.pos}</span>
+                {d.name}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-gray-50 rounded-md p-3 space-y-3">
+      <div className="flex gap-4">
+        <Aufstellung titel="Wir" spieler={unsereAufstellung} doppelPaare={unsereDoppel} />
+        <Aufstellung titel="Gegner" spieler={gegnerAufstellung} doppelPaare={gegnerDoppel} />
+      </div>
+
+      {daten.ersatz?.length > 0 && (
+        <p className="text-[11px] text-gray-500">
+          Ersatz: {daten.ersatz.map((e) => `${e.name} (${e.herkunft})`).join(", ")}
+        </p>
+      )}
+
+      {doppel.length > 0 && (
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Doppel</p>
+          {doppel.map((p, i) => <Zeile key={`d${i}`} partie={p} />)}
+        </div>
+      )}
+
+      {einzel.length > 0 && (
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Einzel</p>
+          {einzel.map((p, i) => <Zeile key={`e${i}`} partie={p} />)}
+        </div>
+      )}
+
+      {daten.summe && (
+        <p className="text-[11px] text-gray-500">
+          {daten.summe.punkte && <>Punkte {heim ? daten.summe.punkte : daten.summe.punkte.split(":").reverse().join(":")}</>}
+          {daten.summe.saetze && <> · Sätze {heim ? daten.summe.saetze : daten.summe.saetze.split(":").reverse().join(":")}</>}
+          {daten.summe.baelle && <> · Bälle {heim ? daten.summe.baelle : daten.summe.baelle.split(":").reverse().join(":")}</>}
+        </p>
       )}
     </div>
   );
