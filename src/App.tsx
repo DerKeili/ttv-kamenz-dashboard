@@ -2920,7 +2920,9 @@ function Ergebnisse({ saison, profil }) {
     const { data, error } = await supabase.functions.invoke("fetch-spielbericht", { body: { spielId: spiel.id } });
     setBerichtLadendId(null);
     if (error || data?.error) {
-      setBerichtFehler((alt) => ({ ...alt, [spiel.id]: await echteFehlermeldung(error, data) }));
+      // Erst auflösen, dann setzen — in der Updater-Funktion ist kein await erlaubt
+      const meldung = await echteFehlermeldung(error, data);
+      setBerichtFehler((alt) => ({ ...alt, [spiel.id]: meldung }));
       return;
     }
     setBerichte((alt) => ({ ...alt, [spiel.id]: data.daten }));
