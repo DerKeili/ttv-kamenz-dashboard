@@ -1710,8 +1710,9 @@ function Tabelle({ saison, profil }) {
               <tr className="text-white text-left">
                 <th className="p-3 font-medium">#</th>
                 <th className="p-3 font-medium">Mannschaft</th>
-                <th className="p-3 font-medium text-center">Spiele</th>
-                <th className="p-3 font-medium text-center">Punkte</th>
+                <th className="p-2 font-medium text-center" title="Ausgetragene Begegnungen">ST</th>
+                <th className="p-2 font-medium text-center">Spiele</th>
+                <th className="p-2 font-medium text-center">Punkte</th>
               </tr>
             </thead>
             <tbody>
@@ -1719,8 +1720,13 @@ function Tabelle({ saison, profil }) {
                 <tr key={t.id} className="border-t" style={t.ist_eigenes_team ? { background: "#FCEEE7" } : {}}>
                   <td className="p-3">{t.platz}</td>
                   <td className="p-3 font-medium" style={t.ist_eigenes_team ? { color: COLORS.orangeDeep } : {}}>{t.team}</td>
-                  <td className="p-3 text-center">{t.spiele}</td>
-                  <td className="p-3 text-center font-semibold">{t.punkte}</td>
+                  <td className="p-2 text-center tabular-nums">{t.st ?? "–"}</td>
+                  <td className="p-2 text-center tabular-nums whitespace-nowrap">
+                    {t.spiele_gewonnen != null ? `${t.spiele_gewonnen}:${t.spiele_verloren}` : t.spiele}
+                  </td>
+                  <td className="p-2 text-center font-semibold tabular-nums whitespace-nowrap">
+                    {t.punkte_plus != null ? `${t.punkte_plus}:${t.punkte_minus}` : t.punkte}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -2183,6 +2189,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           spielerName: spielerName ? `${spielerName.vorname} ${spielerName.nachname}` : null,
           neuerStatus,
           anzahlJa: jaAnzahl,
+          geaendertAm: new Date().toISOString(),
         },
       }); // bewusst nicht awaited – E-Mail-Versand soll die Oberfläche nicht blockieren
     }
@@ -3120,26 +3127,32 @@ function Spielbericht({ daten, spiel }) {
   const einzel = (daten.spiele ?? []).filter((p) => p.nrHeim?.startsWith("E"));
 
   function Zeile({ partie }) {
-    // gewonnen bezieht sich im Bericht immer auf die Heimmannschaft
+    // "gewonnen" bezieht sich im Bericht immer auf die Heimmannschaft
     const unsGewonnen = heim ? partie.gewonnen : !partie.gewonnen;
     const linkeName = heim ? partie.spielerHeim : partie.spielerGast;
     const rechteName = heim ? partie.spielerGast : partie.spielerHeim;
-    const satz = heim ? partie.satz : partie.satz.split(":").reverse().join(":");
-    const saetze = heim ? partie.saetze : partie.saetze.map((x) => x.split(":").reverse().join(":"));
+    const drehen = (stand) => (heim ? stand : String(stand).split(":").reverse().join(":"));
+    const satz = drehen(partie.satz);
+    const saetze = partie.saetze.map(drehen);
 
     return (
-      <div className="flex items-center gap-2 py-1.5 border-b last:border-b-0 text-xs">
-        <span className="w-6 shrink-0 font-semibold" style={{ color: COLORS.petrol }}>
+      <div
+        className="grid items-baseline gap-x-2 py-1.5 border-b last:border-b-0 text-xs"
+        style={{ gridTemplateColumns: "1.75rem minmax(0,1fr) 1.25rem minmax(0,1fr) auto 2.25rem" }}
+      >
+        <span className="font-semibold" style={{ color: COLORS.petrol }}>
           {heim ? partie.nrHeim : partie.nrGast}
         </span>
-        <span className="flex-1 min-w-0 truncate" style={{ fontWeight: unsGewonnen ? 600 : 400 }}>
+        <span className="truncate" style={{ fontWeight: unsGewonnen ? 600 : 400 }}>
           {linkeName || "—"}
         </span>
-        <span className="text-gray-300">vs</span>
-        <span className="flex-1 min-w-0 truncate text-gray-600">{rechteName || "—"}</span>
-        <span className="hidden sm:block text-gray-400 shrink-0 tabular-nums">{saetze.join("  ")}</span>
+        <span className="text-gray-300 text-center">vs</span>
+        <span className="truncate text-gray-600">{rechteName || "—"}</span>
+        <span className="hidden sm:block text-gray-400 text-right tabular-nums whitespace-nowrap">
+          {saetze.join("  ")}
+        </span>
         <span
-          className="w-10 text-right shrink-0 font-bold tabular-nums"
+          className="text-right font-bold tabular-nums"
           style={{ color: unsGewonnen ? COLORS.petrol : COLORS.orangeDeep }}
         >
           {satz}
