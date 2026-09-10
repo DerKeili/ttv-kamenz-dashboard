@@ -3157,6 +3157,7 @@ function Spielbericht({ daten, spiel }) {
           <p key={sp.pos} className="text-xs truncate">
             <span className="text-gray-400 mr-1.5">{sp.pos}</span>
             {sp.name || "—"}
+            {sp.gemeldet && <span className="text-gray-400 ml-1" title="laut Mannschaftsmeldung">*</span>}
           </p>
         ))}
         {doppelPaare?.length > 0 && (
@@ -3179,6 +3180,12 @@ function Spielbericht({ daten, spiel }) {
         <Aufstellung titel="Wir" spieler={unsereAufstellung} doppelPaare={unsereDoppel} />
         <Aufstellung titel="Gegner" spieler={gegnerAufstellung} doppelPaare={gegnerDoppel} />
       </div>
+
+      {[...(unsereAufstellung ?? []), ...(gegnerAufstellung ?? [])].some((sp) => sp.gemeldet) && (
+        <p className="text-[11px] text-gray-400">
+          * Name aus der Mannschaftsmeldung ergänzt — der Verband liefert im Bericht nur Passnummern.
+        </p>
+      )}
 
       {daten.ersatz?.length > 0 && (
         <p className="text-[11px] text-gray-500">
