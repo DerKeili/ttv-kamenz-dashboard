@@ -1094,6 +1094,20 @@ function aushilfeMaxTage(spielDatum) {
    Hier wird gewählt, welche der tiefer eingestuften Mannschaften gefragt werden
    und wie lange die Umfrage laufen soll. Je angekreuzter Mannschaft entsteht
    eine eigene Umfrage — so bleibt die Sichtbarkeit je Mannschaft sauber getrennt. */
+  // Wann wurde die Rückmeldung zuletzt geändert? Kurz gehalten: heute nur die
+  // Uhrzeit, sonst Datum und Uhrzeit — damit die Zeile nicht überladen wirkt.
+  function meldungZeitText(iso) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    const heute = new Date();
+    const gleicherTag =
+      d.getDate() === heute.getDate() && d.getMonth() === heute.getMonth() && d.getFullYear() === heute.getFullYear();
+    const uhr = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    if (gleicherTag) return `${uhr} Uhr`;
+    return `${d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}, ${uhr} Uhr`;
+  }
+
 function AushilfeAnfrageDialog({ info, onAbbrechen, onSenden }) {
   const [gewaehlt, setGewaehlt] = useState(() => info.mannschaften.slice(0, 1).map((m) => m.id));
   const [tage, setTage] = useState(String(Math.min(AUSHILFE_FRIST_TAGE_STANDARD, info.maxTage)));
@@ -1760,6 +1774,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [aufstellungFuer, setAufstellungFuer] = useState(null);
   const [meldung, setMeldung] = useState([]);
   const [gesetztVon, setGesetztVon] = useState({}); // { "spielId:spielerId": { id, vorname } }
+  const [gemeldetAm, setGemeldetAm] = useState({}); // { "spielId:spielerId": ISO-Zeit der letzten Änderung }
   const schreibschutzTimer = useRef(null);
 
   const darfPlanen = darfMannschaftVerwalten(profil, saison.mannschaft_id);
@@ -2078,8 +2093,10 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     setMeldung(info?.spieler ?? []);
 
     const herkunft = {};
+    const zeiten = {};
     (meldungenDaten ?? []).forEach((m) => {
       if (map[m.spiel_id]) map[m.spiel_id][m.spieler_id] = m.status;
+      if (m.aktualisiert_am) zeiten[`${m.spiel_id}:${m.spieler_id}`] = m.aktualisiert_am;
       if (m.gesetzt_von) {
         const person = (spielerDaten ?? []).find((sp) => sp.id === m.gesetzt_von);
         herkunft[`${m.spiel_id}:${m.spieler_id}`] = { id: m.gesetzt_von, vorname: person?.vorname ?? "Mannschaftsführung" };
@@ -2087,6 +2104,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     });
     setMeldungen(map);
     setGesetztVon(herkunft);
+    setGemeldetAm(zeiten);
 
     if (saison.mannschaft_id) {
       const { data: mannschaft } = await supabase.from("mannschaften").select("benoetigte_spieler, hierarchie_stufe").eq("id", saison.mannschaft_id).single();
@@ -2158,6 +2176,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       ...prev,
       [`${spielId}:${spielerId}`]: fremdeZeile ? { id: profil.id, vorname: profil.vorname } : null,
     }));
+    setGemeldetAm((prev) => ({ ...prev, [`${spielId}:${spielerId}`]: new Date().toISOString() }));
 
     await supabase.from("spielerplanung_meldungen").upsert(
       {
@@ -2486,6 +2505,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                                   {st === "ja" ? "Kann" : st === "nein" ? "Kann nicht" : "Offen"}
                                 </span>
                                 {herkunft && <span className="block text-[9px] text-gray-400">von {herkunft.vorname}</span>}
+                                {meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`]) && (
+                                  <span className="block text-[9px] text-gray-400">
+                                    {meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`])}
+                                  </span>
+                                )}
                               </span>
                             </button>
                           );
@@ -2729,6 +2753,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                           {herkunft && !gesperrt && (
                             <span className="block text-[9px] text-gray-400 mt-0.5 leading-tight">
                               von {herkunft.vorname} eingetragen
+                            </span>
+                          )}
+                          {!gesperrt && status !== "offen" && meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`]) && (
+                            <span className="block text-[9px] text-gray-400 leading-tight">
+                              {meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`])}
                             </span>
                           )}
                           {schichtStil && (
