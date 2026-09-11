@@ -1094,18 +1094,25 @@ function aushilfeMaxTage(spielDatum) {
    Hier wird gewählt, welche der tiefer eingestuften Mannschaften gefragt werden
    und wie lange die Umfrage laufen soll. Je angekreuzter Mannschaft entsteht
    eine eigene Umfrage — so bleibt die Sichtbarkeit je Mannschaft sauber getrennt. */
-  // Wann wurde die Rückmeldung zuletzt geändert? Kurz gehalten: heute nur die
-  // Uhrzeit, sonst Datum und Uhrzeit — damit die Zeile nicht überladen wirkt.
-  function meldungZeitText(iso) {
-    if (!iso) return null;
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return null;
-    const heute = new Date();
-    const gleicherTag =
-      d.getDate() === heute.getDate() && d.getMonth() === heute.getMonth() && d.getFullYear() === heute.getFullYear();
-    const uhr = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-    if (gleicherTag) return `${uhr} Uhr`;
-    return `${d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}, ${uhr} Uhr`;
+  // Eine einzige graue Zeile unter dem Status: wer es eingetragen hat und wann.
+  // Bewusst knapp gehalten — in der Tabellenansicht stehen bis zu sieben
+  // Spalten nebeneinander, jede zusätzliche Zeile kostet dort spürbar Platz.
+  function meldungMeta(iso, herkunft) {
+    const teile = [];
+    if (herkunft?.vorname) teile.push(`von ${herkunft.vorname}`);
+
+    const d = iso ? new Date(iso) : null;
+    if (d && !Number.isNaN(d.getTime())) {
+      const heute = new Date();
+      const gleicherTag =
+        d.getDate() === heute.getDate() &&
+        d.getMonth() === heute.getMonth() &&
+        d.getFullYear() === heute.getFullYear();
+      const uhr = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+      teile.push(gleicherTag ? `heute ${uhr}` : `${d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })} ${uhr}`);
+    }
+
+    return teile.length > 0 ? teile.join(" · ") : null;
   }
 
 function AushilfeAnfrageDialog({ info, onAbbrechen, onSenden }) {
@@ -2504,10 +2511,9 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                                 >
                                   {st === "ja" ? "Kann" : st === "nein" ? "Kann nicht" : "Offen"}
                                 </span>
-                                {herkunft && <span className="block text-[9px] text-gray-400">von {herkunft.vorname}</span>}
-                                {meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`]) && (
-                                  <span className="block text-[9px] text-gray-400">
-                                    {meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`])}
+                                {meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft) && (
+                                  <span className="block text-[10px] text-gray-400 mt-0.5 whitespace-nowrap">
+                                    {meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft)}
                                   </span>
                                 )}
                               </span>
@@ -2750,14 +2756,9 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                             {!gesperrt && status === "offen" && <HelpCircle size={13} />}
                             {gesperrt ? "verlegt" : status === "ja" ? "Kann" : status === "nein" ? "Kann nicht" : "Offen"}
                           </button>
-                          {herkunft && !gesperrt && (
-                            <span className="block text-[9px] text-gray-400 mt-0.5 leading-tight">
-                              von {herkunft.vorname} eingetragen
-                            </span>
-                          )}
-                          {!gesperrt && status !== "offen" && meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`]) && (
-                            <span className="block text-[9px] text-gray-400 leading-tight">
-                              {meldungZeitText(gemeldetAm[`${s.id}:${sp.id}`])}
+                          {!gesperrt && meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft) && (
+                            <span className="block text-[9px] text-gray-400 mt-0.5 leading-tight whitespace-nowrap">
+                              {meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft)}
                             </span>
                           )}
                           {schichtStil && (
