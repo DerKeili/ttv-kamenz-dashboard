@@ -1776,6 +1776,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [aushilfen, setAushilfen] = useState([]);
   const [anfrageLadendId, setAnfrageLadendId] = useState(null);
   const [anfrageDialog, setAnfrageDialog] = useState(null); // Auswahl der Mannschaften + Laufzeit
+  // Tiefer eingestufte Mannschaften — nur wenn es welche gibt, ist eine Aushilfe-Anfrage sinnvoll
+  const [aushilfeMannschaften, setAushilfeMannschaften] = useState([]);
   const [anfragen, setAnfragen] = useState([]);
   const [aufstellungen, setAufstellungen] = useState({});
   const [aufstellungFuer, setAufstellungFuer] = useState(null);
@@ -2121,6 +2123,15 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       // wichtig, weil Mannschaften bei Spielermangel oft bei der Nachbar-Mannschaft aushelfen.
       if (mannschaft?.hierarchie_stufe != null) {
         const { data: alleMannschaften } = await supabase.from("mannschaften").select("id, name, hierarchie_stufe");
+
+        // Aus der untersten Mannschaft kann niemand mehr nachrücken — dort wird
+        // die Anfrage-Möglichkeit gar nicht erst angeboten.
+        setAushilfeMannschaften(
+          (alleMannschaften ?? [])
+            .filter((m) => (m.hierarchie_stufe ?? 0) > mannschaft.hierarchie_stufe)
+            .sort((a, b) => (a.hierarchie_stufe ?? 0) - (b.hierarchie_stufe ?? 0))
+        );
+
         const nachbarn = (alleMannschaften ?? []).filter(
           (m) => m.hierarchie_stufe != null && Math.abs(m.hierarchie_stufe - mannschaft.hierarchie_stufe) === 1
         );
@@ -2229,6 +2240,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
 
     if (!anfrage) {
       if (!darfPlanen) return null;
+      // Ohne tiefer eingestufte Mannschaft gibt es niemanden zu fragen
+      if (aushilfeMannschaften.length === 0) return null;
       return (
         <button
           onClick={() => aushilfeAnfragen(spiel)}
