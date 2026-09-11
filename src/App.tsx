@@ -8428,12 +8428,11 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
   const [speichern, setSpeichern] = useState(false);
   const [fehler, setFehler] = useState(null);
 
+  // Spieler, die inzwischen abgesagt haben, aber noch in der gespeicherten
+  // Aufstellung stehen — sie werden beim Öffnen ersetzt und hier benannt.
+  const [entfallene, setEntfallene] = useState([]);
+
   useEffect(() => {
-    if (vorhanden?.positionen?.length) {
-      setReihenfolge(vorhanden.positionen);
-      setDoppel(vorhanden.doppel ?? []);
-      return;
-    }
     // Vorschlag: nach offizieller Meldung, Aushilfen ans Ende, sonst nach LPZ
     const sortiert = [...kandidaten].sort((a, b) => {
       if (a.istAushilfe !== b.istAushilfe) return a.istAushilfe ? 1 : -1;
@@ -8442,9 +8441,38 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
       if (pa !== pb) return pa - pb;
       return (Number(b.offiziell?.lpz) || 0) - (Number(a.offiziell?.lpz) || 0);
     });
+
+    if (vorhanden?.positionen?.length) {
+      const verfuegbar = new Set(kandidaten.map((k) => k.id));
+
+      // Wer nicht mehr zur Verfügung steht, fliegt raus. Sonst zeigt die Auswahl
+      // leere Einträge und das Doppel lässt sich nicht mehr besetzen.
+      const behalten = vorhanden.positionen.filter((p) => verfuegbar.has(p.spieler_id));
+      const raus = vorhanden.positionen.filter((p) => !verfuegbar.has(p.spieler_id));
+
+      // Lücken mit den noch nicht gesetzten Spielern auffüllen
+      const schonGesetzt = new Set(behalten.map((p) => p.spieler_id));
+      const nachruecker = sortiert.filter((k) => !schonGesetzt.has(k.id)).map((k) => ({ spieler_id: k.id }));
+      const bereinigt = [...behalten, ...nachruecker].slice(0, benoetigt);
+
+      setReihenfolge(bereinigt);
+
+      if (raus.length === 0) {
+        setDoppel(vorhanden.doppel ?? []);
+        setEntfallene([]);
+      } else {
+        // Doppel neu vorschlagen — eine Paarung mit einem fehlenden Spieler
+        // wäre ohnehin ungültig.
+        setDoppel(standardDoppel(bereinigt));
+        setEntfallene(raus.map((p) => p.spieler_id));
+      }
+      return;
+    }
+
     const gewaehlt = sortiert.slice(0, benoetigt).map((k) => ({ spieler_id: k.id }));
     setReihenfolge(gewaehlt);
     setDoppel(standardDoppel(gewaehlt));
+    setEntfallene([]);
   }, [vorhanden, kandidaten.length, benoetigt]);
 
   function standardDoppel(liste) {
@@ -8537,6 +8565,14 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
         </div>
 
         <div className="p-4 space-y-4">
+          {entfallene.length > 0 && darfBearbeiten && (
+            <div className="p-3 rounded-md text-xs" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+              {entfallene.length === 1 ? "Ein Spieler" : `${entfallene.length} Spieler`} aus der gespeicherten
+              Aufstellung {entfallene.length === 1 ? "steht" : "stehen"} nicht mehr zur Verfügung.
+              Reihenfolge und Doppel wurden neu vorgeschlagen — bitte prüfen und erneut speichern.
+            </div>
+          )}
+
           <div>
             <p className="text-xs text-gray-500 mb-2">Einzel-Reihenfolge</p>
             <div className="space-y-1">
@@ -8551,6 +8587,9 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
                         onChange={(e) => spielerTauschenGegen(i, e.target.value)}
                         className="flex-1 min-w-0 border rounded-md px-2 py-1 text-sm"
                       >
+                        {!kandidaten.some((k) => k.id === eintrag.spieler_id) && (
+                          <option value={eintrag.spieler_id}>— bitte auswählen —</option>
+                        )}
                         {kandidaten.map((k) => (
                           <option key={k.id} value={k.id}>
                             {k.vorname} {k.nachname}
@@ -8603,7 +8642,11 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
                         >
                           {reihenfolge.map((r, ri) => {
                             const p = person(r.spieler_id);
-                            return <option key={r.spieler_id} value={r.spieler_id}>{ri + 1}. {p?.vorname} {p?.nachname}</option>;
+                            return (
+                              <option key={r.spieler_id} value={r.spieler_id}>
+                                {ri + 1}. {p ? `${p.vorname} ${p.nachname}` : "unbekannt"}
+                              </option>
+                            );
                           })}
                         </select>
                       ))}
