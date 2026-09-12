@@ -8315,6 +8315,16 @@ function wertigkeit(doppel, positionen) {
   return doppel.reduce((summe, id) => summe + (positionen.findIndex((p) => p.spieler_id === id) + 1), 0);
 }
 
+/* Spielreihenfolge im 6er-Paarkreuz, wie auf dem amtlichen Spielbericht:
+   drei Doppel, dann die Einzel über Kreuz, dann direkt gegenüber, zuletzt das
+   Entscheidungsdoppel D1 gegen D1. */
+const REIHENFOLGE_SECHSER = [
+  ["D1", "D2"], ["D2", "D1"], ["D3", "D3"],
+  ["E1", "E2"], ["E2", "E1"], ["E3", "E4"], ["E4", "E3"], ["E5", "E6"], ["E6", "E5"],
+  ["E1", "E1"], ["E2", "E2"], ["E3", "E3"], ["E4", "E4"], ["E5", "E5"], ["E6", "E6"],
+  ["D1", "D1"],
+];
+
 // Spielreihenfolge im 4er-Paarkreuz (System Werner Scheffler), wie im Vordruck
 const REIHENFOLGE_VIERER = [
   ["D1", "D1"], ["D2", "D2"],
@@ -8361,10 +8371,12 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
     </tr>`;
   }).join("");
 
-  // Spielfolge nur im Vierer-System — beim 6er-Paarkreuz weicht sie ab
+  const spielfolge =
+    reihenfolge.length === 6 ? REIHENFOLGE_SECHSER : reihenfolge.length === 4 ? REIHENFOLGE_VIERER : null;
+
   const planZeilen =
-    reihenfolge.length === 4
-      ? REIHENFOLGE_VIERER.map(([a, b]) => {
+    spielfolge
+      ? spielfolge.map(([a, b]) => {
           const eigenerCode = spiel.ist_heimspiel ? a : b;
           let wer = "";
           if (eigenerCode.startsWith("D")) {
@@ -8429,11 +8441,13 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   <div class="rechts">
     <table class="info">
       <tr><td class="b">Verband</td><td>Kreisfachverband Bautzen</td></tr>
+      <tr><td class="b">Spielklasse</td><td>${spiel.spielklasse ?? ""}</td></tr>
+      <tr><td class="b">Spielnummer</td><td>${spiel.spielnummer ?? ""}</td></tr>
       <tr><td class="b">Datum</td><td>${formatDatum(termin)}</td></tr>
       <tr><td class="b">Spielstart</td><td>${uhrzeit(termin) ?? ""}</td></tr>
       <tr><td class="b">Spielende</td><td></td></tr>
       <tr><td class="b">Austragungsort</td><td>${spiel.ist_heimspiel ? "Kamenz" : ""}</td></tr>
-      <tr><td class="b">Spielsystem</td><td>${reihenfolge.length === 4 ? "4er Werner Scheffler" : "6er Paarkreuz"}</td></tr>
+      <tr><td class="b">Spielsystem</td><td>${reihenfolge.length === 6 ? "6er Paarkreuz" : reihenfolge.length === 4 ? "4er Werner Scheffler" : ""}</td></tr>
       <tr><td class="b">Einh. Trikot A</td><td>Ja&nbsp;|&nbsp;Nein</td></tr>
       <tr><td class="b">Einh. Trikot B</td><td>Ja&nbsp;|&nbsp;Nein</td></tr>
       <tr><td class="b">Zählgeräte</td><td>Ja&nbsp;|&nbsp;Nein</td></tr>
@@ -8462,7 +8476,7 @@ ${planZeilen ? `<table>
     <th class="er">Satz</th><th class="er">Pkt.</th>
   </tr>
   ${planZeilen}
-</table>` : `<p class="klein">Spielfolge nur im Vierer-System hinterlegt &mdash; bitte den amtlichen Vordruck verwenden.</p>`}
+</table>` : `<p class="klein">Für ${reihenfolge.length} Spieler ist keine Spielfolge hinterlegt &mdash; bitte den amtlichen Vordruck verwenden.</p>`}
 
 <table class="sign">
   <tr><th>Gastgeber</th><th>Gast</th><th>Oberschiedsrichter</th></tr>
@@ -8504,14 +8518,28 @@ ${planZeilen ? `<table>
   const alterTitel = document.title;
   document.title = dateiname({ termin, heim, gast });
 
-  window.print();
-
-  // Nach dem Druckdialog wieder aufräumen
-  setTimeout(() => {
+  // Aufräumen erst, wenn der Druck- bzw. Sichern-Dialog wirklich durch ist.
+  // iOS liest den Dateinamen aus dem Seitentitel erst beim Tippen auf "Sichern" —
+  // ein Zurücksetzen nach einer Sekunde kam deshalb zu früh.
+  let erledigt = false;
+  const aufraeumen = () => {
+    if (erledigt) return;
+    erledigt = true;
+    window.removeEventListener("afterprint", aufraeumen);
+    window.removeEventListener("focus", aufraeumen);
+    clearTimeout(notbremse);
     bereich.remove();
     stil.remove();
     document.title = alterTitel;
-  }, 1000);
+  };
+
+  // Falls weder afterprint noch focus feuern: nach zwei Minuten trotzdem aufräumen
+  const notbremse = setTimeout(aufraeumen, 120000);
+  window.addEventListener("afterprint", aufraeumen);
+  // Kommt der Nutzer aus dem Dialog zur Seite zurück, ist der Vorgang beendet
+  setTimeout(() => window.addEventListener("focus", aufraeumen), 2000);
+
+  window.print();
 }
 
 // Beispiel: 11.09.2026_SG-Wiesa-2_vs_TTV-97-Kamenz-3_Aufstellung
