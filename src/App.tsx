@@ -8337,15 +8337,31 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   };
   const passnr = (id) => person(id)?.passnummer ?? "";
 
-  const einzelZeilen = reihenfolge
-    .map((r, i) => `<tr><td class="nr">${i + 1}</td><td>${name(r.spieler_id)}</td><td class="pass">${passnr(r.spieler_id)}</td></tr>`)
-    .join("");
+  // Aufstellungsblock: links die eigene Mannschaft mit Namen, rechts der Gegner
+  // als Leerfelder zum Eintragen am Spieltag — wie im amtlichen Vordruck.
+  const plaetze = Math.max(reihenfolge.length, 4);
+  const einzelZeilen = Array.from({ length: plaetze }, (_, i) => {
+    const eintrag = reihenfolge[i];
+    const eigen = eintrag ? name(eintrag.spieler_id) : "";
+    const nr = eintrag ? passnr(eintrag.spieler_id) : "";
+    return `<tr>
+      <td class="nr">${i + 1}</td><td class="nm">${spiel.ist_heimspiel ? eigen : ""}</td><td class="ps">${spiel.ist_heimspiel ? nr : ""}</td>
+      <td class="nr">${i + 1}</td><td class="nm">${spiel.ist_heimspiel ? "" : eigen}</td><td class="ps">${spiel.ist_heimspiel ? "" : nr}</td>
+    </tr>`;
+  }).join("");
 
-  const doppelZeilen = doppel
-    .map((d) => `<tr><td class="nr">D${d.nr}</td><td>${d.spieler.map(name).join("<br>")}</td><td class="pass">${d.spieler.map(passnr).join("<br>")}</td></tr>`)
-    .join("");
+  const doppelPlaetze = plaetze > 4 ? 3 : 2;
+  const doppelZeilen = Array.from({ length: doppelPlaetze }, (_, i) => {
+    const d = doppel.find((x) => x.nr === i + 1);
+    const namen = d ? d.spieler.map(name).filter(Boolean).join("<br>") : "";
+    const nummern = d ? d.spieler.map(passnr).filter(Boolean).join("<br>") : "";
+    return `<tr>
+      <td class="nr">D${i + 1}</td><td class="nm">${spiel.ist_heimspiel ? namen : ""}</td><td class="ps">${spiel.ist_heimspiel ? nummern : ""}</td>
+      <td class="nr">D${i + 1}</td><td class="nm">${spiel.ist_heimspiel ? "" : namen}</td><td class="ps">${spiel.ist_heimspiel ? "" : nummern}</td>
+    </tr>`;
+  }).join("");
 
-  // Begegnungsplan nur beim Vierer-System — bei sechs Spielern weicht er ab
+  // Spielfolge nur im Vierer-System — beim 6er-Paarkreuz weicht sie ab
   const planZeilen =
     reihenfolge.length === 4
       ? REIHENFOLGE_VIERER.map(([a, b]) => {
@@ -8353,54 +8369,111 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
           let wer = "";
           if (eigenerCode.startsWith("D")) {
             const d = doppel.find((x) => `D${x.nr}` === eigenerCode);
-            wer = d ? d.spieler.map((id) => person(id)?.nachname ?? "").join(" / ") : "";
+            wer = d ? d.spieler.map((id) => person(id)?.nachname ?? "").filter(Boolean).join(" / ") : "";
           } else {
             const index = Number(eigenerCode.slice(1)) - 1;
             wer = person(reihenfolge[index]?.spieler_id)?.nachname ?? "";
           }
-          return `<tr><td class="nr">${a}</td><td class="nr">${b}</td><td>${wer}</td><td class="leer"></td><td class="leer"></td></tr>`;
+          const linkeSpalte = spiel.ist_heimspiel ? wer : "";
+          const rechteSpalte = spiel.ist_heimspiel ? "" : wer;
+          return `<tr>
+            <td class="nr">${a}</td><td class="nm">${linkeSpalte}</td>
+            <td class="nr">${b}</td><td class="nm">${rechteSpalte}</td>
+            <td class="sz"></td><td class="sz"></td><td class="sz"></td><td class="sz"></td><td class="sz"></td>
+            <td class="er"></td><td class="er"></td>
+          </tr>`;
         }).join("")
       : "";
 
   const inhalt = `<style>
-  #druckbereich { font-family: Helvetica, Arial, sans-serif; color: #1a1a18; font-size: 11pt; background: #fff; }
-  #druckbereich h1 { font-size: 15pt; margin: 0 0 2mm; }
-  #druckbereich .kopf { border-bottom: 2px solid #0F2E2A; padding-bottom: 3mm; margin-bottom: 5mm; }
-  #druckbereich .zeile { display: flex; gap: 8mm; flex-wrap: wrap; font-size: 10pt; color: #444; }
-  #druckbereich h2 { font-size: 12pt; margin: 6mm 0 2mm; }
-  #druckbereich table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
-  #druckbereich td, #druckbereich th { border: 1px solid #999; padding: 2mm 3mm; text-align: left; }
-  #druckbereich th { background: #e8e8e4; font-size: 10pt; }
-  #druckbereich .nr { width: 12mm; font-weight: bold; text-align: center; }
-  #druckbereich .leer { width: 22mm; }
-  #druckbereich .pass { width: 24mm; }
-  #druckbereich .fuss { margin-top: 8mm; font-size: 9pt; color: #666; }
-  #druckbereich .unterschrift { margin-top: 14mm; display: flex; gap: 12mm; }
-  #druckbereich .unterschrift div { flex: 1; border-top: 1px solid #999; padding-top: 2mm; font-size: 9pt; color: #666; }
+  #druckbereich { font-family: Helvetica, Arial, sans-serif; color: #000; font-size: 8.5pt; background: #fff; line-height: 1.25; }
+  #druckbereich h1 { font-size: 13pt; letter-spacing: .5px; margin: 0 0 2mm; text-align: center; }
+  #druckbereich table { width: 100%; border-collapse: collapse; }
+  #druckbereich td, #druckbereich th { border: 0.4pt solid #000; padding: 0.8mm 1.2mm; vertical-align: top; }
+  #druckbereich th { background: #eee; font-size: 7.5pt; font-weight: bold; text-align: left; }
+  #druckbereich .team { font-weight: bold; font-size: 10pt; text-align: center; background: #eee; }
+  #druckbereich .seite { width: 5mm; text-align: center; font-weight: bold; background: #ddd; }
+  #druckbereich .nr { width: 7mm; text-align: center; font-weight: bold; }
+  #druckbereich .ps { width: 16mm; text-align: right; font-size: 8pt; }
+  #druckbereich .nm { min-height: 4.2mm; }
+  #druckbereich .sz { width: 9mm; }
+  #druckbereich .er { width: 10mm; }
+  #druckbereich .info td { font-size: 8pt; }
+  #druckbereich .info .b { font-weight: bold; background: #f4f4f4; width: 26mm; }
+  #druckbereich .rahmen { display: flex; gap: 2mm; align-items: flex-start; }
+  #druckbereich .rahmen > .links { flex: 1 1 auto; }
+  #druckbereich .rahmen > .rechts { flex: 0 0 52mm; }
+  #druckbereich .abstand { height: 2mm; }
+  #druckbereich .klein { font-size: 7pt; color: #333; margin-top: 1.5mm; }
+  #druckbereich .sign td { height: 13mm; vertical-align: bottom; font-size: 7pt; color: #333; }
 </style>
-  <div class="kopf">
-    <h1>${heim} &ndash; ${gast}</h1>
-    <div class="zeile">
-      <span>${wochentagLang(termin)}, ${formatDatum(termin)}${uhrzeit(termin) ? ` um ${uhrzeit(termin)}` : ""}</span>
-      <span>${spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"}</span>
-    </div>
+
+<h1>PUNKTMANNSCHAFTSSPIEL</h1>
+
+<div class="rahmen">
+  <div class="links">
+    <table>
+      <tr>
+        <td class="seite">A</td><td class="team" colspan="2">${heim}</td>
+        <td class="seite">B</td><td class="team" colspan="2">${gast}</td>
+      </tr>
+      <tr>
+        <th class="nr">Nr</th><th>Name, Vorname</th><th class="ps">Passnr.</th>
+        <th class="nr">Nr</th><th>Name, Vorname</th><th class="ps">Passnr.</th>
+      </tr>
+      ${einzelZeilen}
+      ${doppelZeilen}
+    </table>
   </div>
 
-  <h2>Einzel &ndash; ${mannschaftName}</h2>
-  <table><thead><tr><th class="nr">Nr.</th><th>Name, Vorname</th><th class="pass">Passnr.</th></tr></thead><tbody>${einzelZeilen}</tbody></table>
+  <div class="rechts">
+    <table class="info">
+      <tr><td class="b">Verband</td><td>Kreisfachverband Bautzen</td></tr>
+      <tr><td class="b">Datum</td><td>${formatDatum(termin)}</td></tr>
+      <tr><td class="b">Spielstart</td><td>${uhrzeit(termin) ?? ""}</td></tr>
+      <tr><td class="b">Spielende</td><td></td></tr>
+      <tr><td class="b">Austragungsort</td><td>${spiel.ist_heimspiel ? "Kamenz" : ""}</td></tr>
+      <tr><td class="b">Spielsystem</td><td>${reihenfolge.length === 4 ? "4er Werner Scheffler" : "6er Paarkreuz"}</td></tr>
+      <tr><td class="b">Einh. Trikot A</td><td>Ja&nbsp;|&nbsp;Nein</td></tr>
+      <tr><td class="b">Einh. Trikot B</td><td>Ja&nbsp;|&nbsp;Nein</td></tr>
+      <tr><td class="b">Zählgeräte</td><td>Ja&nbsp;|&nbsp;Nein</td></tr>
+      <tr><td class="b">Banden</td><td>Ja&nbsp;|&nbsp;Nein</td></tr>
+    </table>
+  </div>
+</div>
 
-  <h2>Doppel</h2>
-  <table><thead><tr><th class="nr">Nr.</th><th>Namen</th><th class="pass">Passnr.</th></tr></thead><tbody>${doppelZeilen}</tbody></table>
+<div class="abstand"></div>
 
-  ${planZeilen ? `<h2>Spielfolge (Vierer&#8209;System)</h2>
-  <table><thead><tr><th class="nr">A</th><th class="nr">B</th><th>${mannschaftName}</th><th class="leer">Sätze</th><th class="leer">Punkte</th></tr></thead>
-  <tbody>${planZeilen}</tbody></table>` : ""}
+<table>
+  <tr>
+    <th colspan="3">Ersatzspieler / Liga / Position &mdash; ${heim}</th>
+    <th colspan="3">Ersatzspieler / Liga / Position &mdash; ${gast}</th>
+  </tr>
+  <tr><td class="nm" colspan="3">&nbsp;</td><td class="nm" colspan="3">&nbsp;</td></tr>
+</table>
 
-  <div class="unterschrift"><div>Unterschrift Mannschaftsführer</div><div>Unterschrift Gegner</div></div>
-  <p class="fuss">
-    Erstellt mit der Mannschafts-App des TTV 97 Kamenz e.V. Dies ist eine Aufstellungshilfe,
-    kein amtlicher Spielbericht &ndash; Unterschriften und Ergebnisse bitte am Spieltag ergänzen.
-  </p>`;
+<div class="abstand"></div>
+
+${planZeilen ? `<table>
+  <tr>
+    <th class="nr">Nr</th><th>Mannschaft A</th>
+    <th class="nr">Nr</th><th>Mannschaft B</th>
+    <th class="sz">1.</th><th class="sz">2.</th><th class="sz">3.</th><th class="sz">4.</th><th class="sz">5.</th>
+    <th class="er">Satz</th><th class="er">Pkt.</th>
+  </tr>
+  ${planZeilen}
+</table>` : `<p class="klein">Spielfolge nur im Vierer-System hinterlegt &mdash; bitte den amtlichen Vordruck verwenden.</p>`}
+
+<table class="sign">
+  <tr><th>Gastgeber</th><th>Gast</th><th>Oberschiedsrichter</th></tr>
+  <tr><td>Unterschrift</td><td>Unterschrift</td><td>Unterschrift</td></tr>
+  <tr><td>Druckschrift</td><td>Druckschrift</td><td>Druckschrift</td></tr>
+</table>
+
+<p class="klein">
+  Erstellt mit der Mannschafts-App des TTV 97 Kamenz e.V. &mdash; Aufstellungshilfe, kein amtlicher
+  Spielbericht. Unterschriften und Ergebnisse bitte am Spieltag ergänzen.
+</p>`;
 
   // iOS blockiert das Drucken aus einem versteckten Rahmen. Deshalb blenden wir den
   // Bogen kurzzeitig in die Seite selbst ein und verstecken beim Drucken alles andere.
@@ -8416,7 +8489,7 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
     @media print {
       body > *:not(#druckbereich) { display: none !important; }
       #druckbereich { display: block !important; position: static; }
-      @page { size: A4 portrait; margin: 14mm; }
+      @page { size: A4 portrait; margin: 10mm; }
     }
   `;
   document.head.appendChild(stil);
