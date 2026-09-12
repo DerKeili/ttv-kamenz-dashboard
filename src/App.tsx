@@ -8499,13 +8499,35 @@ ${planZeilen ? `<table>
   bereich.innerHTML = inhalt;
   document.body.appendChild(bereich);
 
+  // Der Seitentitel wird zum Dateinamen, wenn im Druckdialog "Als PDF sichern"
+  // gewählt wird. Deshalb vorher setzen und danach zurücksetzen.
+  const alterTitel = document.title;
+  document.title = dateiname({ termin, heim, gast });
+
   window.print();
 
   // Nach dem Druckdialog wieder aufräumen
   setTimeout(() => {
     bereich.remove();
     stil.remove();
+    document.title = alterTitel;
   }, 1000);
+}
+
+// Beispiel: 11.09.2026_SG-Wiesa-2_vs_TTV-97-Kamenz-3_Aufstellung
+function dateiname({ termin, heim, gast }) {
+  const kurz = (text) =>
+    String(text ?? "")
+      .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+      .replace(/Ä/g, "Ae").replace(/Ö/g, "Oe").replace(/Ü/g, "Ue")
+      .replace(/[^A-Za-z0-9]+/g, "-")   // Umlaute und Sonderzeichen raus, sonst
+      .replace(/^-+|-+$/g, "");          // scheitert das Sichern auf manchen Geräten
+
+  const datum = termin
+    ? new Date(termin).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }).replace(/\./g, ".")
+    : "Spiel";
+
+  return `${datum}_${kurz(heim)}_vs_${kurz(gast)}_Aufstellung`;
 }
 
 function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbeiten, vorhanden, mannschaftName, onSchliessen, onGespeichert }) {
@@ -8584,9 +8606,40 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
 
   function spielerTauschenGegen(index, neueId) {
     const neu = [...reihenfolge];
+    // Steht der gewählte Spieler schon auf einer anderen Position, tauschen die
+    // beiden die Plätze. Sonst stünde er doppelt in der Aufstellung.
+    const bisher = neu.findIndex((r, i) => i !== index && r.spieler_id === neueId);
+    if (bisher !== -1) neu[bisher] = { spieler_id: neu[index].spieler_id };
     neu[index] = { spieler_id: neueId };
     setReihenfolge(neu);
     setDoppel(standardDoppel(neu));
+  }
+
+  // Setzt einen Spieler auf einen Doppelplatz. Steht er bereits woanders im
+  // Doppel, tauschen die beiden Plätze — niemand kann zweimal antreten.
+  function doppelBesetzen(doppelIndex, platz, neueId) {
+    const vorher = doppel[doppelIndex]?.spieler?.[platz] ?? null;
+    let gefundenIn = null;
+    let gefundenPlatz = null;
+    doppel.forEach((d, di) => {
+      d.spieler.forEach((sid, si) => {
+        if (sid === neueId && !(di === doppelIndex && si === platz)) {
+          gefundenIn = di;
+          gefundenPlatz = si;
+        }
+      });
+    });
+
+    setDoppel(
+      doppel.map((d, di) => ({
+        ...d,
+        spieler: d.spieler.map((sid, si) => {
+          if (di === doppelIndex && si === platz) return neueId;
+          if (di === gefundenIn && si === gefundenPlatz) return vorher;
+          return sid;
+        }),
+      }))
+    );
   }
 
   // Prüfungen nach Wettspielordnung — nur Hinweise, nichts wird blockiert
@@ -8718,12 +8771,7 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
                         <select
                           key={platz}
                           value={d.spieler[platz] ?? ""}
-                          onChange={(e) => {
-                            const neu = doppel.map((x, xi) =>
-                              xi === i ? { ...x, spieler: x.spieler.map((sid, si) => (si === platz ? e.target.value : sid)) } : x
-                            );
-                            setDoppel(neu);
-                          }}
+                          onChange={(e) => doppelBesetzen(i, platz, e.target.value)}
                           className="flex-1 min-w-0 border rounded-md px-2 py-1 text-sm"
                         >
                           {reihenfolge.map((r, ri) => {
