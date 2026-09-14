@@ -870,7 +870,7 @@ function PasswortAendern({ profil }) {
 
 /* ---------- Dashboard ---------- */
 
-function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender }) {
+function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender, onOeffneBericht }) {
   const [ladend, setLadend] = useState(true);
   const [eigenerTabellenplatz, setEigenerTabellenplatz] = useState(null);
   const [naechstesSpiel, setNaechstesSpiel] = useState(null);
@@ -922,6 +922,8 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
           </p>
         </div>
       )}
+
+      <NeueSpielberichte onOeffnen={onOeffneBericht} />
 
       <News profil={profil} />
 
@@ -7488,6 +7490,7 @@ const NAV_BASIS = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "tabelle", label: "Tabelle", icon: Table2 },
   { key: "ergebnisse", label: "Ergebnisse", icon: Trophy },
+  { key: "berichte", label: "Spielberichte", icon: Newspaper },
   { key: "planung", label: "Spielerplanung", icon: ShieldCheck },
   { key: "analyse", label: "Analyse", icon: TrendingUp },
   { key: "turniere", label: "Vereinsturniere", icon: Award },
@@ -7772,7 +7775,7 @@ function News({ profil }) {
   async function laden() {
     setLadend(true);
     const [{ data: news }, { data: personen }, { data: teams }] = await Promise.all([
-      supabase.from("news").select("*").order("erstellt_am", { ascending: false }),
+      supabase.from("news").select("*").eq("art", "neuigkeit").order("erstellt_am", { ascending: false }),
       supabase.from("profiles").select("id, vorname, nachname, avatar_url"),
       supabase.from("mannschaften").select("id, name, hierarchie_stufe"),
     ]);
@@ -7808,7 +7811,7 @@ function News({ profil }) {
     };
     const { error } = bearbeiteId
       ? await supabase.from("news").update({ ...werte, aktualisiert_am: new Date().toISOString() }).eq("id", bearbeiteId)
-      : await supabase.from("news").insert({ ...werte, autor_id: profil.id });
+      : await supabase.from("news").insert({ ...werte, autor_id: profil.id, art: "neuigkeit" });
     setSpeichernLadend(false);
     if (error) return setFehler(error.message);
     setFormOffen(false);
@@ -7956,6 +7959,284 @@ function News({ profil }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* ---------- Spielberichte ----------
+   Eigener Menüpunkt statt Dashboard: Die Berichte sind lang, auf dem Dashboard
+   haben sie alles andere erschlagen. Dort steht jetzt nur noch ein Hinweis mit
+   Sprung hierher. Gespeichert werden sie in derselben Tabelle wie die
+   Neuigkeiten, unterschieden über die Spalte "art".
+   Schreibrecht wie bei Neuigkeiten — eine zusätzliche Berechtigung wäre eine
+   weitere Stellschraube, die gepflegt werden müsste, ohne echten Gewinn. */
+
+function darfBerichteSchreiben(profil) {
+  return profil.ist_admin || istTeamLeiter(profil) || profil.darf_news === true;
+}
+
+function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
+  const [berichte, setBerichte] = useState([]);
+  const [autoren, setAutoren] = useState({});
+  const [mannschaften, setMannschaften] = useState([]);
+  const [ladend, setLadend] = useState(true);
+  const [filter, setFilter] = useState("alle");
+  const [formOffen, setFormOffen] = useState(false);
+  const [bearbeiteId, setBearbeiteId] = useState(null);
+  const [form, setForm] = useState({ titel: "", inhalt: "", mannschaftId: "" });
+  const [loeschenBestaetigung, setLoeschenBestaetigung] = useState(null);
+  const [speichernLadend, setSpeichernLadend] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  const darfSchreiben = darfBerichteSchreiben(profil);
+
+  async function laden() {
+    setLadend(true);
+    const [{ data: daten }, { data: personen }, { data: teams }] = await Promise.all([
+      supabase.from("news").select("*").eq("art", "spielbericht").order("erstellt_am", { ascending: false }),
+      supabase.from("profiles").select("id, vorname, nachname"),
+      supabase.from("mannschaften").select("id, name, hierarchie_stufe"),
+    ]);
+    setBerichte(daten ?? []);
+    setAutoren(Object.fromEntries((personen ?? []).map((p) => [p.id, p])));
+    setMannschaften(sortiereMannschaften(teams));
+    setLadend(false);
+  }
+
+  useEffect(() => { laden(); }, [profil.id]);
+
+  // Vom Dashboard herübergesprungen: passenden Filter setzen und markieren
+  useEffect(() => {
+    if (!zielBerichtId || berichte.length === 0) return;
+    const treffer = berichte.find((b) => b.id === zielBerichtId);
+    if (treffer) setFilter(treffer.mannschaft_id ?? "alle");
+    const feld = document.getElementById(`bericht-${zielBerichtId}`);
+    if (feld) feld.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Markierung nach kurzer Zeit zurücknehmen, sonst bleibt sie dauerhaft stehen
+    const uhr = setTimeout(() => onZielVerbraucht?.(), 4000);
+    return () => clearTimeout(uhr);
+  }, [zielBerichtId, berichte.length]);
+
+  function formularOeffnen(bericht) {
+    setFehler(null);
+    if (bericht) {
+      setBearbeiteId(bericht.id);
+      setForm({ titel: bericht.titel, inhalt: bericht.inhalt, mannschaftId: bericht.mannschaft_id ?? "" });
+    } else {
+      setBearbeiteId(null);
+      // Vorbelegt mit der eigenen Mannschaft — der häufigste Fall
+      setForm({ titel: "", inhalt: "", mannschaftId: profil.mannschaft_id ?? "" });
+    }
+    setFormOffen(true);
+  }
+
+  async function speichern() {
+    setFehler(null);
+    if (!form.titel.trim() || !form.inhalt.trim()) return setFehler("Bitte Überschrift und Text ausfüllen.");
+    // Anders als bei Neuigkeiten Pflicht: Die Berichte werden nach Mannschaft sortiert
+    if (!form.mannschaftId) return setFehler("Bitte die Mannschaft auswählen, um die es im Bericht geht.");
+
+    setSpeichernLadend(true);
+    const werte = {
+      titel: form.titel.trim(),
+      inhalt: form.inhalt.trim(),
+      mannschaft_id: form.mannschaftId,
+    };
+    const { error } = bearbeiteId
+      ? await supabase.from("news").update({ ...werte, aktualisiert_am: new Date().toISOString() }).eq("id", bearbeiteId)
+      : await supabase.from("news").insert({ ...werte, autor_id: profil.id, art: "spielbericht" });
+    setSpeichernLadend(false);
+    if (error) return setFehler(error.message);
+    setFormOffen(false);
+    setBearbeiteId(null);
+    laden();
+  }
+
+  async function loeschen(id) {
+    if (loeschenBestaetigung !== id) return setLoeschenBestaetigung(id);
+    const { error } = await supabase.from("news").delete().eq("id", id);
+    setLoeschenBestaetigung(null);
+    if (error) return setFehler(error.message);
+    laden();
+  }
+
+  const sichtbare = filter === "alle" ? berichte : berichte.filter((b) => b.mannschaft_id === filter);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {[{ id: "alle", name: "Alle" }, ...mannschaften].map((m) => {
+          const aktiv = filter === m.id;
+          const anzahl = m.id === "alle" ? berichte.length : berichte.filter((b) => b.mannschaft_id === m.id).length;
+          return (
+            <button
+              key={m.id}
+              onClick={() => setFilter(m.id)}
+              className="px-4 py-2 rounded-full text-sm font-semibold border"
+              style={aktiv
+                ? { background: COLORS.orange, color: "#fff", borderColor: COLORS.orange }
+                : { background: "#fff", color: COLORS.anthracite }}
+            >
+              {m.name}
+              {anzahl > 0 && <span className="ml-1.5 opacity-70">{anzahl}</span>}
+            </button>
+          );
+        })}
+        {darfSchreiben && !formOffen && (
+          <button
+            onClick={() => formularOeffnen(null)}
+            className="ml-auto text-xs px-3 py-2 rounded-md text-white font-semibold flex items-center gap-1"
+            style={{ background: COLORS.orange }}
+          >
+            <Plus size={13} /> Bericht schreiben
+          </button>
+        )}
+      </div>
+
+      {formOffen && (
+        <div className="bg-white rounded-lg border p-4">
+          <label className="block text-xs text-gray-500 mb-1">Überschrift</label>
+          <input
+            value={form.titel}
+            onChange={(e) => setForm({ ...form, titel: e.target.value })}
+            placeholder="z. B. TTV 97 Kamenz 2 – SG Großnaundorf 3  9:6"
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          />
+          <label className="block text-xs text-gray-500 mb-1">Mannschaft</label>
+          <select
+            value={form.mannschaftId}
+            onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          >
+            <option value="">Bitte auswählen</option>
+            {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <label className="block text-xs text-gray-500 mb-1">Bericht</label>
+          <textarea
+            value={form.inhalt}
+            onChange={(e) => setForm({ ...form, inhalt: e.target.value })}
+            rows={12}
+            className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+          />
+          {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={speichern}
+              disabled={speichernLadend}
+              className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+              style={{ background: COLORS.orange, opacity: speichernLadend ? 0.6 : 1 }}
+            >
+              {speichernLadend ? "Speichere…" : bearbeiteId ? "Änderungen speichern" : "Veröffentlichen"}
+            </button>
+            <button onClick={() => { setFormOffen(false); setBearbeiteId(null); setFehler(null); }} className="px-4 py-2 rounded-md text-sm border">
+              Abbrechen
+            </button>
+          </div>
+        </div>
+      )}
+
+      {ladend ? (
+        <Leerzustand text="Lade Spielberichte…" />
+      ) : sichtbare.length === 0 ? (
+        <Leerzustand text={darfSchreiben ? "Noch kein Bericht — schreib den ersten." : "Für diese Auswahl gibt es noch keine Spielberichte."} />
+      ) : (
+        sichtbare.map((b) => {
+          const autor = autoren[b.autor_id];
+          const team = mannschaften.find((m) => m.id === b.mannschaft_id);
+          const hervorgehoben = b.id === zielBerichtId;
+          return (
+            <div
+              key={b.id}
+              id={`bericht-${b.id}`}
+              className="bg-white rounded-lg border p-5"
+              style={hervorgehoben ? { borderColor: COLORS.orange, borderWidth: 2 } : {}}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-bold" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>{b.titel}</p>
+                  <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px] text-gray-400">
+                    <span>{new Date(b.erstellt_am).toLocaleDateString("de-DE", { day: "2-digit", month: "long", year: "numeric" })}</span>
+                    {autor && <span>· {autor.vorname} {autor.nachname}</span>}
+                    {team && (
+                      <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#E4F2EE", color: COLORS.petrol }}>
+                        {team.name}
+                      </span>
+                    )}
+                    {b.aktualisiert_am && <span>· bearbeitet</span>}
+                  </div>
+                </div>
+                {darfSchreiben && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    {loeschenBestaetigung === b.id ? (
+                      <>
+                        <span className="text-xs text-gray-500">Löschen?</span>
+                        <button onClick={() => loeschen(b.id)} className="text-xs px-2 py-1 rounded-md text-white" style={{ background: COLORS.orangeDeep }}>Ja</button>
+                        <button onClick={() => setLoeschenBestaetigung(null)} className="text-xs px-2 py-1 rounded-md border">Nein</button>
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={() => formularOeffnen(b)} className="text-gray-400 hover:text-gray-600"><Pencil size={14} /></button>
+                        <button onClick={() => loeschen(b.id)} style={{ color: COLORS.orangeDeep }}><Trash2 size={14} /></button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+              <p className="text-sm text-gray-600 mt-3 whitespace-pre-wrap leading-relaxed">
+                <TextMitLinks text={b.inhalt} />
+              </p>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+/* Kurzer Hinweis auf dem Dashboard — nur Überschrift und Mannschaft, der Text
+   selbst steht unter "Spielberichte". */
+function NeueSpielberichte({ onOeffnen }) {
+  const [berichte, setBerichte] = useState([]);
+  const [mannschaften, setMannschaften] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      const [{ data: daten }, { data: teams }] = await Promise.all([
+        supabase.from("news").select("id, titel, mannschaft_id, erstellt_am")
+          .eq("art", "spielbericht").order("erstellt_am", { ascending: false }).limit(3),
+        supabase.from("mannschaften").select("id, name, hierarchie_stufe"),
+      ]);
+      setBerichte(daten ?? []);
+      setMannschaften(sortiereMannschaften(teams));
+    })();
+  }, []);
+
+  if (berichte.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={FileText}>Neue Spielberichte</SectionLabel>
+      <div className="mt-3 space-y-2">
+        {berichte.map((b) => {
+          const team = mannschaften.find((m) => m.id === b.mannschaft_id);
+          return (
+            <button
+              key={b.id}
+              onClick={() => onOeffnen(b.id)}
+              className="w-full text-left flex items-start justify-between gap-3 py-2 border-b last:border-b-0 hover:bg-gray-50 rounded-md px-1"
+            >
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold truncate" style={{ color: COLORS.anthracite }}>{b.titel}</span>
+                <span className="block text-[11px] text-gray-400 mt-0.5">
+                  {new Date(b.erstellt_am).toLocaleDateString("de-DE", { day: "2-digit", month: "long", year: "numeric" })}
+                  {team ? ` · ${team.name}` : ""}
+                </span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 mt-1 text-gray-300" />
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -9114,6 +9395,7 @@ export default function App() {
   const [sessionGeprueft, setSessionGeprueft] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [zielUmfrageId, setZielUmfrageId] = useState(null);
+  const [zielBerichtId, setZielBerichtId] = useState(null); // vom Dashboard angesprungener Spielbericht
   const [zielSpielerId, setZielSpielerId] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
   const [saisons, setSaisons] = useState([]);
@@ -9362,6 +9644,10 @@ export default function App() {
                 <Dashboard
                   saison={aktiveSaison}
                   profil={profil}
+                  onOeffneBericht={(berichtId) => {
+                    setZielBerichtId(berichtId);
+                    setTab("berichte");
+                  }}
                   onOeffneUmfrage={(umfrageId) => {
                     setZielUmfrageId(umfrageId);
                     setTab("umfragen");
@@ -9412,6 +9698,14 @@ export default function App() {
                   {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
                   {tab === "analyse" && <Analyse saison={angezeigteSaison} profil={profil} />}
                 </>
+              )}
+
+              {tab === "berichte" && (
+                <Spielberichte
+                  profil={profil}
+                  zielBerichtId={zielBerichtId}
+                  onZielVerbraucht={() => setZielBerichtId(null)}
+                />
               )}
 
               {tab === "kalender" && <Kalender profil={profil} />}
