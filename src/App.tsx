@@ -8067,7 +8067,11 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
       <div className="flex flex-wrap items-center gap-2">
         {[{ id: "alle", name: "Alle" }, ...mannschaften].map((m) => {
           const aktiv = filter === m.id;
-          const anzahl = m.id === "alle" ? berichte.length : berichte.filter((b) => b.mannschaft_id === m.id).length;
+          // Zahlen wären hier missverständlich — stattdessen wirken Mannschaften
+          // ohne Bericht gedämpft, bleiben aber anwählbar.
+          const hatBerichte = m.id === "alle"
+            ? berichte.length > 0
+            : berichte.some((b) => b.mannschaft_id === m.id);
           return (
             <button
               key={m.id}
@@ -8075,10 +8079,9 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
               className="px-4 py-2 rounded-full text-sm font-semibold border"
               style={aktiv
                 ? { background: COLORS.orange, color: "#fff", borderColor: COLORS.orange }
-                : { background: "#fff", color: COLORS.anthracite }}
+                : { background: "#fff", color: hatBerichte ? COLORS.anthracite : "#B0B0AC" }}
             >
               {m.name}
-              {anzahl > 0 && <span className="ml-1.5 opacity-70">{anzahl}</span>}
             </button>
           );
         })}
