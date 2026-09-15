@@ -3548,6 +3548,7 @@ function Kalender({ profil }) {
 
   const [bearbeitenId, setBearbeitenId] = useState(null);
   const [bearbeitenForm, setBearbeitenForm] = useState({ titel: "", datum: "", datumEnde: "", typ: "termin", mannschaftId: "" });
+  const [offeneArchivJahre, setOffeneArchivJahre] = useState([]);
 
   async function laden() {
     setLadend(true);
@@ -3708,144 +3709,9 @@ function Kalender({ profil }) {
 
   const iconFor = { training: Users, spiel: Trophy, lehrgang: GraduationCap, termin: CalendarDays, vereinstreffen: Users, turnier: Trophy };
 
-  return (
-    <div className="space-y-4">
-      {(profil.ist_admin || istTeamLeiter(profil)) && (
-        <div className="bg-white rounded-lg border p-4">
-          <SectionLabel icon={Plus}>Neuen Termin anlegen</SectionLabel>
-          <div className="grid sm:grid-cols-2 gap-2 mb-2">
-            <input placeholder="Titel" value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2" />
-
-            <div className="min-w-0">
-              <label className="block text-xs text-gray-400 mb-1">Datum</label>
-              <input type="date" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
-            </div>
-            <div className="min-w-0">
-              <label className="block text-xs text-gray-400 mb-1">Uhrzeit</label>
-              <input type="time" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.uhrzeit} onChange={(e) => setForm({ ...form, uhrzeit: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
-            </div>
-
-            {!form.zeitraum && (
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Dauer</label>
-                <select
-                  value={[30, 45, 60, 90, 120, 180, 240, 480].includes(form.dauerMinuten) ? form.dauerMinuten : "eigene"}
-                  onChange={(e) => {
-                    if (e.target.value === "eigene") {
-                      setForm({ ...form, dauerMinuten: "eigene" });
-                    } else {
-                      setForm({ ...form, dauerMinuten: Number(e.target.value) });
-                    }
-                  }}
-                  className="w-full border rounded-md px-3 py-2 text-sm"
-                >
-                  <option value={30}>30 Minuten</option>
-                  <option value={45}>45 Minuten</option>
-                  <option value={60}>1 Stunde</option>
-                  <option value={90}>1,5 Stunden</option>
-                  <option value={120}>2 Stunden</option>
-                  <option value={180}>3 Stunden</option>
-                  <option value={240}>4 Stunden</option>
-                  <option value={480}>8 Stunden</option>
-                  <option value="eigene">Eigene Dauer…</option>
-                </select>
-                {form.dauerMinuten === "eigene" && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <input
-                      type="number"
-                      min={1}
-                      placeholder="Stunden"
-                      onChange={(e) => setForm((f) => ({ ...f, dauerMinutenEigen: Number(e.target.value) * 60 }))}
-                      className="w-full border rounded-md px-3 py-2 text-sm"
-                    />
-                    <span className="text-xs text-gray-400 shrink-0">Stunden</span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Typ</label>
-              <select value={form.typ} onChange={(e) => setForm({ ...form, typ: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
-                <option value="training">Training</option>
-                <option value="spiel">Spiel</option>
-                <option value="lehrgang">Lehrgang</option>
-                <option value="vereinstreffen">Vereinstreffen</option>
-                <option value="turnier">Turnier</option>
-                <option value="termin">Sonstiger Termin</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Sichtbar für</label>
-              {profil.ist_admin ? (
-                <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
-                  <option value="">Alle Mannschaften</option>
-                  {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-              ) : (
-                <p className="text-sm text-gray-500 border rounded-md px-3 py-2 bg-gray-50">
-                  {mannschaften.find((m) => m.id === profil.mannschaft_id)?.name ?? "Nur deine Mannschaft"}
-                </p>
-              )}
-            </div>
-
-            <label className="flex items-center gap-2 text-sm sm:col-span-2 mt-1">
-              <input
-                type="checkbox"
-                checked={form.zeitraum}
-                onChange={(e) => setForm({ ...form, zeitraum: e.target.checked, datumEnde: e.target.checked ? form.datumEnde : "" })}
-              />
-              Zeitraum (geht über mehrere Tage, z. B. ein Lehrgang) — statt Dauer
-            </label>
-
-            {form.zeitraum && (
-              <div className="sm:col-span-2">
-                <label className="block text-xs text-gray-400 mb-1">Ende (Datum & Uhrzeit)</label>
-                <input type="datetime-local" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
-              </div>
-            )}
-
-            <div className="sm:col-span-2">
-              <label className="block text-xs text-gray-400 mb-1">PDF anhängen (optional)</label>
-              <input
-                ref={anhangFeld}
-                type="file"
-                accept="application/pdf"
-                onChange={(e) => setAnhang(e.target.files?.[0] ?? null)}
-                className="w-full border rounded-md px-3 py-2 text-sm"
-              />
-              <p className="text-[11px] text-gray-400 mt-1">
-                z. B. eine Ausschreibung oder Anfahrtsbeschreibung. Die Datei kann im Kalender heruntergeladen
-                werden und wird der Info-Mail als Anhang beigelegt. Bis 5 MB.
-              </p>
-              {anhang && (
-                <p className="text-[11px] mt-1" style={{ color: COLORS.petrol }}>
-                  Ausgewählt: {anhang.name} ({Math.round(anhang.size / 1024)} KB)
-                </p>
-              )}
-            </div>
-
-            <label className="flex items-center gap-2 text-sm sm:col-span-2">
-              <input type="checkbox" checked={form.perMail} onChange={(e) => setForm({ ...form, perMail: e.target.checked })} />
-              Alle Spieler per E-Mail über diesen Termin informieren
-              <span className="block text-[11px] text-gray-400 font-normal">
-                Spieler, die Termin-E-Mails abgeschaltet haben, erhalten keine.
-              </span>
-            </label>
-          </div>
-          {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
-          <button onClick={anlegen} disabled={anhangLadend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: anhangLadend ? 0.6 : 1 }}>
-            {anhangLadend ? "Lade Datei hoch…" : "Termin anlegen"}
-          </button>
-        </div>
-      )}
-
-      {ladend ? (
-        <Leerzustand text="Lade Kalender…" />
-      ) : ereignisse.length === 0 ? (
-        <Leerzustand text="Noch keine Termine eingetragen." />
-      ) : (
-        <div className="bg-white rounded-lg border divide-y">
-          {ereignisse.map((e) => {
+  // Eine Zeile der Terminliste. Als eigene Funktion, damit sie sowohl für die
+  // aktuellen Termine als auch im Jahresarchiv verwendet werden kann.
+  const ereignisZeile = (e) => {
             const Icon = iconFor[e.typ] || CalendarDays;
 
             if (bearbeitenId === e.id) {
@@ -4015,8 +3881,193 @@ function Kalender({ profil }) {
                 )}
               </div>
             );
-          })}
+  };
+
+  // Termine des laufenden Jahres und der Zukunft stehen offen, ältere wandern
+  // nach Jahr gruppiert in aufklappbare Abschnitte — sonst wird die Liste mit
+  // jeder Saison länger, ohne dass etwas verlorengehen soll.
+  const aktuellesJahr = new Date().getFullYear();
+  const jahrVon = (e) => new Date(e.datum).getFullYear();
+  const aktuelle = ereignisse.filter((e) => jahrVon(e) >= aktuellesJahr);
+  const archiv = ereignisse.filter((e) => jahrVon(e) < aktuellesJahr);
+  const archivJahre = [...new Set(archiv.map(jahrVon))].sort((a, b) => b - a);
+
+
+
+  return (
+    <div className="space-y-4">
+      {(profil.ist_admin || istTeamLeiter(profil)) && (
+        <div className="bg-white rounded-lg border p-4">
+          <SectionLabel icon={Plus}>Neuen Termin anlegen</SectionLabel>
+          <div className="grid sm:grid-cols-2 gap-2 mb-2">
+            <input placeholder="Titel" value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} className="border rounded-md px-3 py-2 text-sm sm:col-span-2" />
+
+            <div className="min-w-0">
+              <label className="block text-xs text-gray-400 mb-1">Datum</label>
+              <input type="date" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+            </div>
+            <div className="min-w-0">
+              <label className="block text-xs text-gray-400 mb-1">Uhrzeit</label>
+              <input type="time" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.uhrzeit} onChange={(e) => setForm({ ...form, uhrzeit: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+            </div>
+
+            {!form.zeitraum && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Dauer</label>
+                <select
+                  value={[30, 45, 60, 90, 120, 180, 240, 480].includes(form.dauerMinuten) ? form.dauerMinuten : "eigene"}
+                  onChange={(e) => {
+                    if (e.target.value === "eigene") {
+                      setForm({ ...form, dauerMinuten: "eigene" });
+                    } else {
+                      setForm({ ...form, dauerMinuten: Number(e.target.value) });
+                    }
+                  }}
+                  className="w-full border rounded-md px-3 py-2 text-sm"
+                >
+                  <option value={30}>30 Minuten</option>
+                  <option value={45}>45 Minuten</option>
+                  <option value={60}>1 Stunde</option>
+                  <option value={90}>1,5 Stunden</option>
+                  <option value={120}>2 Stunden</option>
+                  <option value={180}>3 Stunden</option>
+                  <option value={240}>4 Stunden</option>
+                  <option value={480}>8 Stunden</option>
+                  <option value="eigene">Eigene Dauer…</option>
+                </select>
+                {form.dauerMinuten === "eigene" && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="number"
+                      min={1}
+                      placeholder="Stunden"
+                      onChange={(e) => setForm((f) => ({ ...f, dauerMinutenEigen: Number(e.target.value) * 60 }))}
+                      className="w-full border rounded-md px-3 py-2 text-sm"
+                    />
+                    <span className="text-xs text-gray-400 shrink-0">Stunden</span>
+                  </div>
+                )}
+              </div>
+            )}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Typ</label>
+              <select value={form.typ} onChange={(e) => setForm({ ...form, typ: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                <option value="training">Training</option>
+                <option value="spiel">Spiel</option>
+                <option value="lehrgang">Lehrgang</option>
+                <option value="vereinstreffen">Vereinstreffen</option>
+                <option value="turnier">Turnier</option>
+                <option value="termin">Sonstiger Termin</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Sichtbar für</label>
+              {profil.ist_admin ? (
+                <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
+                  <option value="">Alle Mannschaften</option>
+                  {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              ) : (
+                <p className="text-sm text-gray-500 border rounded-md px-3 py-2 bg-gray-50">
+                  {mannschaften.find((m) => m.id === profil.mannschaft_id)?.name ?? "Nur deine Mannschaft"}
+                </p>
+              )}
+            </div>
+
+            <label className="flex items-center gap-2 text-sm sm:col-span-2 mt-1">
+              <input
+                type="checkbox"
+                checked={form.zeitraum}
+                onChange={(e) => setForm({ ...form, zeitraum: e.target.checked, datumEnde: e.target.checked ? form.datumEnde : "" })}
+              />
+              Zeitraum (geht über mehrere Tage, z. B. ein Lehrgang) — statt Dauer
+            </label>
+
+            {form.zeitraum && (
+              <div className="sm:col-span-2">
+                <label className="block text-xs text-gray-400 mb-1">Ende (Datum & Uhrzeit)</label>
+                <input type="datetime-local" style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }} value={form.datumEnde} onChange={(e) => setForm({ ...form, datumEnde: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm" />
+              </div>
+            )}
+
+            <div className="sm:col-span-2">
+              <label className="block text-xs text-gray-400 mb-1">PDF anhängen (optional)</label>
+              <input
+                ref={anhangFeld}
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => setAnhang(e.target.files?.[0] ?? null)}
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              />
+              <p className="text-[11px] text-gray-400 mt-1">
+                z. B. eine Ausschreibung oder Anfahrtsbeschreibung. Die Datei kann im Kalender heruntergeladen
+                werden und wird der Info-Mail als Anhang beigelegt. Bis 5 MB.
+              </p>
+              {anhang && (
+                <p className="text-[11px] mt-1" style={{ color: COLORS.petrol }}>
+                  Ausgewählt: {anhang.name} ({Math.round(anhang.size / 1024)} KB)
+                </p>
+              )}
+            </div>
+
+            <label className="flex items-center gap-2 text-sm sm:col-span-2">
+              <input type="checkbox" checked={form.perMail} onChange={(e) => setForm({ ...form, perMail: e.target.checked })} />
+              Alle Spieler per E-Mail über diesen Termin informieren
+              <span className="block text-[11px] text-gray-400 font-normal">
+                Spieler, die Termin-E-Mails abgeschaltet haben, erhalten keine.
+              </span>
+            </label>
+          </div>
+          {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+          <button onClick={anlegen} disabled={anhangLadend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: anhangLadend ? 0.6 : 1 }}>
+            {anhangLadend ? "Lade Datei hoch…" : "Termin anlegen"}
+          </button>
         </div>
+      )}
+
+      {ladend ? (
+        <Leerzustand text="Lade Kalender…" />
+      ) : ereignisse.length === 0 ? (
+        <Leerzustand text="Noch keine Termine eingetragen." />
+      ) : (
+        <>
+          {aktuelle.length > 0 ? (
+            <div className="bg-white rounded-lg border divide-y">
+              {aktuelle.map(ereignisZeile)}
+            </div>
+          ) : (
+            <Leerzustand text={`Für ${aktuellesJahr} sind keine Termine eingetragen.`} />
+          )}
+
+          {archivJahre.map((jahr) => {
+            const desJahres = archiv.filter((e) => jahrVon(e) === jahr);
+            const offen = offeneArchivJahre.includes(jahr);
+            return (
+              <div key={jahr} className="bg-white rounded-lg border overflow-hidden">
+                <button
+                  onClick={() =>
+                    setOffeneArchivJahre((alt) =>
+                      alt.includes(jahr) ? alt.filter((x) => x !== jahr) : [...alt, jahr]
+                    )
+                  }
+                  className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-gray-50"
+                >
+                  <span className="text-sm font-semibold" style={{ color: COLORS.anthracite }}>
+                    Jahr {jahr}
+                  </span>
+                  <span className="flex items-center gap-2 text-xs text-gray-400">
+                    {desJahres.length === 1 ? "1 Termin" : `${desJahres.length} Termine`}
+                    <ChevronDown
+                      size={16}
+                      style={{ transform: offen ? "rotate(180deg)" : "none" }}
+                    />
+                  </span>
+                </button>
+                {offen && <div className="divide-y border-t">{desJahres.map(ereignisZeile)}</div>}
+              </div>
+            );
+          })}
+        </>
       )}
     </div>
   );
