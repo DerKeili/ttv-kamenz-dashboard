@@ -8377,8 +8377,7 @@ function Analyse({ saison, profil }) {
   // Wie oft war jemand dabei, und auf welcher Position meistens?
   function einsatzBild(gegnerName) {
     const passend = einsaetze.filter(
-      (e) => nameNormalisieren(e.mannschaft).includes(nameNormalisieren(gegnerName).slice(0, 12)) ||
-        nameNormalisieren(gegnerName).includes(nameNormalisieren(e.mannschaft).slice(0, 12))
+      (e) => mannschaftPasst(e.mannschaft, gegnerName)
     );
     const berichte = new Set(passend.map((e) => e.bericht_url)).size;
     const nachSpieler = {};
@@ -8413,10 +8412,7 @@ function Analyse({ saison, profil }) {
 
   // Gegnerkader zum ausgewählten Spiel — Namensvergleich tolerant, die
   // Schreibweisen im Spielplan und in der Mannschaftsliste weichen leicht ab
-  const gegnerKader = gegnerName
-    ? gegnerAlle.filter((g) => nameNormalisieren(g.mannschaft).includes(nameNormalisieren(gegnerName).slice(0, 12)) ||
-        nameNormalisieren(gegnerName).includes(nameNormalisieren(g.mannschaft).slice(0, 12)))
-    : [];
+  const gegnerKader = gegnerName ? gegnerAlle.filter((g) => mannschaftPasst(g.mannschaft, gegnerName)) : [];
 
   const eigeneWerte = eigene.map((sp) => lpzZahl(sp.lpz)).filter(Boolean);
   const gegnerWerte = gegnerKader.map((sp) => lpzZahl(sp.lpz)).filter(Boolean);
@@ -8629,9 +8625,52 @@ function istZusage(antwort, umfrage) {
 function nameNormalisieren(text) {
   return String(text ?? "")
     .toLowerCase()
-    .replace(/[.,]/g, " ")
+    .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+    .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/* Mannschaftsnamen kommen von zwei Seiten des Verbandsportals und weichen
+   deutlich ab: im Spielplan "TV GW Bühlau", in der Mannschaftsliste
+   "TV Grün-Weiß Bühlau, 1. Erwachsene". Ein Präfixvergleich scheitert daran.
+   Verglichen wird deshalb über Mannschaftsnummer plus einen gemeinsamen
+   Ortsnamen. */
+const TEAM_FUELLWOERTER = new Set([
+  "erwachsene", "mannschaft", "herren", "damen", "jugend", "senioren", "vorrunde", "rueckrunde",
+]);
+
+function teamMerkmale(text) {
+  // Zusätze wie ", 1. Erwachsene" abschneiden, sonst verfälschen sie die Nummer
+  const ohneZusatz = nameNormalisieren(text).replace(/\b\d+\s+(erwachsene|mannschaft|herren|damen|jugend|senioren)\b.*$/, "");
+  const teile = ohneZusatz.split(" ").filter(Boolean);
+
+  const zahlen = teile.filter((t) => /^\d+$/.test(t));
+  // Letzte Zahl ist die Mannschaftsnummer; Gründungsjahre wie "1890" oder "97"
+  // stehen weiter vorn und werden hier bewusst nicht als Nummer gewertet.
+  const letzte = zahlen[zahlen.length - 1];
+  const nummer = letzte && Number(letzte) <= 12 ? Number(letzte) : 1;
+
+  const kern = teile.filter((t) => t.length >= 4 && !/^\d+$/.test(t) && !TEAM_FUELLWOERTER.has(t));
+  // Vereinskürzel wie sv, sg, tv, ttv, tus — nötig, um Vereine am selben Ort
+  // auseinanderzuhalten ("SV Lokomotive Kamenz 2" vs. "TTV 97 Kamenz 2").
+  const kuerzel = teile.filter((t) => t.length >= 2 && t.length <= 3 && !/^\d+$/.test(t));
+  return { nummer, kern, kuerzel };
+}
+
+function mannschaftPasst(a, b) {
+  const x = teamMerkmale(a);
+  const y = teamMerkmale(b);
+  if (x.nummer !== y.nummer) return false;
+  if (x.kern.length === 0 || y.kern.length === 0) return false;
+
+  // Führen beide Namen ein Vereinskürzel, muss mindestens eines übereinstimmen
+  if (x.kuerzel.length > 0 && y.kuerzel.length > 0 && !x.kuerzel.some((t) => y.kuerzel.includes(t))) {
+    return false;
+  }
+  // Ein gemeinsamer Ortsname genügt; Abkürzungen wie "Gersd." treffen über den
+  // Präfixvergleich auf "Gersdorf".
+  return x.kern.some((t) => y.kern.some((u) => t.startsWith(u) || u.startsWith(t)));
 }
 
 // Findet die offizielle Position eines Spielers in der Verbandsmeldung
