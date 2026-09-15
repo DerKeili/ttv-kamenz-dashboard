@@ -57,6 +57,22 @@ const COLORS = {
 // Sortiert Mannschaften zuverlässig nach Rangstufe (1 = höchste Mannschaft), egal was die DB liefert
 const LEITER_RAENGE = ["Mannschaftsführer", "stellv. Mannschaftsführer"];
 
+const ABWESENHEIT_STIL = {
+  krank: { background: "#FBE2DA", color: "#A33B12", kuerzel: "krank" },
+  urlaub: { background: "#E3E0F3", color: "#4A3E8C", kuerzel: "Urlaub" },
+  sonstiges: { background: "#EDEDEA", color: "#6B6B66", kuerzel: "abwesend" },
+};
+
+// Fällt der Spieler an diesem Tag aus? Verglichen wird auf Tagesebene, damit
+// die Uhrzeit des Spiels keine Rolle spielt.
+function abwesenheitFuer(abwesenheiten, spielerId, datum) {
+  if (!datum || !abwesenheiten) return null;
+  const tag = tagesSchluessel(datum);
+  return (
+    abwesenheiten.find((a) => a.spieler_id === spielerId && a.von <= tag && a.bis >= tag) ?? null
+  );
+}
+
 // Ist der Nutzer Mannschaftsführer oder stellv. Mannschaftsführer (irgendeiner Mannschaft)?
 function istTeamLeiter(profil) {
   return LEITER_RAENGE.includes(profil?.rang);
@@ -923,7 +939,7 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
         </div>
       )}
 
-      <NeueSpielberichte onOeffnen={onOeffneBericht} />
+      <NeueSpielberichte profil={profil} onOeffnen={onOeffneBericht} onSchreiben={() => onOeffneBericht("neu")} />
 
       <News profil={profil} />
 
@@ -1780,6 +1796,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [anfrageDialog, setAnfrageDialog] = useState(null); // Auswahl der Mannschaften + Laufzeit
   // Tiefer eingestufte Mannschaften — nur wenn es welche gibt, ist eine Aushilfe-Anfrage sinnvoll
   const [aushilfeMannschaften, setAushilfeMannschaften] = useState([]);
+  const [abwesenheiten, setAbwesenheiten] = useState([]); // längere Ausfälle, z. B. krank oder Urlaub
   const [anfragen, setAnfragen] = useState([]);
   const [aufstellungen, setAufstellungen] = useState({});
   const [aufstellungFuer, setAufstellungFuer] = useState(null);
@@ -2027,10 +2044,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     const spielerQuery = saison.mannschaft_id
       ? supabase.from("profiles").select("*").eq("mannschaft_id", saison.mannschaft_id).order("nachname")
       : supabase.from("profiles").select("*").order("nachname");
-    const [{ data: spieleDaten }, { data: spielerDaten }, { data: meldungenDaten }] = await Promise.all([
+    const [{ data: spieleDaten }, { data: spielerDaten }, { data: meldungenDaten }, { data: abwesenheitsDaten }] = await Promise.all([
       supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum"),
       spielerQuery,
       supabase.from("spielerplanung_meldungen").select("*").eq("saison_id", saison.id),
+      supabase.from("abwesenheiten").select("spieler_id, von, bis, grund, notiz"),
     ]);
     setSpiele(spieleDaten ?? []);
     setSpieler(spielerDaten ?? []);
@@ -2116,6 +2134,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     setMeldungen(map);
     setGesetztVon(herkunft);
     setGemeldetAm(zeiten);
+    setAbwesenheiten(abwesenheitsDaten ?? []);
 
     if (saison.mannschaft_id) {
       const { data: mannschaft } = await supabase.from("mannschaften").select("benoetigte_spieler, hierarchie_stufe").eq("id", saison.mannschaft_id).single();
@@ -2503,6 +2522,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                           const st = meldungen[s.id]?.[sp.id] ?? "offen";
                           const herkunft = gesetztVon[`${s.id}:${sp.id}`];
                           const schicht = schichtSichtbarFuer(sp, profil) ? schichtFuerDatum(sp, termin) : null;
+                          const abwesend = abwesenheitFuer(abwesenheiten, sp.id, termin);
                           return (
                             <button
                               key={sp.id}
@@ -2516,6 +2536,15 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                                 {schicht && (
                                   <span className="text-[9px] px-1 rounded" style={{ background: SCHICHT_STIL[schicht]?.background, color: SCHICHT_STIL[schicht]?.color }}>
                                     {SCHICHT_STIL[schicht]?.kuerzel}
+                                  </span>
+                                )}
+                                {abwesend && (
+                                  <span
+                                    className="text-[9px] px-1 rounded"
+                                    style={ABWESENHEIT_STIL[abwesend.grund] ?? ABWESENHEIT_STIL.sonstiges}
+                                    title={abwesend.notiz ?? undefined}
+                                  >
+                                    {(ABWESENHEIT_STIL[abwesend.grund] ?? ABWESENHEIT_STIL.sonstiges).kuerzel}
                                   </span>
                                 )}
                               </span>
@@ -2743,6 +2772,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                       const hatUeberschneidung = tag && ueberschneidungen[tag]?.length > 0;
                       const schicht = schichtSichtbarFuer(sp, profil) ? schichtFuerDatum(sp, s.datum) : null;
                       const schichtStil = schicht ? SCHICHT_STIL[schicht] : null;
+                      const abwesend = abwesenheitFuer(abwesenheiten, sp.id, effektivesSpielDatum(s));
+                      const abwesendStil = abwesend ? (ABWESENHEIT_STIL[abwesend.grund] ?? ABWESENHEIT_STIL.sonstiges) : null;
                       const style =
                         status === "ja"
                           ? { background: "#DDF0EA", color: COLORS.petrol }
@@ -2774,6 +2805,15 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                           {!gesperrt && meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft) && (
                             <span className="block text-[9px] text-gray-400 mt-0.5 leading-tight whitespace-nowrap">
                               {meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft)}
+                            </span>
+                          )}
+                          {abwesendStil && !gesperrt && (
+                            <span
+                              className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                              style={{ background: abwesendStil.background, color: abwesendStil.color }}
+                              title={abwesend.notiz ?? `${sp.vorname} fällt vom ${formatDatum(abwesend.von)} bis ${formatDatum(abwesend.bis)} aus`}
+                            >
+                              {abwesendStil.kuerzel}
                             </span>
                           )}
                           {schichtStil && (
@@ -2935,6 +2975,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
             </span>
             <span className="flex items-center gap-1">
               <Clock size={11} /> Schicht des Spielers in dieser Woche
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="px-1 rounded text-[10px] font-semibold" style={ABWESENHEIT_STIL.krank}>krank</span>
+              <span className="px-1 rounded text-[10px] font-semibold" style={ABWESENHEIT_STIL.urlaub}>Urlaub</span>
+              längerer Ausfall
             </span>
           </div>
         </>
@@ -4081,9 +4126,47 @@ function Kader({ saison, profil }) {
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
+  const [abwesenheiten, setAbwesenheiten] = useState([]);
+  const [abwesenheitFuerId, setAbwesenheitFuerId] = useState(null); // offenes Formular
+  const [abwForm, setAbwForm] = useState({ von: "", bis: "", grund: "urlaub", notiz: "" });
+
+  async function abwesenheitenLaden() {
+    const { data } = await supabase
+      .from("abwesenheiten")
+      .select("*")
+      .gte("bis", tagesSchluessel(new Date()))
+      .order("von");
+    setAbwesenheiten(data ?? []);
+  }
+
+  async function abwesenheitSpeichern(spielerId) {
+    setFehler(null);
+    if (!abwForm.von || !abwForm.bis) return setFehler("Bitte Anfang und Ende angeben.");
+    if (abwForm.bis < abwForm.von) return setFehler("Das Ende darf nicht vor dem Anfang liegen.");
+
+    const { error } = await supabase.from("abwesenheiten").insert({
+      spieler_id: spielerId,
+      von: abwForm.von,
+      bis: abwForm.bis,
+      grund: abwForm.grund,
+      notiz: abwForm.notiz.trim() || null,
+      erstellt_von: profil.id,
+    });
+    if (error) return setFehler(error.message);
+    setAbwesenheitFuerId(null);
+    setAbwForm({ von: "", bis: "", grund: "urlaub", notiz: "" });
+    abwesenheitenLaden();
+  }
+
+  async function abwesenheitLoeschen(id) {
+    const { error } = await supabase.from("abwesenheiten").delete().eq("id", id);
+    if (error) return setFehler(error.message);
+    abwesenheitenLaden();
+  }
 
   async function laden() {
     setLadend(true);
+    abwesenheitenLaden();
     const spielerQuery = saison.mannschaft_id
       ? supabase.from("profiles").select("*").eq("mannschaft_id", saison.mannschaft_id).order("nachname")
       : supabase.from("profiles").select("*").order("nachname");
@@ -4183,6 +4266,68 @@ function Kader({ saison, profil }) {
                   >
                     <Cake size={12} /> Geburtstag in meinen Kalender
                   </button>
+                )}
+
+                {/* Laufende und kommende Ausfälle */}
+                {abwesenheiten.filter((a) => a.spieler_id === s.id).map((a) => {
+                  const stil = ABWESENHEIT_STIL[a.grund] ?? ABWESENHEIT_STIL.sonstiges;
+                  const darfAendern = a.spieler_id === profil.id || profil.ist_admin || istTeamLeiter(profil);
+                  return (
+                    <div key={a.id} className="flex items-center gap-2 mt-2 text-xs">
+                      <span className="px-1.5 py-0.5 rounded font-semibold" style={stil}>{stil.kuerzel}</span>
+                      <span className="text-gray-500">{formatDatum(a.von)} – {formatDatum(a.bis)}</span>
+                      {a.notiz && <span className="text-gray-400 truncate">{a.notiz}</span>}
+                      {darfAendern && (
+                        <button onClick={() => abwesenheitLoeschen(a.id)} style={{ color: COLORS.orangeDeep }} title="Eintrag entfernen">
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {(s.id === profil.id || profil.ist_admin || istTeamLeiter(profil)) && (
+                  abwesenheitFuerId === s.id ? (
+                    <div className="mt-2 space-y-2 border-t pt-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[11px] text-gray-400 mb-1">von</label>
+                          <input type="date" value={abwForm.von} onChange={(e) => setAbwForm({ ...abwForm, von: e.target.value })} className="w-full border rounded-md px-2 py-1.5 text-xs" />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-gray-400 mb-1">bis</label>
+                          <input type="date" value={abwForm.bis} onChange={(e) => setAbwForm({ ...abwForm, bis: e.target.value })} className="w-full border rounded-md px-2 py-1.5 text-xs" />
+                        </div>
+                      </div>
+                      <select value={abwForm.grund} onChange={(e) => setAbwForm({ ...abwForm, grund: e.target.value })} className="w-full border rounded-md px-2 py-1.5 text-xs">
+                        <option value="urlaub">Urlaub</option>
+                        <option value="krank">krank</option>
+                        <option value="sonstiges">sonstiges</option>
+                      </select>
+                      <input
+                        value={abwForm.notiz}
+                        onChange={(e) => setAbwForm({ ...abwForm, notiz: e.target.value })}
+                        placeholder="Notiz (freiwillig)"
+                        className="w-full border rounded-md px-2 py-1.5 text-xs"
+                      />
+                      <div className="flex gap-2">
+                        <button onClick={() => abwesenheitSpeichern(s.id)} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange }}>
+                          Eintragen
+                        </button>
+                        <button onClick={() => { setAbwesenheitFuerId(null); setFehler(null); }} className="px-3 py-1.5 rounded-md text-xs border">
+                          Abbrechen
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => { setAbwesenheitFuerId(s.id); setFehler(null); }}
+                      className="text-xs mt-2 inline-flex items-center gap-1 font-medium underline"
+                      style={{ color: COLORS.petrol }}
+                    >
+                      <CalendarClock size={12} /> Ausfall eintragen
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -8056,8 +8201,13 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
 
   useEffect(() => { laden(); }, [profil.id]);
 
-  // Vom Dashboard herübergesprungen: passenden Filter setzen und markieren
+  // Vom Dashboard herübergesprungen: entweder Formular öffnen oder zum Bericht
   useEffect(() => {
+    if (zielBerichtId === "neu") {
+      formularOeffnen(null);
+      onZielVerbraucht?.();
+      return;
+    }
     if (!zielBerichtId || berichte.length === 0) return;
     const treffer = berichte.find((b) => b.id === zielBerichtId);
     if (treffer) setFilter(treffer.mannschaft_id ?? "alle");
@@ -8249,7 +8399,7 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
 
 /* Kurzer Hinweis auf dem Dashboard — nur Überschrift und Mannschaft, der Text
    selbst steht unter "Spielberichte". */
-function NeueSpielberichte({ onOeffnen }) {
+function NeueSpielberichte({ profil, onOeffnen, onSchreiben }) {
   const [berichte, setBerichte] = useState([]);
   const [mannschaften, setMannschaften] = useState([]);
 
@@ -8265,11 +8415,28 @@ function NeueSpielberichte({ onOeffnen }) {
     })();
   }, []);
 
-  if (berichte.length === 0) return null;
+  const darfSchreiben = darfBerichteSchreiben(profil);
+  // Ohne Berichte und ohne Schreibrecht gibt es hier nichts zu zeigen
+  if (berichte.length === 0 && !darfSchreiben) return null;
 
   return (
     <div className="bg-white rounded-lg border p-5">
-      <SectionLabel icon={FileText}>Neue Spielberichte</SectionLabel>
+      <div className="flex items-start justify-between gap-3">
+        <SectionLabel icon={FileText}>Neue Spielberichte</SectionLabel>
+        {darfSchreiben && (
+          <button
+            onClick={onSchreiben}
+            className="text-xs px-3 py-2 rounded-md text-white font-semibold flex items-center gap-1 shrink-0"
+            style={{ background: COLORS.orange }}
+          >
+            <Plus size={13} /> Bericht schreiben
+          </button>
+        )}
+      </div>
+      {berichte.length === 0 && (
+        <p className="text-sm text-gray-400 mt-3">Noch kein Bericht — schreib den ersten.</p>
+      )}
+
       <div className="mt-3 space-y-2">
         {berichte.map((b) => {
           const team = mannschaften.find((m) => m.id === b.mannschaft_id);
