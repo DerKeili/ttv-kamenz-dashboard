@@ -8991,6 +8991,13 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   #druckbereich .abstand { height: 1.5mm; }
   #druckbereich .klein { font-size: 6.5pt; color: #333; margin-top: 1.2mm; }
   #druckbereich .sign td { height: ${eng ? "9mm" : "12mm"}; vertical-align: bottom; font-size: 6.8pt; color: #333; }
+  /* Endstand rechts neben den Unterschriften, wie im Vordruck */
+  #druckbereich .fuss { display: flex; gap: 2mm; align-items: flex-start; }
+  #druckbereich .fuss > .sign { flex: 1 1 auto; }
+  #druckbereich .summe { flex: 0 0 ${eng ? "32mm" : "36mm"}; }
+  #druckbereich .summe td { height: ${eng ? "6mm" : "7mm"}; }
+  #druckbereich .summe .b { font-weight: bold; background: #f4f4f4; }
+  #druckbereich .summe .mt { text-align: center; width: 10mm; }
 </style>
 
 <div class="kopf">
@@ -9053,11 +9060,19 @@ ${planZeilen ? `<table>
 
 <div class="abstand"></div>
 
-<table class="sign">
-  <tr><th>Gastgeber</th><th>Gast</th><th>Oberschiedsrichter</th></tr>
-  <tr><td>Unterschrift</td><td>Unterschrift</td><td>Unterschrift</td></tr>
-  <tr><td>Druckschrift</td><td>Druckschrift</td><td>Druckschrift</td></tr>
-</table>
+<div class="fuss">
+  <table class="sign">
+    <tr><th>Gastgeber</th><th>Gast</th><th>Oberschiedsrichter</th></tr>
+    <tr><td>Unterschrift</td><td>Unterschrift</td><td>Unterschrift</td></tr>
+    <tr><td>Druckschrift</td><td>Druckschrift</td><td>Druckschrift</td></tr>
+  </table>
+
+  <table class="summe">
+    <tr><th></th><th class="mt">A</th><th class="mt">B</th></tr>
+    <tr><td class="b">Satz</td><td></td><td></td></tr>
+    <tr><td class="b">Punkt</td><td></td><td></td></tr>
+  </table>
+</div>
 
 <p class="klein">
   Erstellt mit der Mannschafts-App des TTV 97 Kamenz e.V. &mdash; Aufstellungshilfe, kein amtlicher
