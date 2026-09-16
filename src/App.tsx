@@ -63,6 +63,14 @@ const ABWESENHEIT_STIL = {
   sonstiges: { background: "#EDEDEA", color: "#6B6B66", kuerzel: "abwesend" },
 };
 
+// Liegt der Spieltag hinter uns? Verglichen wird tageweise, ein Spiel am
+// Abend gilt also den ganzen Tag über noch als anstehend.
+function spielVorbei(spiel) {
+  const termin = effektivesSpielDatum(spiel);
+  if (!termin) return false;
+  return tagesSchluessel(termin) < tagesSchluessel(new Date());
+}
+
 // Fällt der Spieler an diesem Tag aus? Verglichen wird auf Tagesebene, damit
 // die Uhrzeit des Spiels keine Rolle spielt.
 function abwesenheitFuer(abwesenheiten, spielerId, datum) {
@@ -2449,10 +2457,15 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
               const parallel = (tag && ueberschneidungen[tag]) || [];
               const helfer = aushilfen.filter((a) => a.spiel_id === s.id);
               const meineSchicht = schichtSichtbarFuer(profil, profil) ? schichtFuerDatum(profil, termin) : null;
+              const vorbei = spielVorbei(s);
 
               return (
-                <div key={s.id} className="bg-white rounded-lg border overflow-hidden">
-                  <div className="p-3" style={{ background: gesperrt ? "#4A4A44" : parallel.length > 0 ? COLORS.konflikt : COLORS.petrolDark }}>
+                <div
+                  key={s.id}
+                  className="bg-white rounded-lg border overflow-hidden"
+                  style={vorbei ? { opacity: 0.55 } : {}}
+                >
+                  <div className="p-3" style={{ background: vorbei ? "#6B6B63" : gesperrt ? "#4A4A44" : parallel.length > 0 ? COLORS.konflikt : COLORS.petrolDark }}>
                     <div className="flex items-start justify-between gap-2 text-white">
                       <div className="min-w-0">
                         <p className="font-semibold text-sm">
@@ -2696,7 +2709,10 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                     const parallel = (tag && ueberschneidungen[tag]) || [];
                     const hatUeberschneidung = parallel.length > 0;
                     const gesperrt = spielGesperrt(s);
-                    const kopfStil = gesperrt
+                    const vorbei = spielVorbei(s);
+                    const kopfStil = vorbei
+                      ? { background: "#6B6B63", opacity: 0.75 }
+                      : gesperrt
                       ? { background: "#4A4A44", borderBottom: "3px solid #6b6b63" }
                       : hatUeberschneidung
                       ? { background: COLORS.konflikt, borderBottom: `3px solid ${COLORS.konfliktHell}` }
@@ -2723,6 +2739,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                           </div>
                         )}
                         {gesperrt && <div className="text-[10px] font-semibold mt-0.5">verlegt · Termin offen</div>}
+                        {vorbei && <div className="text-[10px] font-semibold mt-0.5">gespielt</div>}
                         <div className="text-[11px] font-normal opacity-80">
                           <span
                             className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-semibold mb-0.5"
@@ -2772,6 +2789,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                       const hatUeberschneidung = tag && ueberschneidungen[tag]?.length > 0;
                       const schicht = schichtSichtbarFuer(sp, profil) ? schichtFuerDatum(sp, s.datum) : null;
                       const schichtStil = schicht ? SCHICHT_STIL[schicht] : null;
+                      const vorbei = spielVorbei(s);
                       const abwesend = abwesenheitFuer(abwesenheiten, sp.id, effektivesSpielDatum(s));
                       const abwesendStil = abwesend ? (ABWESENHEIT_STIL[abwesend.grund] ?? ABWESENHEIT_STIL.sonstiges) : null;
                       const style =
@@ -2784,7 +2802,10 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                         <td
                           key={s.id}
                           className="p-2 text-center"
-                          style={gesperrt ? { background: "#EFEFEC" } : hatUeberschneidung ? { background: COLORS.konfliktHell } : {}}
+                          style={{
+                            ...(gesperrt ? { background: "#EFEFEC" } : hatUeberschneidung ? { background: COLORS.konfliktHell } : {}),
+                            ...(vorbei ? { opacity: 0.5 } : {}),
+                          }}
                         >
                           <button
                             onClick={() => toggle(s.id, sp.id)}
@@ -2975,6 +2996,9 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
             </span>
             <span className="flex items-center gap-1">
               <Clock size={11} /> Schicht des Spielers in dieser Woche
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-sm inline-block" style={{ background: "#6B6B63" }} /> Spieltag vorbei
             </span>
             <span className="flex items-center gap-1">
               <span className="px-1 rounded text-[10px] font-semibold" style={ABWESENHEIT_STIL.krank}>krank</span>
@@ -9263,7 +9287,11 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
     setSpeichern(false);
     if (error) return setFehler(error.message);
 
-    supabase.functions.invoke("notify-aufstellung", { body: { spielId: spiel.id } }); // bewusst nicht awaited
+    // Bei einer Änderung soll die E-Mail das auch sagen — sonst wirkt sie wie
+    // eine zweite Erstmeldung und wird leicht übersehen.
+    supabase.functions.invoke("notify-aufstellung", {
+      body: { spielId: spiel.id, istAenderung: Boolean(vorhanden?.positionen?.length) },
+    }); // bewusst nicht awaited
     onGespeichert?.();
   }
 
