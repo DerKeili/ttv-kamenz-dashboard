@@ -320,7 +320,11 @@ function naechsterGeburtstag(spielerListe) {
       const gd = new Date(s.geburtstag);
       let next = new Date(heute.getFullYear(), gd.getMonth(), gd.getDate());
       if (next < heuteBeginn) next = new Date(heute.getFullYear() + 1, gd.getMonth(), gd.getDate());
-      return { ...s, next, istHeute: next.getTime() === heuteBeginn.getTime() };
+      // Alter am nächsten Geburtstag. Nur sinnvoll, wenn das Geburtsjahr
+      // gepflegt ist — manche Einträge haben nur Tag und Monat.
+      const jahr = gd.getFullYear();
+      const wirdAlt = jahr > 1900 ? next.getFullYear() - jahr : null;
+      return { ...s, next, wirdAlt, istHeute: next.getTime() === heuteBeginn.getTime() };
     });
   mitTag.sort((a, b) => a.next - b.next);
   return mitTag[0] ?? null;
@@ -992,6 +996,7 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
               </p>
               <p className="text-sm text-gray-500 mt-1">
                 {geburtstag.istHeute ? "🎉 heute!" : formatDatum(geburtstag.next.toISOString())}
+                {geburtstag.wirdAlt != null && <span> · wird {geburtstag.wirdAlt}</span>}
               </p>
               <button
                 onClick={() => geburtstagHerunterladen(geburtstag)}
