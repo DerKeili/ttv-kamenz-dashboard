@@ -6788,6 +6788,7 @@ const EMAIL_ARTEN = [
   { feld: "email_spielplan", titel: "Erinnerung an meine Rückmeldung", text: "Erinnerung ab drei Wochen vor einem Spiel, solange du nicht eingetragen hast, ob du kannst. Höchstens alle sechs Tage und nie am Vortag." },
   { feld: "email_zusagenwarnung", titel: "Warnung bei zu wenigen Zusagen", nurLeitung: true, text: "Nur für die Mannschaftsführung: Übersicht, wenn für ein anstehendes Spiel zu wenige Spieler zugesagt haben." },
   { feld: "email_aufstellung", titel: "Spielaufstellung", text: "Nachricht, wenn du für ein Spiel aufgestellt wurdest — mit Reihenfolge und Doppelpaaren." },
+  { feld: "email_neuigkeiten", titel: "Neuigkeiten und Spielberichte", text: "Wenn ein Beitrag unter \"Neuigkeiten aus dem Verein\" oder ein neuer Spielbericht veröffentlicht wird." },
 ];
 
 function EmailEinstellungen({ profil, onProfilGeaendert }) {
@@ -8173,9 +8174,15 @@ function News({ profil }) {
       inhalt: form.inhalt.trim(),
       mannschaft_id: form.mannschaftId || null,
     };
-    const { error } = bearbeiteId
+    const ergebnis = bearbeiteId
       ? await supabase.from("news").update({ ...werte, aktualisiert_am: new Date().toISOString() }).eq("id", bearbeiteId)
-      : await supabase.from("news").insert({ ...werte, autor_id: profil.id, art: "neuigkeit" });
+      : await supabase.from("news").insert({ ...werte, autor_id: profil.id, art: "neuigkeit" }).select("id").single();
+    const { error } = ergebnis;
+
+    // Nur bei neuen Beiträgen benachrichtigen, nicht bei jeder Korrektur
+    if (!bearbeiteId && !error && ergebnis.data?.id) {
+      supabase.functions.invoke("notify-beitrag", { body: { beitragId: ergebnis.data.id } }); // bewusst nicht awaited
+    }
     setSpeichernLadend(false);
     if (error) return setFehler(error.message);
     setFormOffen(false);
@@ -8411,11 +8418,16 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
       inhalt: form.inhalt.trim(),
       mannschaft_id: form.mannschaftId,
     };
-    const { error } = bearbeiteId
+    const ergebnis = bearbeiteId
       ? await supabase.from("news").update({ ...werte, aktualisiert_am: new Date().toISOString() }).eq("id", bearbeiteId)
-      : await supabase.from("news").insert({ ...werte, autor_id: profil.id, art: "spielbericht" });
+      : await supabase.from("news").insert({ ...werte, autor_id: profil.id, art: "spielbericht" }).select("id").single();
+    const { error } = ergebnis;
     setSpeichernLadend(false);
     if (error) return setFehler(error.message);
+
+    if (!bearbeiteId && ergebnis.data?.id) {
+      supabase.functions.invoke("notify-beitrag", { body: { beitragId: ergebnis.data.id } }); // bewusst nicht awaited
+    }
     setFormOffen(false);
     setBearbeiteId(null);
     laden();
