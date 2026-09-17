@@ -2404,7 +2404,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           vorhanden={aufstellungen[aufstellungFuer.id] ?? null}
           mannschaftName={mannschaftsName}
           onSchliessen={() => setAufstellungFuer(null)}
-          onGespeichert={() => { setAufstellungFuer(null); laden(); }}
+          onGespeichert={() => laden()}
         />
       )}
 
@@ -9002,7 +9002,6 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   #druckbereich .summe { flex: 0 0 ${eng ? "32mm" : "36mm"}; }
   #druckbereich .summe td { height: ${eng ? "6mm" : "7mm"}; }
   #druckbereich .summe .b { font-weight: bold; background: #f4f4f4; }
-  #druckbereich .summe .mt { text-align: center; width: 10mm; }
 </style>
 
 <div class="kopf">
@@ -9073,9 +9072,8 @@ ${planZeilen ? `<table>
   </table>
 
   <table class="summe">
-    <tr><th></th><th class="mt">A</th><th class="mt">B</th></tr>
-    <tr><td class="b">Satz</td><td></td><td></td></tr>
-    <tr><td class="b">Punkt</td><td></td><td></td></tr>
+    <tr><td class="b">Satz</td><td></td></tr>
+    <tr><td class="b">Punkt</td><td></td></tr>
   </table>
 </div>
 
@@ -9158,6 +9156,7 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
   const [doppel, setDoppel] = useState([]);
   const [speichern, setSpeichern] = useState(false);
   const [fehler, setFehler] = useState(null);
+  const [gespeichertHinweis, setGespeichertHinweis] = useState(false);
 
   // Spieler, die inzwischen abgesagt haben, aber noch in der gespeicherten
   // Aufstellung stehen — sie werden beim Öffnen ersetzt und hier benannt.
@@ -9228,6 +9227,7 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
   }
 
   function spielerTauschenGegen(index, neueId) {
+    setGespeichertHinweis(false);
     const neu = [...reihenfolge];
     // Steht der gewählte Spieler schon auf einer anderen Position, tauschen die
     // beiden die Plätze. Sonst stünde er doppelt in der Aufstellung.
@@ -9241,6 +9241,7 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
   // Setzt einen Spieler auf einen Doppelplatz. Steht er bereits woanders im
   // Doppel, tauschen die beiden Plätze — niemand kann zweimal antreten.
   function doppelBesetzen(doppelIndex, platz, neueId) {
+    setGespeichertHinweis(false);
     const vorher = doppel[doppelIndex]?.spieler?.[platz] ?? null;
     let gefundenIn = null;
     let gefundenPlatz = null;
@@ -9312,6 +9313,9 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
     supabase.functions.invoke("notify-aufstellung", {
       body: { spielId: spiel.id, istAenderung: Boolean(vorhanden?.positionen?.length) },
     }); // bewusst nicht awaited
+    // Fenster bleibt offen: Direkt nach dem Speichern will man den Bogen meist
+    // gleich ausdrucken. Die Liste dahinter wird trotzdem aktualisiert.
+    setGespeichertHinweis(true);
     onGespeichert?.();
   }
 
@@ -9440,6 +9444,12 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
 
           {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
 
+          {gespeichertHinweis && !fehler && (
+            <p className="text-xs px-3 py-2 rounded-md" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
+              Gespeichert. Du kannst den Bogen jetzt gleich drucken oder das Fenster schließen.
+            </p>
+          )}
+
           {(vorhanden || !darfBearbeiten) && reihenfolge.length > 0 && (
             <button
               onClick={() => aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person })}
@@ -9460,7 +9470,9 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
               >
                 {speichern ? "Speichere…" : vorhanden ? "Aufstellung aktualisieren" : "Aufstellung fertigstellen"}
               </button>
-              <button onClick={onSchliessen} className="px-4 py-2 rounded-md text-sm border">Abbrechen</button>
+              <button onClick={onSchliessen} className="px-4 py-2 rounded-md text-sm border">
+                {gespeichertHinweis ? "Schließen" : "Abbrechen"}
+              </button>
             </div>
           ) : (
             <button onClick={onSchliessen} className="px-4 py-2 rounded-md text-sm border">Schließen</button>
