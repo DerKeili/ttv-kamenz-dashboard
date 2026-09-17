@@ -961,7 +961,15 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
           {eigenerTabellenplatz ? (
             <>
               <p className="text-3xl font-bold" style={{ fontFamily: "Oswald, sans-serif" }}>Platz {eigenerTabellenplatz.platz}</p>
-              <p className="text-sm opacity-80 mt-1">{eigenerTabellenplatz.punkte} Punkte aus {eigenerTabellenplatz.spiele} Spielen</p>
+              {/* "spiele" ist die Summe der Einzelspiele — gemeint sind hier die
+                  ausgetragenen Begegnungen, also die Spalte ST. */}
+              <p className="text-sm opacity-80 mt-1">
+                {eigenerTabellenplatz.punkte_plus != null
+                  ? `${eigenerTabellenplatz.punkte_plus}:${eigenerTabellenplatz.punkte_minus} Punkte`
+                  : `${eigenerTabellenplatz.punkte} ${eigenerTabellenplatz.punkte === 1 ? "Punkt" : "Punkte"}`}
+                {eigenerTabellenplatz.st != null &&
+                  ` aus ${eigenerTabellenplatz.st} ${eigenerTabellenplatz.st === 1 ? "Spiel" : "Spielen"}`}
+              </p>
             </>
           ) : (
             <p className="text-sm opacity-80">Noch keine Tabelle hinterlegt — im Reiter "Tabelle" aktualisieren.</p>
@@ -3267,7 +3275,10 @@ function Spielbericht({ daten, spiel }) {
         </span>
         <span className="text-gray-300 text-center">vs</span>
         <span className="truncate text-gray-600">{rechteName || "—"}</span>
-        <span className="hidden sm:block text-gray-400 text-right tabular-nums whitespace-nowrap">
+        {/* Feste Breite, damit die "vs"-Spalte in allen Zeilen an derselben Stelle
+            steht — sonst richtet sich jede Zeile nach ihren eigenen Satzergebnissen.
+            Auf schmalen Geräten ausgeblendet, dann fällt die Spalte auf null zusammen. */}
+        <span className="hidden sm:block sm:w-44 text-gray-400 text-right tabular-nums whitespace-nowrap">
           {saetze.join("  ")}
         </span>
         <span
