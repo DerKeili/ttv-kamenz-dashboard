@@ -9115,9 +9115,13 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   const eng = plaetze === 6;
 
   const inhalt = `<style>
+  /* Hintergründe und Linien auch beim Drucken behalten — ohne diese Angabe
+     lassen Browser graue Flächen gern weg. */
+  #druckbereich, #druckbereich * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   #druckbereich { font-family: Helvetica, Arial, sans-serif; color: #000; font-size: ${eng ? "7.4pt" : "8.6pt"}; background: #fff; line-height: 1.15; }
   #druckbereich table { width: 100%; border-collapse: collapse; }
-  #druckbereich td, #druckbereich th { border: 0.4pt solid #000; padding: ${eng ? "0.4mm 0.8mm" : "0.8mm 1.2mm"}; vertical-align: top; }
+  /* 0,4pt sind unter einem halben Pixel und verschwinden beim Skalieren */
+  #druckbereich td, #druckbereich th { border: 1px solid #000; padding: ${eng ? "0.4mm 0.8mm" : "0.8mm 1.2mm"}; vertical-align: top; }
   #druckbereich th { background: #eee; font-size: ${eng ? "6.6pt" : "7.6pt"}; font-weight: bold; text-align: left; }
   #druckbereich .kopf { display: flex; gap: 2mm; align-items: flex-start; }
   #druckbereich .kopf > .links { flex: 1 1 auto; min-width: 0; }
@@ -9238,6 +9242,9 @@ ${planZeilen ? `<table>
     @media print {
       body > *:not(#druckbereich) { display: none !important; }
       #druckbereich { display: block !important; position: static; }
+      /* Ohne diese Angabe werden Rahmen und Flächen beim Drucken weggelassen */
+      #druckbereich, #druckbereich * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      #druckbereich td, #druckbereich th { border: 1px solid #000 !important; }
       @page { size: A4 portrait; margin: 8mm; }
     }
   `;
@@ -9862,6 +9869,66 @@ function Benachrichtigungen({ profil, onOeffneUmfrage, onOeffneNachricht, onOeff
   );
 }
 
+/* ---------- Hinweis auf eine neuere Fassung ----------
+   Ohne diesen Abgleich bleiben Geräte, auf denen die App vom Home-Bildschirm
+   gestartet wird, auf einer zwischengespeicherten index.html sitzen und
+   bekommen Korrekturen erst zufällig mit. Beim Build entsteht ein Stempel,
+   der hier gegen die Datei version.json auf dem Server geprüft wird. */
+
+const APP_VERSION = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : null;
+
+function NeueVersionHinweis() {
+  const [neueFassung, setNeueFassung] = useState(false);
+
+  useEffect(() => {
+    if (!APP_VERSION) return; // im Entwicklungsmodus nicht gesetzt
+    let abgebrochen = false;
+
+    async function pruefen() {
+      try {
+        const antwort = await fetch(`${import.meta.env.BASE_URL}version.json?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!antwort.ok) return;
+        const daten = await antwort.json();
+        if (!abgebrochen && daten?.version && daten.version !== APP_VERSION) setNeueFassung(true);
+      } catch {
+        // Offline oder Datei nicht erreichbar — dann eben beim nächsten Versuch
+      }
+    }
+
+    pruefen();
+    const uhr = setInterval(pruefen, 15 * 60 * 1000);
+    // Beim Zurückkehren zur App erneut prüfen: Genau dann fällt es am wenigsten auf
+    const beiRueckkehr = () => { if (document.visibilityState === "visible") pruefen(); };
+    document.addEventListener("visibilitychange", beiRueckkehr);
+
+    return () => {
+      abgebrochen = true;
+      clearInterval(uhr);
+      document.removeEventListener("visibilitychange", beiRueckkehr);
+    };
+  }, []);
+
+  if (!neueFassung) return null;
+
+  return (
+    <div
+      className="fixed left-0 right-0 bottom-0 z-50 px-4 py-3 flex items-center justify-between gap-3"
+      style={{ background: COLORS.petrolDark, color: "#fff" }}
+    >
+      <span className="text-sm">Es gibt eine neuere Version der App.</span>
+      <button
+        onClick={() => window.location.reload()}
+        className="text-sm font-semibold px-3 py-1.5 rounded-md shrink-0"
+        style={{ background: COLORS.orange, color: "#fff" }}
+      >
+        Jetzt laden
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [profil, setProfil] = useState(null);
   const [sessionGeprueft, setSessionGeprueft] = useState(false);
@@ -10018,6 +10085,7 @@ export default function App() {
     <div className="h-[100dvh] flex overflow-hidden" style={{ background: COLORS.paper, fontFamily: "Inter, sans-serif" }}>
       <AenderungsPopup profil={profil} />
       <UmfrageEskalation profil={profil} />
+      <NeueVersionHinweis />
       {/* Abdunkelnder Hintergrund, solange das Menü auf dem Handy offen ist —
           verhindert außerdem, dass Inhalte dahinter durchscheinen */}
       {navOpen && (
