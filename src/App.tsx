@@ -6370,6 +6370,132 @@ function Nachrichten({ profil, zielSpielerId }) {
 
 /* ---------- Einstellungen (Saison-Verwaltung) ---------- */
 
+/* ---------- Datensicherung (nur Admin) ----------
+   Liest alle Tabellen aus und legt sie als eine JSON-Datei ab. Gedacht für einen
+   Serverumzug oder als Sicherung vor größeren Änderungen.
+   Bewusst NICHT enthalten: Anmeldedaten und Passwörter (die liegen in Supabase
+   Auth und sind von hier nicht lesbar) sowie hochgeladene Dateien im Speicher.
+   Beides muss beim Umzug getrennt mitgenommen werden. */
+
+const BACKUP_TABELLEN = [
+  "mannschaften", "profiles", "saisons", "verbands_spiele", "tabelle",
+  "spielerplanung_meldungen", "spiel_aufstellungen", "spiel_aushilfen",
+  "umfragen", "umfrage_ziele", "umfrage_antworten",
+  "news", "nachrichten", "kalender_ereignisse", "mannschaft_info",
+  "turniere", "turnier_teilnehmer", "turnier_paare", "turnier_spiele",
+  "gegner_spieler", "gegner_einsaetze", "spielberichte", "abwesenheiten",
+  "spieler_kontakte", "profilbilder",
+  "app_updates", "app_updates_gelesen", "konto_loeschungen",
+];
+
+function Datensicherung({ profil }) {
+  const [laeuft, setLaeuft] = useState(false);
+  const [stand, setStand] = useState(null);
+  const [bericht, setBericht] = useState(null);
+  const [fehler, setFehler] = useState(null);
+
+  async function sicherungErstellen() {
+    setLaeuft(true);
+    setFehler(null);
+    setBericht(null);
+
+    const daten = {};
+    const zusammenfassung = [];
+    const probleme = [];
+
+    for (const tabelle of BACKUP_TABELLEN) {
+      setStand(tabelle);
+      // In Blöcken lesen: Supabase liefert je Abfrage höchstens 1000 Zeilen
+      const alle = [];
+      let ab = 0;
+      let weiter = true;
+      while (weiter) {
+        const { data, error } = await supabase.from(tabelle).select("*").range(ab, ab + 999);
+        if (error) {
+          probleme.push(`${tabelle}: ${error.message}`);
+          weiter = false;
+          break;
+        }
+        alle.push(...(data ?? []));
+        weiter = (data?.length ?? 0) === 1000;
+        ab += 1000;
+      }
+      if (!probleme.some((p) => p.startsWith(`${tabelle}:`))) {
+        daten[tabelle] = alle;
+        zusammenfassung.push(`${tabelle}: ${alle.length}`);
+      }
+    }
+
+    const inhalt = {
+      erstellt_am: new Date().toISOString(),
+      erstellt_von: `${profil.vorname} ${profil.nachname}`,
+      hinweis: "Sicherung der Datenbank der TTV 97 Kamenz Mannschafts-App. Ohne Anmeldedaten und ohne hochgeladene Dateien.",
+      version: 1,
+      tabellen: daten,
+    };
+
+    const blob = new Blob([JSON.stringify(inhalt, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const datum = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `TTV97-Kamenz_Sicherung_${datum}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+    setLaeuft(false);
+    setStand(null);
+    setBericht({ zeilen: zusammenfassung, probleme });
+  }
+
+  if (!profil.ist_admin) return null;
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={Shield}>Datensicherung</SectionLabel>
+      <p className="text-sm text-gray-600 mt-3">
+        Legt den gesamten Datenbestand als eine JSON-Datei ab — für einen Umzug auf einen anderen
+        Server oder als Sicherung vor größeren Änderungen.
+      </p>
+
+      <button
+        onClick={sicherungErstellen}
+        disabled={laeuft}
+        className="mt-4 px-4 py-2 rounded-md text-white text-sm font-semibold"
+        style={{ background: COLORS.orange, opacity: laeuft ? 0.6 : 1 }}
+      >
+        {laeuft ? `Lese ${stand ?? "Daten"}…` : "Sicherung herunterladen"}
+      </button>
+
+      {fehler && <p className="text-xs mt-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+
+      {bericht && (
+        <div className="mt-4 text-xs text-gray-500 space-y-2">
+          <p style={{ color: COLORS.petrol }}>Datei wurde erstellt.</p>
+          <p className="leading-relaxed">{bericht.zeilen.join(" · ")}</p>
+          {bericht.probleme.length > 0 && (
+            <p style={{ color: COLORS.orangeDeep }}>
+              Nicht gelesen: {bericht.probleme.join(" · ")}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="mt-4 p-3 rounded-md text-xs text-gray-600" style={{ background: "#F5F5F2" }}>
+        <p className="font-semibold mb-1" style={{ color: COLORS.anthracite }}>Was die Datei nicht enthält</p>
+        <p className="leading-relaxed">
+          Anmeldedaten und Passwörter liegen in der Benutzerverwaltung von Supabase und sind von hier
+          nicht lesbar. Ebenso fehlen hochgeladene Dateien wie Profilbilder und PDF-Anhänge — die liegen
+          im Dateispeicher. Beides musst du bei einem Umzug getrennt mitnehmen, über die Supabase-CLI
+          oder einen Datenbank-Dump.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function Einstellungen({ profil, onProfilGeaendert }) {
   const [telefonHandy, setTelefonHandy] = useState(profil.telefon_handy ?? "");
   const [telefonFestnetz, setTelefonFestnetz] = useState(profil.telefon_festnetz ?? "");
@@ -6436,6 +6562,8 @@ function Einstellungen({ profil, onProfilGeaendert }) {
       <KontoKuendigung profil={profil} />
 
       {profil.ist_admin && <AenderungshinweisVerwaltung />}
+
+      <Datensicherung profil={profil} />
     </div>
   );
 }
@@ -9010,9 +9138,12 @@ function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person
   /* Endstand rechts neben den Unterschriften, wie im Vordruck */
   #druckbereich .fuss { display: flex; gap: 2mm; align-items: flex-start; }
   #druckbereich .fuss > .sign { flex: 1 1 auto; }
-  #druckbereich .summe { flex: 0 0 ${eng ? "32mm" : "36mm"}; }
+  /* Rechte Spalte exakt so breit wie Satz + Pkt. der Ergebnistabelle darüber,
+     damit die Endsummen unter den passenden Spalten stehen. */
+  #druckbereich .summe { flex: 0 0 32mm; width: 32mm; }
   #druckbereich .summe td { height: ${eng ? "6mm" : "7mm"}; }
-  #druckbereich .summe .b { font-weight: bold; background: #f4f4f4; }
+  #druckbereich .summe .b { font-weight: bold; background: #f4f4f4; width: 14mm; }
+  #druckbereich .summe .wert { width: 18mm; }
 </style>
 
 <div class="kopf">
@@ -9083,8 +9214,8 @@ ${planZeilen ? `<table>
   </table>
 
   <table class="summe">
-    <tr><td class="b">Satz</td><td></td></tr>
-    <tr><td class="b">Punkt</td><td></td></tr>
+    <tr><td class="b">Satz</td><td class="wert"></td></tr>
+    <tr><td class="b">Punkt</td><td class="wert"></td></tr>
   </table>
 </div>
 
