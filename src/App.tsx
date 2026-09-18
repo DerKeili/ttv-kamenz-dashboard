@@ -8764,7 +8764,25 @@ function Analyse({ saison, profil }) {
       if ((unsHeim && p.sieger === "heim") || (!unsHeim && p.sieger === "gast")) siege++;
     }
     const begegnungen = new Set(eigene.map((p) => p.bericht_url)).size;
-    return { partien: eigene.length, siege, niederlagen: eigene.length - siege, begegnungen };
+
+    // Nach Spielzeit aufschlüsseln, damit erkennbar ist, was aktuell ist und
+    // was aus früheren Jahren stammt
+    const nachSpielzeit = {};
+    for (const p of eigene) {
+      const zeit = p.spielzeit ?? "ohne Angabe";
+      if (!nachSpielzeit[zeit]) nachSpielzeit[zeit] = { siege: 0, niederlagen: 0 };
+      const unsHeim = mannschaftPasst(p.heim_mannschaft, eigenerTeamName);
+      const gewonnen = (unsHeim && p.sieger === "heim") || (!unsHeim && p.sieger === "gast");
+      nachSpielzeit[zeit][gewonnen ? "siege" : "niederlagen"]++;
+    }
+
+    return {
+      partien: eigene.length,
+      siege,
+      niederlagen: eigene.length - siege,
+      begegnungen,
+      spielzeiten: Object.entries(nachSpielzeit).sort((a, b) => b[0].localeCompare(a[0])),
+    };
   }
 
   /* Bilanz eines einzelnen Spielers gegen einen einzelnen Gegner — über alle
@@ -8781,7 +8799,8 @@ function Analyse({ saison, profil }) {
       const wirHeim = nameGleich(p.spieler_heim, eigenerName);
       if ((wirHeim && p.sieger === "heim") || (!wirHeim && p.sieger === "gast")) siege++;
     }
-    return { spiele: treffer.length, siege, niederlagen: treffer.length - siege };
+    const spielzeiten = [...new Set(treffer.map((p) => p.spielzeit).filter(Boolean))];
+    return { spiele: treffer.length, siege, niederlagen: treffer.length - siege, spielzeiten };
   }
 
   // Wie oft war jemand dabei, und auf welcher Position meistens?
@@ -8987,15 +9006,38 @@ function Analyse({ saison, profil }) {
                 })()}
 
                 {(() => {
+                  // Bewusst immer sichtbar, auch ohne Daten — sonst wirkt es, als
+                  // fehle die Auswertung, obwohl es schlicht nichts zu zeigen gibt.
                   const bilanz = eigenerTeamName ? bilanzGegen(gegnerName) : null;
-                  if (!bilanz || bilanz.partien === 0) return null;
                   return (
                     <div className="mb-4 p-3 rounded-md" style={{ background: COLORS.paper }}>
                       <p className="text-xs text-gray-500 mb-1">Bisher gegen {gegnerName}</p>
-                      <p className="text-sm" style={{ color: COLORS.anthracite }}>
-                        <strong>{bilanz.siege}:{bilanz.niederlagen}</strong> Einzel aus{" "}
-                        {bilanz.begegnungen === 1 ? "1 Begegnung" : `${bilanz.begegnungen} Begegnungen`}
-                      </p>
+                      {!eigenerTeamName ? (
+                        <p className="text-xs text-gray-500">
+                          Für die eigene Mannschaft ist kein Verbandsname hinterlegt — ohne den lassen sich die
+                          Partien nicht zuordnen. Nachtragen unter Mannschaften.
+                        </p>
+                      ) : partien.length === 0 ? (
+                        <p className="text-xs text-gray-500">
+                          Noch keine Partien eingelesen. Tippe oben auf „Einsätze auswerten“.
+                        </p>
+                      ) : bilanz.partien === 0 ? (
+                        <p className="text-xs text-gray-500">
+                          In dieser Saison noch nicht gegeneinander gespielt.
+                        </p>
+                      ) : (
+                        <>
+                          <p className="text-sm" style={{ color: COLORS.anthracite }}>
+                            <strong>{bilanz.siege}:{bilanz.niederlagen}</strong> Einzel aus{" "}
+                            {bilanz.begegnungen === 1 ? "1 Begegnung" : `${bilanz.begegnungen} Begegnungen`}
+                          </p>
+                          {bilanz.spielzeiten.length > 1 && (
+                            <p className="text-[11px] text-gray-400 mt-1">
+                              {bilanz.spielzeiten.map(([zeit, z]) => `${zeit}: ${z.siege}:${z.niederlagen}`).join(" · ")}
+                            </p>
+                          )}
+                        </>
+                      )}
                     </div>
                   );
                 })()}
