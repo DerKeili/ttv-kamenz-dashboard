@@ -8681,7 +8681,9 @@ function Analyse({ saison, profil }) {
   const [benoetigt, setBenoetigt] = useState(4);
   const [stand, setStand] = useState(null);
   const [einsaetze, setEinsaetze] = useState([]);
+  const [partien, setPartien] = useState([]); // jede Einzel- und Doppelpartie der Liga
   const [einsatzLadend, setEinsatzLadend] = useState(false);
+  const [eigenerTeamName, setEigenerTeamName] = useState(null); // Name beim Verband, für den Abgleich der Partien
 
   async function laden() {
     setLadend(true);
@@ -8696,8 +8698,16 @@ function Analyse({ saison, profil }) {
     setSpiele(spieleDaten ?? []);
     setEigene(info?.spieler ?? []);
     setBenoetigt(mannschaft?.benoetigte_spieler ?? 4);
+    setEigenerTeamName(mannschaft?.verband_name ?? null);
     setGegnerAlle(gegnerDaten ?? []);
     setStand((gegnerDaten ?? [])[0]?.aktualisiert_am ?? null);
+
+    const { data: partienDaten } = await supabase
+      .from("liga_partien")
+      .select("*")
+      .eq("saison_id", saison.id);
+    setPartien(partienDaten ?? []);
+
     setLadend(false);
   }
 
@@ -8719,6 +8729,59 @@ function Analyse({ saison, profil }) {
     setEinsatzLadend(false);
     if (error || data?.error) return setFehler(await echteFehlermeldung(error, data));
     laden();
+  }
+
+  /* ---------- Bilanzen aus den Partien ----------
+     Grundlage sind die Spielberichte der Staffel. Namen kommen dort als
+     "Nachname, Vorname", eigene Spieler stehen in der App als getrennte Felder —
+     deshalb wird über beide Schreibweisen verglichen. */
+  function nameGleich(a, b) {
+    const x = nameNormalisieren(a);
+    const y = nameNormalisieren(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const gedreht = x.split(" ").reverse().join(" ");
+    return gedreht === y;
+  }
+
+  // Alle Einzelpartien zwischen uns und dem Gegner
+  function partienGegen(gegnerName) {
+    return partien.filter((p) => {
+      if (p.art !== "einzel") return false;
+      const unsHeim = mannschaftPasst(p.heim_mannschaft, eigenerTeamName);
+      const unsGast = mannschaftPasst(p.gast_mannschaft, eigenerTeamName);
+      const gegnerHeim = mannschaftPasst(p.heim_mannschaft, gegnerName);
+      const gegnerGast = mannschaftPasst(p.gast_mannschaft, gegnerName);
+      return (unsHeim && gegnerGast) || (unsGast && gegnerHeim);
+    });
+  }
+
+  function bilanzGegen(gegnerName) {
+    const eigene = partienGegen(gegnerName);
+    let siege = 0;
+    for (const p of eigene) {
+      const unsHeim = mannschaftPasst(p.heim_mannschaft, eigenerTeamName);
+      if ((unsHeim && p.sieger === "heim") || (!unsHeim && p.sieger === "gast")) siege++;
+    }
+    const begegnungen = new Set(eigene.map((p) => p.bericht_url)).size;
+    return { partien: eigene.length, siege, niederlagen: eigene.length - siege, begegnungen };
+  }
+
+  /* Bilanz eines einzelnen Spielers gegen einen einzelnen Gegner — über alle
+     Mannschaften hinweg, denn in unteren Mannschaften wechseln die Leute. */
+  function direktvergleich(eigenerName, gegnerSpieler) {
+    const treffer = partien.filter(
+      (p) =>
+        p.art === "einzel" &&
+        ((nameGleich(p.spieler_heim, eigenerName) && nameGleich(p.spieler_gast, gegnerSpieler)) ||
+          (nameGleich(p.spieler_gast, eigenerName) && nameGleich(p.spieler_heim, gegnerSpieler)))
+    );
+    let siege = 0;
+    for (const p of treffer) {
+      const wirHeim = nameGleich(p.spieler_heim, eigenerName);
+      if ((wirHeim && p.sieger === "heim") || (!wirHeim && p.sieger === "gast")) siege++;
+    }
+    return { spiele: treffer.length, siege, niederlagen: treffer.length - siege };
   }
 
   // Wie oft war jemand dabei, und auf welcher Position meistens?
@@ -8920,6 +8983,66 @@ function Analyse({ saison, profil }) {
                         Häufigkeit der Einsätze, ohne Gewähr.
                       </p>
                     </>
+                  );
+                })()}
+
+                {(() => {
+                  const bilanz = eigenerTeamName ? bilanzGegen(gegnerName) : null;
+                  if (!bilanz || bilanz.partien === 0) return null;
+                  return (
+                    <div className="mb-4 p-3 rounded-md" style={{ background: COLORS.paper }}>
+                      <p className="text-xs text-gray-500 mb-1">Bisher gegen {gegnerName}</p>
+                      <p className="text-sm" style={{ color: COLORS.anthracite }}>
+                        <strong>{bilanz.siege}:{bilanz.niederlagen}</strong> Einzel aus{" "}
+                        {bilanz.begegnungen === 1 ? "1 Begegnung" : `${bilanz.begegnungen} Begegnungen`}
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {(() => {
+                  // Paarungsvergleich: jeder unserer Spieler gegen jeden des Gegners.
+                  // Nur zeigen, wenn es überhaupt Begegnungen oder LPZ-Werte gibt.
+                  if (!eigenerTeamName || eigene.length === 0 || gegnerKader.length === 0) return null;
+
+                  const zeilen = [];
+                  for (const unser of eigene) {
+                    for (const gegner of gegnerKader) {
+                      const vergleich = direktvergleich(unser.name, gegner.name);
+                      const a = lpzZahl(unser.lpz);
+                      const b = lpzZahl(gegner.lpz);
+                      if (vergleich.spiele === 0) continue; // ohne Begegnung keine Zeile
+                      zeilen.push({ unser, gegner, vergleich, diff: a && b ? a - b : null });
+                    }
+                  }
+                  if (zeilen.length === 0) return null;
+                  zeilen.sort((x, y) => y.vergleich.spiele - x.vergleich.spiele);
+
+                  return (
+                    <div className="mb-4">
+                      <p className="text-xs text-gray-500 mb-2">Direktvergleiche</p>
+                      <div className="divide-y border rounded-md">
+                        {zeilen.map((z, i) => (
+                          <div key={i} className="flex items-center gap-2 px-3 py-2 text-sm">
+                            <span className="flex-1 min-w-0 truncate">{z.unser.name}</span>
+                            <span className="text-gray-300 text-xs">gegen</span>
+                            <span className="flex-1 min-w-0 truncate text-gray-600">{z.gegner.name}</span>
+                            <span className="shrink-0 font-semibold tabular-nums">
+                              {z.vergleich.siege}:{z.vergleich.niederlagen}
+                            </span>
+                            {z.diff != null && (
+                              <span className="shrink-0 text-xs text-gray-400 w-14 text-right">
+                                {z.diff > 0 ? "+" : ""}{z.diff} LPZ
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-2">
+                        Bei ein oder zwei Begegnungen sagt eine Bilanz wenig — der LPZ-Abstand ist der
+                        verlässlichere Hinweis. Aussagekräftig wird der Direktvergleich erst ab etwa fünf Spielen.
+                      </p>
+                    </div>
                   );
                 })()}
 
