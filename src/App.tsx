@@ -6496,6 +6496,120 @@ function Datensicherung({ profil }) {
   );
 }
 
+/* ---------- Nutzungsstatistik (nur Admin) ----------
+   Bewusst nur Summen: Wie viele Leute nutzen die App, wie oft, und welche
+   E-Mail-Arten sind eingeschaltet. Keine Auswertung je Person — wer wann
+   reinschaut, geht die Mannschaftsführung nichts an. */
+
+function Nutzungsstatistik({ profil }) {
+  const [tage, setTage] = useState([]);
+  const [spieler, setSpieler] = useState([]);
+  const [ladend, setLadend] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const vor30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      const [{ data: nutzung }, { data: personen }] = await Promise.all([
+        supabase.from("app_nutzung").select("spieler_id, tag, aufrufe").gte("tag", vor30),
+        supabase.from("profiles").select("*"),
+      ]);
+      setTage(nutzung ?? []);
+      setSpieler(personen ?? []);
+      setLadend(false);
+    })();
+  }, []);
+
+  if (!profil.ist_admin) return null;
+  if (ladend) return <div className="bg-white rounded-lg border p-5"><Leerzustand text="Lade Nutzungsdaten…" /></div>;
+
+  const heute = new Date();
+  const seit = (tageZurueck) => new Date(heute.getTime() - tageZurueck * 86400000).toISOString().slice(0, 10);
+
+  const imZeitraum = (tageZurueck) => tage.filter((t) => t.tag >= seit(tageZurueck));
+  const aktive = (tageZurueck) => new Set(imZeitraum(tageZurueck).map((t) => t.spieler_id)).size;
+  const aufrufe = (tageZurueck) => imZeitraum(tageZurueck).reduce((summe, t) => summe + (t.aufrufe ?? 0), 0);
+
+  // Letzte 14 Tage als kleines Balkenbild
+  const verlauf = Array.from({ length: 14 }, (_, i) => {
+    const tag = new Date(heute.getTime() - (13 - i) * 86400000).toISOString().slice(0, 10);
+    const zeilen = tage.filter((t) => t.tag === tag);
+    return {
+      tag,
+      personen: new Set(zeilen.map((z) => z.spieler_id)).size,
+      aufrufe: zeilen.reduce((s, z) => s + (z.aufrufe ?? 0), 0),
+    };
+  });
+  const hoechster = Math.max(1, ...verlauf.map((v) => v.aufrufe));
+
+  const mitZugang = spieler.filter((s) => s.email);
+
+  return (
+    <div className="bg-white rounded-lg border p-5">
+      <SectionLabel icon={TrendingUp}>Nutzung</SectionLabel>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+        {[
+          { wert: aktive(7), titel: "aktiv (7 Tage)" },
+          { wert: aktive(30), titel: "aktiv (30 Tage)" },
+          { wert: aufrufe(7), titel: "Aufrufe (7 Tage)" },
+          { wert: aufrufe(30), titel: "Aufrufe (30 Tage)" },
+        ].map((k) => (
+          <div key={k.titel} className="p-3 rounded-md" style={{ background: COLORS.paper }}>
+            <p className="text-xl font-bold" style={{ color: COLORS.anthracite, fontFamily: "Oswald, sans-serif" }}>{k.wert}</p>
+            <p className="text-[11px] text-gray-500 mt-0.5">{k.titel}</p>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs text-gray-500 mt-4 mb-2">
+        Von {spieler.length} Spielern haben {aktive(30)} die App in den letzten 30 Tagen geöffnet.
+      </p>
+
+      <p className="text-xs text-gray-500 mt-5 mb-2">Letzte 14 Tage</p>
+      <div className="flex items-end gap-1 h-20">
+        {verlauf.map((v) => (
+          <div key={v.tag} className="flex-1 flex flex-col items-center gap-1" title={`${formatDatum(v.tag)}: ${v.aufrufe} Aufrufe von ${v.personen} Personen`}>
+            <div
+              className="w-full rounded-sm"
+              style={{ height: `${Math.round((v.aufrufe / hoechster) * 100)}%`, minHeight: v.aufrufe > 0 ? 3 : 1, background: v.aufrufe > 0 ? COLORS.petrol : "#E5E3DD" }}
+            />
+            <span className="text-[9px] text-gray-400">{v.tag.slice(8)}</span>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs text-gray-500 mt-6 mb-2">E-Mail-Benachrichtigungen</p>
+      <div className="space-y-2">
+        {EMAIL_ARTEN.map((art) => {
+          // Für Mannschaftsführung gedachte Arten nur auf diesen Kreis beziehen
+          const betroffene = art.nurLeitung
+            ? mitZugang.filter((s) => s.ist_admin || istTeamLeiter(s))
+            : mitZugang;
+          if (betroffene.length === 0) return null;
+          const an = betroffene.filter((s) => s[art.feld] !== false).length;
+          const anteil = Math.round((an / betroffene.length) * 100);
+          return (
+            <div key={art.feld} className="flex items-center gap-3 text-xs">
+              <span className="flex-1 min-w-0 truncate">{art.titel}</span>
+              <div className="w-28 h-2 rounded-full overflow-hidden" style={{ background: "#EDEDEA" }}>
+                <div className="h-full rounded-full" style={{ width: `${anteil}%`, background: COLORS.petrol }} />
+              </div>
+              <span className="w-20 text-right text-gray-500 tabular-nums">
+                {an}/{betroffene.length} · {anteil}%
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-[11px] text-gray-400 mt-5 leading-relaxed">
+        Gezählt wird nur, wie oft die App an einem Tag geöffnet wurde. Keine Seitenaufrufe, keine
+        Verweildauer, keine Auswertung einzelner Personen.
+      </p>
+    </div>
+  );
+}
+
 function Einstellungen({ profil, onProfilGeaendert }) {
   const [telefonHandy, setTelefonHandy] = useState(profil.telefon_handy ?? "");
   const [telefonFestnetz, setTelefonFestnetz] = useState(profil.telefon_festnetz ?? "");
@@ -6562,6 +6676,8 @@ function Einstellungen({ profil, onProfilGeaendert }) {
       <KontoKuendigung profil={profil} />
 
       {profil.ist_admin && <AenderungshinweisVerwaltung />}
+
+      <Nutzungsstatistik profil={profil} />
 
       <Datensicherung profil={profil} />
     </div>
@@ -10147,6 +10263,22 @@ export default function App() {
     window.addEventListener("popstate", beiZurueck);
     return () => window.removeEventListener("popstate", beiZurueck);
   }, [navOpen, tab]);
+
+  useEffect(() => {
+    // Aufruf zählen — einmal je Sitzung, nicht bei jedem Wechsel des Menüpunkts.
+    // sessionStorage, damit ein Neuladen des Browsers als neuer Aufruf zählt,
+    // ein Tab-Wechsel innerhalb der App aber nicht.
+    if (!profil?.id) return;
+    if (typeof window === "undefined") return;
+    const schluessel = `nutzung-gezaehlt-${profil.id}`;
+    try {
+      if (sessionStorage.getItem(schluessel)) return;
+      sessionStorage.setItem(schluessel, "1");
+    } catch {
+      return; // Privater Modus o. ä. — dann eben nicht zählen
+    }
+    supabase.rpc("nutzung_zaehlen"); // bewusst nicht awaited
+  }, [profil?.id]);
 
   useEffect(() => {
     // Beim Öffnen des Kalenders gelten alle bis dahin angelegten Termine als gesehen
