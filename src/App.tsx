@@ -9114,8 +9114,8 @@ function Analyse({ saison, profil }) {
                         ))}
                       </div>
                       <p className="text-[11px] text-gray-400 mb-4">
-                        Vermutliche Aufstellung: {vermutlich.map((s) => s.name).join(", ")} — abgeleitet aus der
-                        Häufigkeit der Einsätze, ohne Gewähr.
+                        Vermutliche Aufstellung: {vermutlich.map((s) => nameGedreht(s.name)).join(", ")} — abgeleitet
+                        aus der Häufigkeit der Einsätze, ohne Gewähr.
                       </p>
                     </>
                   );
@@ -9248,6 +9248,18 @@ function istZusage(antwort, umfrage) {
     // Ältere Einträge könnten den Text enthalten — beides abfangen
     return String(wert).toLowerCase().startsWith("ja");
   });
+}
+
+/* Der Verband liefert "Nachname, Vorname". In einer Aufzählung mehrerer Spieler
+   wird daraus schnell Kraut und Rüben, weil die Kommas doppelt belegt sind.
+   Deshalb dort umdrehen: "Torsten Kluge, Thomas Marschner, …" */
+function nameGedreht(text) {
+  const roh = String(text ?? "").trim();
+  const komma = roh.indexOf(",");
+  if (komma === -1) return roh;
+  const nachname = roh.slice(0, komma).trim();
+  const vorname = roh.slice(komma + 1).trim();
+  return vorname ? `${vorname} ${nachname}` : nachname;
 }
 
 function nameNormalisieren(text) {
