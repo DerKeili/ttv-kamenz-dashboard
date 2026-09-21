@@ -5733,6 +5733,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               umfrage={u}
               antworten={antwortenNachUmfrage[u.id] ?? []}
               zielAnzahl={zielAnzahl}
+              zielIds={ziele.map((z) => z.spieler_id)}
               profil={profil}
               spielerListe={spielerListe}
               hervorgehoben={u.id === zielUmfrageId}
@@ -5761,7 +5762,7 @@ function terminAusOption(option) {
   return `${jahr}-${monat}-${tag}`;
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten, onAnfrageAbschliessen, abschlussLaeuft = false }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, zielIds = [], profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten, onAnfrageAbschliessen, abschlussLaeuft = false }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
@@ -5770,7 +5771,13 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, profil, spielerListe, he
   const [speichertGerade, setSpeichertGerade] = useState(false);
 
   const zeitAbgelaufen = Boolean(umfrage.endet_am) && new Date(umfrage.endet_am) <= new Date();
-  const alleAbgestimmt = zielAnzahl > 0 && antworten.length >= zielAnzahl;
+  // Beendet erst, wenn wirklich JEDER Angefragte geantwortet hat — geprüft Person für
+  // Person, nicht nur über die Anzahl. Sonst reicht eine einzige fremde Antwort, wenn
+  // ein Spieler aus Datenschutzgründen nur seinen eigenen Ziel-Eintrag sehen darf.
+  const beantwortetVon = new Set(antworten.map((a) => a.spieler_id));
+  const alleAbgestimmt = zielIds.length > 0
+    ? zielIds.length >= zielAnzahl && zielIds.every((id) => beantwortetVon.has(id))
+    : zielAnzahl > 0 && antworten.length >= zielAnzahl;
   const istBeendet = zeitAbgelaufen || alleAbgestimmt;
 
   const zeigeErgebnis = istBeendet || Boolean(eigeneAntwort);
