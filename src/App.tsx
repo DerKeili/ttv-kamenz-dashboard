@@ -6505,6 +6505,27 @@ function Nutzungsstatistik({ profil }) {
   const [tage, setTage] = useState([]);
   const [spieler, setSpieler] = useState([]);
   const [ladend, setLadend] = useState(true);
+  const [pruefung, setPruefung] = useState(null);
+
+  // Testknopf: Ruft die Zählfunktion auf und zeigt das Ergebnis an. Ohne das
+  // bliebe ein Rechte- oder Namensproblem unsichtbar, weil der Aufruf beim
+  // Start der App im Hintergrund läuft.
+  async function zaehlungPruefen() {
+    setPruefung({ art: "laeuft", text: "Prüfe…" });
+    const { error } = await supabase.rpc("nutzung_zaehlen");
+    if (error) {
+      setPruefung({ art: "fehler", text: error.message });
+      return;
+    }
+    const { count, error: leseFehler } = await supabase
+      .from("app_nutzung")
+      .select("*", { count: "exact", head: true });
+    if (leseFehler) {
+      setPruefung({ art: "fehler", text: `Zählen ging, Lesen nicht: ${leseFehler.message}` });
+      return;
+    }
+    setPruefung({ art: "ok", text: `Zählung funktioniert — ${count} Zeilen in der Tabelle.` });
+  }
 
   useEffect(() => {
     (async () => {
@@ -6606,6 +6627,24 @@ function Nutzungsstatistik({ profil }) {
         Gezählt wird nur, wie oft die App an einem Tag geöffnet wurde. Keine Seitenaufrufe, keine
         Verweildauer, keine Auswertung einzelner Personen.
       </p>
+
+      <div className="mt-4 pt-4 border-t">
+        <button
+          onClick={zaehlungPruefen}
+          className="text-xs px-3 py-2 rounded-md border font-semibold"
+          style={{ color: COLORS.petrol }}
+        >
+          Zählung prüfen
+        </button>
+        {pruefung && (
+          <p
+            className="text-xs mt-2 leading-relaxed"
+            style={{ color: pruefung.art === "fehler" ? COLORS.orangeDeep : pruefung.art === "ok" ? COLORS.petrol : "#6B6B66" }}
+          >
+            {pruefung.text}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -10283,13 +10322,28 @@ export default function App() {
     if (!profil?.id) return;
     if (typeof window === "undefined") return;
     const schluessel = `nutzung-gezaehlt-${profil.id}`;
+    let schonGezaehlt = false;
     try {
-      if (sessionStorage.getItem(schluessel)) return;
-      sessionStorage.setItem(schluessel, "1");
+      schonGezaehlt = Boolean(sessionStorage.getItem(schluessel));
     } catch {
-      return; // Privater Modus o. ä. — dann eben nicht zählen
+      // Privater Modus o. ä. — dann zählen wir eben bei jedem Aufbau
     }
-    supabase.rpc("nutzung_zaehlen"); // bewusst nicht awaited
+    if (schonGezaehlt) return;
+
+    // Fehler sichtbar machen: Ein stiller Aufruf verschluckt Probleme mit
+    // Rechten oder fehlender Funktion, und die Statistik bleibt grundlos leer.
+    (async () => {
+      const { error } = await supabase.rpc("nutzung_zaehlen");
+      if (error) {
+        console.warn("Nutzung konnte nicht gezählt werden:", error.message);
+        return;
+      }
+      try {
+        sessionStorage.setItem(schluessel, "1");
+      } catch {
+        // nicht schlimm
+      }
+    })();
   }, [profil?.id]);
 
   useEffect(() => {
