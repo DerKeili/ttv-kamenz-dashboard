@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText, TrendingUp, ChevronDown
+  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText, TrendingUp, ChevronDown, Thermometer
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -1818,6 +1818,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   // Tiefer eingestufte Mannschaften — nur wenn es welche gibt, ist eine Aushilfe-Anfrage sinnvoll
   const [aushilfeMannschaften, setAushilfeMannschaften] = useState([]);
   const [abwesenheiten, setAbwesenheiten] = useState([]); // längere Ausfälle, z. B. krank oder Urlaub
+  const [krankeAushilfen, setKrankeAushilfen] = useState([]); // Aushilfen, die sich für ein Spiel krank gemeldet haben
   const [anfragen, setAnfragen] = useState([]);
   const [aufstellungen, setAufstellungen] = useState({});
   const [aufstellungFuer, setAufstellungFuer] = useState(null);
@@ -2078,12 +2079,19 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     // Eingeplante Aushilfen anderer Mannschaften zu diesen Spielen
     const spielIds = (spieleDaten ?? []).map((sp) => sp.id);
     let aushilfenListe = [];
+    // Aushilfen, die sich krank gemeldet haben: Sie stehen nicht mehr in spiel_aushilfen
+    // (zählen also nirgends mehr mit), sondern als Meldung "krank" am fremden Spiel.
+    const eigeneIds = new Set((spielerDaten ?? []).map((sp) => sp.id));
+    const krankeFremde = (meldungenDaten ?? []).filter(
+      (m) => m.status === "krank" && !eigeneIds.has(m.spieler_id) && spielIds.includes(m.spiel_id)
+    );
+    let krankeAushilfenListe = [];
     if (spielIds.length > 0) {
       const { data: aushilfenDaten } = await supabase
         .from("spiel_aushilfen")
         .select("spiel_id, spieler_id")
         .in("spiel_id", spielIds);
-      const helferIds = [...new Set((aushilfenDaten ?? []).map((a) => a.spieler_id))];
+      const helferIds = [...new Set([...(aushilfenDaten ?? []), ...krankeFremde].map((a) => a.spieler_id))];
       if (helferIds.length > 0) {
         const { data: helfer } = await supabase
           .from("profiles")
@@ -2098,9 +2106,19 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
             mannschaftName: (teams ?? []).find((t) => t.id === person?.mannschaft_id)?.name ?? "andere Mannschaft",
           };
         });
+        krankeAushilfenListe = krankeFremde.map((m) => {
+          const person = (helfer ?? []).find((h) => h.id === m.spieler_id);
+          return {
+            spiel_id: m.spiel_id,
+            spieler_id: m.spieler_id,
+            person,
+            mannschaftName: (teams ?? []).find((t) => t.id === person?.mannschaft_id)?.name ?? "andere Mannschaft",
+          };
+        });
       }
     }
     setAushilfen(aushilfenListe);
+    setKrankeAushilfen(krankeAushilfenListe);
 
     // Bereits gestellte Aushilfe-Anfragen samt Zusagen — damit sichtbar wird,
     // ob schon gefragt wurde und was dabei herauskam
@@ -2227,7 +2245,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     // bei aufgehobenem Schreibschutz — sonst passiert das versehentlich beim Scrollen.
     if (fremdeZeile && !(darfPlanen && schreibschutzAus)) return;
 
-    const order = { offen: "ja", ja: "nein", nein: "offen" };
+    // "krank" setzt die Krankmeldung automatisch. Ein Tippen danach heißt: wieder fit, ich kann.
+    const order = { offen: "ja", ja: "nein", nein: "offen", krank: "ja" };
     const neuerStatus = order[meldungen[spielId]?.[spielerId] ?? "offen"];
 
     const aktualisierteMeldungenFuerSpiel = { ...meldungen[spielId], [spielerId]: neuerStatus };
@@ -2525,11 +2544,13 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                             ? { background: "#DDF0EA", color: COLORS.petrol }
                             : eigenerStatus === "nein"
                             ? { background: "#FBE2DA", color: COLORS.orangeDeep }
+                            : eigenerStatus === "krank"
+                            ? { background: ABWESENHEIT_STIL.krank.background, color: ABWESENHEIT_STIL.krank.color }
                             : { background: "#F1F1EF", color: "#777" }
                         }
                       >
-                        {gesperrt ? <CalendarClock size={16} /> : eigenerStatus === "ja" ? <Check size={16} /> : eigenerStatus === "nein" ? <X size={16} /> : <HelpCircle size={16} />}
-                        {gesperrt ? "verlegt" : eigenerStatus === "ja" ? "Ich kann" : eigenerStatus === "nein" ? "Ich kann nicht" : "Antippen zum Eintragen"}
+                        {gesperrt ? <CalendarClock size={16} /> : eigenerStatus === "ja" ? <Check size={16} /> : eigenerStatus === "nein" ? <X size={16} /> : eigenerStatus === "krank" ? <Thermometer size={16} /> : <HelpCircle size={16} />}
+                        {gesperrt ? "verlegt" : eigenerStatus === "ja" ? "Ich kann" : eigenerStatus === "nein" ? "Ich kann nicht" : eigenerStatus === "krank" ? "Krank gemeldet (antippen, wenn du wieder kannst)" : "Antippen zum Eintragen"}
                       </button>
                     </div>
                     ) : (
@@ -2577,9 +2598,9 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                               <span className="shrink-0 text-right">
                                 <span
                                   className="px-2 py-0.5 rounded-md font-semibold"
-                                  style={st === "ja" ? { background: "#DDF0EA", color: COLORS.petrol } : st === "nein" ? { background: "#FBE2DA", color: COLORS.orangeDeep } : { background: "#F1F1EF", color: "#999" }}
+                                  style={st === "ja" ? { background: "#DDF0EA", color: COLORS.petrol } : st === "nein" ? { background: "#FBE2DA", color: COLORS.orangeDeep } : st === "krank" ? { background: ABWESENHEIT_STIL.krank.background, color: ABWESENHEIT_STIL.krank.color } : { background: "#F1F1EF", color: "#999" }}
                                 >
-                                  {st === "ja" ? "Kann" : st === "nein" ? "Kann nicht" : "Offen"}
+                                  {st === "ja" ? "Kann" : st === "nein" ? "Kann nicht" : st === "krank" ? "Krank" : "Offen"}
                                 </span>
                                 {meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft) && (
                                   <span className="block text-[10px] text-gray-400 mt-0.5 whitespace-nowrap">
@@ -2601,6 +2622,20 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                             </span>
                             <span className="px-2 py-0.5 rounded-md font-semibold shrink-0" style={{ background: "#DDF0EA", color: COLORS.petrol }}>
                               Hilft aus
+                            </span>
+                          </div>
+                        ))}
+                        {krankeAushilfen.filter((a) => a.spiel_id === s.id).map((a) => (
+                          <div key={`krank-${a.spieler_id}`} className="w-full flex items-center justify-between gap-2 text-xs py-1">
+                            <span className="flex items-center gap-2 min-w-0">
+                              <Avatar person={a.person} groesse={22} />
+                              <span className="truncate">{a.person?.vorname} {a.person?.nachname}</span>
+                              <span className="text-[9px] px-1 rounded" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+                                Aushilfe
+                              </span>
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md font-semibold shrink-0" style={{ background: ABWESENHEIT_STIL.krank.background, color: ABWESENHEIT_STIL.krank.color }}>
+                              Krank
                             </span>
                           </div>
                         ))}
@@ -2810,6 +2845,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                           ? { background: "#DDF0EA", color: COLORS.petrol }
                           : status === "nein"
                           ? { background: "#FBE2DA", color: COLORS.orangeDeep }
+                          : status === "krank"
+                          ? { background: ABWESENHEIT_STIL.krank.background, color: ABWESENHEIT_STIL.krank.color }
                           : { background: "#F1F1EF", color: "#999" };
                       return (
                         <td
@@ -2834,7 +2871,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                             {!gesperrt && status === "ja" && <Check size={13} />}
                             {!gesperrt && status === "nein" && <X size={13} />}
                             {!gesperrt && status === "offen" && <HelpCircle size={13} />}
-                            {gesperrt ? "verlegt" : status === "ja" ? "Kann" : status === "nein" ? "Kann nicht" : "Offen"}
+                            {!gesperrt && status === "krank" && <Thermometer size={13} />}
+                            {gesperrt ? "verlegt" : status === "ja" ? "Kann" : status === "nein" ? "Kann nicht" : status === "krank" ? "Krank" : "Offen"}
                           </button>
                           {!gesperrt && meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft) && (
                             <span className="block text-[9px] text-gray-400 mt-0.5 leading-tight whitespace-nowrap">
@@ -2865,9 +2903,10 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                   </tr>
                 ))}
 
-                {aushilfen.length > 0 && [...new Set(aushilfen.map((a) => a.spieler_id))].map((helferId) => {
+                {(aushilfen.length > 0 || krankeAushilfen.length > 0) && [...new Set([...aushilfen, ...krankeAushilfen].map((a) => a.spieler_id))].map((helferId) => {
                   const helferEintraege = aushilfen.filter((a) => a.spieler_id === helferId);
-                  const person = helferEintraege[0]?.person;
+                  const krankEintraege = krankeAushilfen.filter((a) => a.spieler_id === helferId);
+                  const person = helferEintraege[0]?.person ?? krankEintraege[0]?.person;
                   return (
                     <tr key={`aushilfe-${helferId}`} className="border-t" style={{ background: "#FCF7F3" }}>
                       <td className="p-3 font-medium sticky left-0 z-10" style={{ background: "#FCF7F3" }}>
@@ -2881,13 +2920,14 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                               className="text-[10px] px-1.5 py-0.5 rounded-full inline-block mt-0.5"
                               style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}
                             >
-                              Aushilfe · {helferEintraege[0]?.mannschaftName}
+                              Aushilfe · {helferEintraege[0]?.mannschaftName ?? krankEintraege[0]?.mannschaftName}
                             </span>
                           </span>
                         </div>
                       </td>
                       {spiele.map((s) => {
                         const hilftHier = helferEintraege.some((a) => a.spiel_id === s.id);
+                        const krankHier = krankEintraege.some((a) => a.spiel_id === s.id);
                         return (
                           <td key={s.id} className="p-2 text-center">
                             {hilftHier ? (
@@ -2896,6 +2936,13 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                                 style={{ background: "#DDF0EA", color: COLORS.petrol }}
                               >
                                 <Check size={13} /> Hilft aus
+                              </span>
+                            ) : krankHier ? (
+                              <span
+                                className="w-full py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1"
+                                style={{ background: ABWESENHEIT_STIL.krank.background, color: ABWESENHEIT_STIL.krank.color }}
+                              >
+                                <Thermometer size={13} /> Krank
                               </span>
                             ) : (
                               <span className="text-xs text-gray-300">–</span>
@@ -4184,15 +4231,30 @@ function Kader({ saison, profil }) {
     if (!abwForm.von || !abwForm.bis) return setFehler("Bitte Anfang und Ende angeben.");
     if (abwForm.bis < abwForm.von) return setFehler("Das Ende darf nicht vor dem Anfang liegen.");
 
-    const { error } = await supabase.from("abwesenheiten").insert({
+    const { data: neu, error } = await supabase.from("abwesenheiten").insert({
       spieler_id: spielerId,
       von: abwForm.von,
       bis: abwForm.bis,
       grund: abwForm.grund,
       notiz: abwForm.notiz.trim() || null,
       erstellt_von: profil.id,
-    });
+    }).select("id").single();
     if (error) return setFehler(error.message);
+
+    // Bei einer Krankmeldung übernimmt die Edge Function den Rest: Rückmeldungen
+    // auf "krank", Aushilfen austragen und bei Spielermangel neu anfragen. Das läuft
+    // mit Service-Rechten, weil ein Spieler selbst keine fremden Mannschaften
+    // anfragen darf.
+    if (abwForm.grund === "krank" && neu?.id) {
+      const { data: ergebnis, error: krankFehler } = await supabase.functions.invoke("krankmeldung-verarbeiten", {
+        body: { abwesenheitId: neu.id },
+      });
+      if (krankFehler) {
+        setFehler(`Krankmeldung gespeichert, aber die Spiele konnten nicht angepasst werden: ${krankFehler.message}`);
+      } else if (ergebnis?.zusammenfassung) {
+        window.alert(ergebnis.zusammenfassung);
+      }
+    }
     setAbwesenheitFuerId(null);
     setAbwForm({ von: "", bis: "", grund: "urlaub", notiz: "" });
     abwesenheitenLaden();
