@@ -2061,8 +2061,10 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     laden();
   }
 
-  async function laden() {
-    setLadend(true);
+  // still = true: Daten im Hintergrund neu holen, ohne Ladebildschirm. Sonst würde
+  // ein offenes Fenster (z. B. die Aufstellung) geschlossen und neu aufgebaut.
+  async function laden(still = false) {
+    if (!still) setLadend(true);
     const spielerQuery = saison.mannschaft_id
       ? supabase.from("profiles").select("*").eq("mannschaft_id", saison.mannschaft_id).order("nachname")
       : supabase.from("profiles").select("*").order("nachname");
@@ -2431,7 +2433,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           vorhanden={aufstellungen[aufstellungFuer.id] ?? null}
           mannschaftName={mannschaftsName}
           onSchliessen={() => setAufstellungFuer(null)}
-          onGespeichert={() => laden()}
+          onGespeichert={() => laden(true)}
         />
       )}
 
@@ -2585,7 +2587,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                                     {SCHICHT_STIL[schicht]?.kuerzel}
                                   </span>
                                 )}
-                                {abwesend && (
+                                {abwesend && st !== "krank" && (
                                   <span
                                     className="text-[9px] px-1 rounded"
                                     style={ABWESENHEIT_STIL[abwesend.grund] ?? ABWESENHEIT_STIL.sonstiges}
@@ -2879,7 +2881,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                               {meldungMeta(gemeldetAm[`${s.id}:${sp.id}`], herkunft)}
                             </span>
                           )}
-                          {abwesendStil && !gesperrt && (
+                          {abwesendStil && !gesperrt && status !== "krank" && (
                             <span
                               className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold"
                               style={{ background: abwesendStil.background, color: abwesendStil.color }}
@@ -4391,14 +4393,14 @@ function Kader({ saison, profil }) {
                 {(s.id === profil.id || profil.ist_admin || istTeamLeiter(profil)) && (
                   abwesenheitFuerId === s.id ? (
                     <div className="mt-2 space-y-2 border-t pt-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="min-w-0">
                           <label className="block text-[11px] text-gray-400 mb-1">von</label>
-                          <input type="date" value={abwForm.von} onChange={(e) => setAbwForm({ ...abwForm, von: e.target.value })} className="w-full border rounded-md px-2 py-1.5 text-xs" />
+                          <input type="date" value={abwForm.von} onChange={(e) => setAbwForm({ ...abwForm, von: e.target.value })} className="w-full min-w-0 border rounded-md px-2 py-1.5 text-xs bg-white" style={{ WebkitAppearance: "none", borderColor: "#d6d4ce" }} />
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <label className="block text-[11px] text-gray-400 mb-1">bis</label>
-                          <input type="date" value={abwForm.bis} onChange={(e) => setAbwForm({ ...abwForm, bis: e.target.value })} className="w-full border rounded-md px-2 py-1.5 text-xs" />
+                          <input type="date" value={abwForm.bis} min={abwForm.von || undefined} onChange={(e) => setAbwForm({ ...abwForm, bis: e.target.value })} className="w-full min-w-0 border rounded-md px-2 py-1.5 text-xs bg-white" style={{ WebkitAppearance: "none", borderColor: "#d6d4ce" }} />
                         </div>
                       </div>
                       <select value={abwForm.grund} onChange={(e) => setAbwForm({ ...abwForm, grund: e.target.value })} className="w-full border rounded-md px-2 py-1.5 text-xs">
@@ -9782,6 +9784,7 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
   function tauschen(index, richtung) {
     const ziel = index + richtung;
     if (ziel < 0 || ziel >= reihenfolge.length) return;
+    setGespeichertHinweis(false);
     const neu = [...reihenfolge];
     [neu[index], neu[ziel]] = [neu[ziel], neu[index]];
     setReihenfolge(neu);
@@ -9816,14 +9819,21 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
       });
     });
 
+    // Innerhalb eines Doppels steht immer der vordere Spieler der Einzel-Reihenfolge zuerst
+    const rang = (id) => {
+      const i = reihenfolge.findIndex((r) => r.spieler_id === id);
+      return i === -1 ? 99 : i;
+    };
     setDoppel(
       doppel.map((d, di) => ({
         ...d,
-        spieler: d.spieler.map((sid, si) => {
-          if (di === doppelIndex && si === platz) return neueId;
-          if (di === gefundenIn && si === gefundenPlatz) return vorher;
-          return sid;
-        }),
+        spieler: d.spieler
+          .map((sid, si) => {
+            if (di === doppelIndex && si === platz) return neueId;
+            if (di === gefundenIn && si === gefundenPlatz) return vorher;
+            return sid;
+          })
+          .sort((a, b) => rang(a) - rang(b)),
       }))
     );
   }
