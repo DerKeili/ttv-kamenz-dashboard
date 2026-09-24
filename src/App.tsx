@@ -17,7 +17,7 @@ import {
   Settings, Bell, ChevronRight, Check, X, HelpCircle, Cake,
   Trophy, AlertTriangle, Vote, GraduationCap, Menu, LogOut, ShieldCheck, Award,
   UserPlus, KeyRound, Eye, EyeOff, Plus, Pencil, Trash2, CalendarPlus, Send, ArrowLeft, Shield, Sparkles,
-  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText, TrendingUp, ChevronDown, Thermometer
+  CalendarClock, Clock, Newspaper, Lock, Unlock, Mail, FileText, TrendingUp, ChevronDown, Thermometer, Loader2
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -32,10 +32,10 @@ import {
 // Absicherung passiert über Row Level Security in Supabase, nicht über Geheimhaltung.
 const SUPABASE_URL = "https://oskplsznrhpcfvoogcup.supabase.co";
 
-const supabase = createClient(
-  SUPABASE_URL,
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9za3Bsc3pucmhwY2Z2b29nY3VwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMyNzU3NzksImV4cCI6MjA5ODg1MTc3OX0.x8aWcUz2MNLjfy_YZ4RvQtk6zWbHlvmrMdTrBPC0pFs"
-);
+const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9za3Bsc3pucmhwY2Z2b29nY3VwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMyNzU3NzksImV4cCI6MjA5ODg1MTc3OX0.x8aWcUz2MNLjfy_YZ4RvQtk6zWbHlvmrMdTrBPC0pFs";
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const COLORS = {
   petrolDark: "#0F2E2A",
@@ -1245,6 +1245,22 @@ function tagesSchluessel(datum) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Wer am Spieltag krank ist oder Urlaub hat, wird gar nicht erst als Aushilfe
+// angefragt — er könnte ohnehin nicht. Lässt sich die Abwesenheitsliste nicht
+// lesen, wird niemand gefiltert, dann geht die Anfrage wie früher an alle.
+async function ohneAbwesende(empfaengerIds, termin) {
+  if (!termin || empfaengerIds.length === 0) return empfaengerIds;
+  const tag = tagesSchluessel(termin);
+  const { data } = await supabase
+    .from("abwesenheiten")
+    .select("spieler_id")
+    .lte("von", tag)
+    .gte("bis", tag);
+  const abwesend = new Set((data ?? []).map((a) => a.spieler_id));
+  const uebrig = empfaengerIds.filter((id) => !abwesend.has(id));
+  return uebrig.length > 0 ? uebrig : empfaengerIds;
+}
+
 function wochentagKurz(datum) {
   return new Date(datum).toLocaleDateString("de-DE", { weekday: "short" });
 }
@@ -1573,10 +1589,11 @@ function MannschaftsUebersicht({ profil }) {
       if (error || !neueUmfrage) continue;
 
       const { data: spielerUnten } = await supabase.from("profiles").select("id").eq("mannschaft_id", ziel.id);
-      if (spielerUnten && spielerUnten.length > 0) {
-        await supabase.from("umfrage_ziele").insert(spielerUnten.map((s) => ({ umfrage_id: neueUmfrage.id, spieler_id: s.id })));
+      const empfaengerIds = await ohneAbwesende((spielerUnten ?? []).map((s) => s.id), termin);
+      if (empfaengerIds.length > 0) {
+        await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
         supabase.functions.invoke("notify-neue-umfrage", {
-          body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds: spielerUnten.map((s) => s.id) },
+          body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
         }); // bewusst nicht awaited
       }
       mindestensEine = true;
@@ -1969,7 +1986,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           continue;
         }
 
-        const empfaengerIds = (empfaenger ?? []).map((e) => e.id);
+        const empfaengerIds = await ohneAbwesende((empfaenger ?? []).map((e) => e.id), termin);
         if (empfaengerIds.length === 0) {
           probleme.push(`${ziel.name}: kein Spieler mit Zugang, niemand angefragt`);
           continue;
@@ -4207,6 +4224,99 @@ function Kalender({ profil }) {
   );
 }
 
+/* ---------- Krankmeldung: Fortschritt ----------
+   Die Edge Function meldet jeden Arbeitsschritt als eigene Zeile (NDJSON).
+   supabase.functions.invoke wartet auf die komplette Antwort, deshalb hier
+   direkt per fetch mitlesen. */
+
+async function krankmeldungVerarbeiten(abwesenheitId, onSchritt) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const antwort = await fetch(`${SUPABASE_URL}/functions/v1/krankmeldung-verarbeiten`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${session?.access_token ?? SUPABASE_ANON_KEY}`,
+      apikey: SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ abwesenheitId }),
+  });
+  if (!antwort.body) throw new Error(`Keine Antwort vom Server (${antwort.status})`);
+
+  const leser = antwort.body.getReader();
+  const decoder = new TextDecoder();
+  let puffer = "";
+  let ergebnis = null;
+  while (true) {
+    const { value, done } = await leser.read();
+    if (done) break;
+    puffer += decoder.decode(value, { stream: true });
+    const zeilen = puffer.split("\n");
+    puffer = zeilen.pop() ?? "";
+    for (const zeile of zeilen) {
+      if (!zeile.trim()) continue;
+      let ereignis;
+      try { ereignis = JSON.parse(zeile); } catch { continue; }
+      if (ereignis.typ === "schritt") onSchritt(ereignis.text);
+      if (ereignis.typ === "fertig") ergebnis = ereignis.zusammenfassung ?? "";
+      if (ereignis.typ === "fehler") throw new Error(ereignis.text);
+    }
+  }
+  if (ergebnis === null) throw new Error("Die Verarbeitung wurde unterbrochen.");
+  return ergebnis;
+}
+
+function KrankmeldungFortschritt({ zustand, onSchliessen }) {
+  const { schritte, fertig, zusammenfassung, fehler } = zustand;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-lg max-h-[92dvh] overflow-y-auto p-5 space-y-4">
+        <div>
+          <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>Krankmeldung wird verarbeitet</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {fertig ? "Fertig." : "Bitte kurz warten — die Spiele werden angepasst und bei Bedarf Aushilfen angefragt."}
+          </p>
+        </div>
+
+        <ul className="space-y-2">
+          {schritte.map((text, i) => {
+            const laeuft = !fertig && !fehler && i === schritte.length - 1;
+            return (
+              <li key={i} className="flex items-start gap-2 text-sm">
+                <span className="mt-0.5 shrink-0" style={{ color: laeuft ? COLORS.orange : COLORS.petrol }}>
+                  {laeuft ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+                </span>
+                <span className={laeuft ? "font-medium" : "text-gray-600"}>{text}</span>
+              </li>
+            );
+          })}
+          {schritte.length === 0 && !fehler && (
+            <li className="flex items-center gap-2 text-sm text-gray-500">
+              <Loader2 size={15} className="animate-spin" /> Wird gestartet…
+            </li>
+          )}
+        </ul>
+
+        {fertig && zusammenfassung && (
+          <div className="text-xs rounded-md p-3 whitespace-pre-line" style={{ background: "#E4F2EE", color: COLORS.petrol }}>
+            {zusammenfassung}
+          </div>
+        )}
+        {fehler && (
+          <div className="text-xs rounded-md p-3" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+            Die Krankmeldung ist gespeichert, aber die Spiele konnten nicht vollständig angepasst werden: {fehler}
+          </div>
+        )}
+
+        {(fertig || fehler) && (
+          <button onClick={onSchliessen} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange }}>
+            Schließen
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Kader ---------- */
 
 function Kader({ saison, profil }) {
@@ -4218,6 +4328,8 @@ function Kader({ saison, profil }) {
   const [abwesenheiten, setAbwesenheiten] = useState([]);
   const [abwesenheitFuerId, setAbwesenheitFuerId] = useState(null); // offenes Formular
   const [abwForm, setAbwForm] = useState({ von: "", bis: "", grund: "urlaub", notiz: "" });
+  const [abwSpeichert, setAbwSpeichert] = useState(false); // verhindert doppeltes Eintragen
+  const [krankFortschritt, setKrankFortschritt] = useState(null); // { schritte, fertig, zusammenfassung, fehler }
 
   async function abwesenheitenLaden() {
     const { data } = await supabase
@@ -4232,6 +4344,8 @@ function Kader({ saison, profil }) {
     setFehler(null);
     if (!abwForm.von || !abwForm.bis) return setFehler("Bitte Anfang und Ende angeben.");
     if (abwForm.bis < abwForm.von) return setFehler("Das Ende darf nicht vor dem Anfang liegen.");
+    if (abwSpeichert) return;
+    setAbwSpeichert(true);
 
     const { data: neu, error } = await supabase.from("abwesenheiten").insert({
       spieler_id: spielerId,
@@ -4241,22 +4355,27 @@ function Kader({ saison, profil }) {
       notiz: abwForm.notiz.trim() || null,
       erstellt_von: profil.id,
     }).select("id").single();
-    if (error) return setFehler(error.message);
+    if (error) {
+      setAbwSpeichert(false);
+      return setFehler(error.message);
+    }
 
     // Bei einer Krankmeldung übernimmt die Edge Function den Rest: Rückmeldungen
     // auf "krank", Aushilfen austragen und bei Spielermangel neu anfragen. Das läuft
     // mit Service-Rechten, weil ein Spieler selbst keine fremden Mannschaften
     // anfragen darf.
     if (abwForm.grund === "krank" && neu?.id) {
-      const { data: ergebnis, error: krankFehler } = await supabase.functions.invoke("krankmeldung-verarbeiten", {
-        body: { abwesenheitId: neu.id },
-      });
-      if (krankFehler) {
-        setFehler(`Krankmeldung gespeichert, aber die Spiele konnten nicht angepasst werden: ${krankFehler.message}`);
-      } else if (ergebnis?.zusammenfassung) {
-        window.alert(ergebnis.zusammenfassung);
+      setKrankFortschritt({ schritte: [], fertig: false, zusammenfassung: null, fehler: null });
+      try {
+        const zusammenfassung = await krankmeldungVerarbeiten(neu.id, (text) =>
+          setKrankFortschritt((z) => ({ ...z, schritte: [...z.schritte, text] }))
+        );
+        setKrankFortschritt((z) => ({ ...z, fertig: true, zusammenfassung }));
+      } catch (e) {
+        setKrankFortschritt((z) => ({ ...z, fehler: e.message }));
       }
     }
+    setAbwSpeichert(false);
     setAbwesenheitFuerId(null);
     setAbwForm({ von: "", bis: "", grund: "urlaub", notiz: "" });
     abwesenheitenLaden();
@@ -4299,8 +4418,13 @@ function Kader({ saison, profil }) {
 
   if (ladend) return <Leerzustand text="Lade Kader…" />;
 
+  const fortschrittFenster = krankFortschritt && (
+    <KrankmeldungFortschritt zustand={krankFortschritt} onSchliessen={() => setKrankFortschritt(null)} />
+  );
+
   return (
     <div className="space-y-4">
+      {fortschrittFenster}
       <div className="bg-white rounded-lg border p-5">
         <div className="flex items-center justify-between mb-3">
           <SectionLabel icon={Users}>Mannschafts-Infos (Verband)</SectionLabel>
@@ -4415,8 +4539,14 @@ function Kader({ saison, profil }) {
                         className="w-full border rounded-md px-2 py-1.5 text-xs"
                       />
                       <div className="flex gap-2">
-                        <button onClick={() => abwesenheitSpeichern(s.id)} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange }}>
-                          Eintragen
+                        <button
+                          onClick={() => abwesenheitSpeichern(s.id)}
+                          disabled={abwSpeichert}
+                          className="px-3 py-1.5 rounded-md text-white text-xs font-semibold inline-flex items-center gap-1"
+                          style={{ background: COLORS.orange, opacity: abwSpeichert ? 0.6 : 1 }}
+                        >
+                          {abwSpeichert && <Loader2 size={12} className="animate-spin" />}
+                          {abwSpeichert ? "Wird eingetragen…" : "Eintragen"}
                         </button>
                         <button onClick={() => { setAbwesenheitFuerId(null); setFehler(null); }} className="px-3 py-1.5 rounded-md text-xs border">
                           Abbrechen
