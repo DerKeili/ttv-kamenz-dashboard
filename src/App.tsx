@@ -2144,9 +2144,22 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     if (spielIds.length > 0) {
       const { data: anfragenDaten } = await supabase
         .from("umfragen")
-        .select("id, titel, erstellt_am, aktiv, bezug_spiel_id, mannschaft_id, optionen")
+        .select("id, titel, erstellt_am, erstellt_von, aktiv, bezug_spiel_id, mannschaft_id, optionen")
         .eq("art", "aushilfe")
         .in("bezug_spiel_id", spielIds);
+
+      // Wer hat angefragt? Namen der Ersteller nachladen.
+      const ersteller = [...new Set((anfragenDaten ?? []).map((u) => u.erstellt_von).filter(Boolean))];
+      let erstellerNamen = {};
+      if (ersteller.length > 0) {
+        const { data: erstellerProfile } = await supabase
+          .from("profiles")
+          .select("id, vorname, nachname")
+          .in("id", ersteller);
+        erstellerNamen = Object.fromEntries(
+          (erstellerProfile ?? []).map((p) => [p.id, `${p.vorname ?? ""} ${p.nachname ?? ""}`.trim()])
+        );
+      }
 
       const anfrageIds = (anfragenDaten ?? []).map((u) => u.id);
       let antworten = [];
@@ -2159,6 +2172,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       }
       setAnfragen((anfragenDaten ?? []).map((u) => ({
         ...u,
+        erstelltVonName: erstellerNamen[u.erstellt_von] ?? null,
         zusagen: antworten.filter((a) => a.umfrage_id === u.id && istZusage(a, u)).length,
         antwortenGesamt: antworten.filter((a) => a.umfrage_id === u.id).length,
       })));
@@ -2358,7 +2372,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           </span>
         )}
         <span className="block text-gray-400" style={{ fontSize: "10px" }}>
-          angefragt am {gestellt} Uhr
+          {anfrage.titel?.startsWith("Krankmeldung")
+            ? `automatisch nach Krankmeldung angefragt am ${gestellt} Uhr`
+            : anfrage.erstelltVonName
+            ? `angefragt von ${anfrage.erstelltVonName} am ${gestellt} Uhr`
+            : `angefragt am ${gestellt} Uhr`}
         </span>
         {darfPlanen && eingeplant === 0 && (
           <button
@@ -3460,8 +3478,25 @@ function spielAlsTermin(spiel, mannschaftName) {
     datum,
     // Ein Punktspiel dauert erfahrungsgemäß rund drei Stunden
     datum_ende: new Date(new Date(datum).getTime() + 3 * 60 * 60 * 1000).toISOString(),
-    ort: spiel.ist_heimspiel ? "Heimspielstätte" : gegner,
+    // Anschrift der Sportstätte (Straße, PLZ Ort), damit sich der Kalendereintrag direkt
+    // als Navigationsziel öffnen lässt. Solange für das Spiel keine Anschrift vorliegt,
+    // bleibt es beim bisherigen Platzhalter.
+    ort: spiel.spielort_adresse || (spiel.ist_heimspiel ? "Heimspielstätte" : gegner),
+    // Hallenname und Hinweis (z. B. "Bitte Parkplatz … benutzen") stehen in der Beschreibung
+    beschreibung: [
+      spiel.spielort_name ? `Sportstätte: ${spiel.spielort_name}` : null,
+      spiel.spielort_hinweis ? `Hinweis: ${spiel.spielort_hinweis}` : null,
+    ].filter(Boolean).join("\n") || null,
   };
+}
+
+// In ICS-Dateien müssen Komma, Semikolon, Backslash und Zeilenumbrüche maskiert werden
+function icsText(text) {
+  return String(text ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
 }
 
 function icsInhalt(termine) {
@@ -3478,7 +3513,8 @@ function icsInhalt(termine) {
       `DTSTART:${zuIcsDatum(t.datum)}`,
       `DTEND:${zuIcsDatum(t.datum_ende ?? ereignisEndeOderPlusEineStunde(t))}`,
       `SUMMARY:${String(t.titel).replace(/\n/g, " ")}`,
-      ...(t.ort ? [`LOCATION:${String(t.ort).replace(/\n/g, " ")}`] : []),
+      ...(t.ort ? [`LOCATION:${icsText(t.ort)}`] : []),
+      ...(t.beschreibung ? [`DESCRIPTION:${icsText(t.beschreibung)}`] : []),
       "END:VEVENT"
     );
   });
@@ -3562,6 +3598,7 @@ function googleKalenderLink(e) {
     text: e.titel,
     dates: `${start}/${ende}`,
     ...(e.ort ? { location: e.ort } : {}),
+    ...(e.beschreibung ? { details: e.beschreibung } : {}),
   });
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
@@ -5429,6 +5466,7 @@ function Umfragen({ profil, zielUmfrageId }) {
   const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({});
   const [aushilfen, setAushilfen] = useState([]);
   const [abschlussLaeuft, setAbschlussLaeuft] = useState(null);
+  const [einplanenLaeuft, setEinplanenLaeuft] = useState(null); // "umfrageId:spielerId" solange ein Einplanen arbeitet
   const [zieleNachUmfrage, setZieleNachUmfrage] = useState({}); // { [umfrageId]: spielerId[] } – leer = "alle"
   const [spielerListe, setSpielerListe] = useState([]);
   const [mannschaften, setMannschaften] = useState([]);
@@ -5442,8 +5480,10 @@ function Umfragen({ profil, zielUmfrageId }) {
   const [fehler, setFehler] = useState(null);
   const [speichernLadend, setSpeichernLadend] = useState(false);
 
-  async function laden() {
-    setLadend(true);
+  // still = true: im Hintergrund nachladen, ohne den Ladebildschirm. Sonst springt die
+  // Seite beim Einplanen nach oben und man weiß nicht, ob etwas passiert ist.
+  async function laden(still = false) {
+    if (!still) setLadend(true);
     const [{ data: umfragenDaten }, { data: antwortenDaten }, { data: spielerDaten }, { data: zieleDaten }, { data: mannschaftenDaten }, { data: aushilfenDaten }] = await Promise.all([
       supabase.from("umfragen").select("*").eq("aktiv", true).order("erstellt_am", { ascending: false }),
       supabase.from("umfrage_antworten").select("umfrage_id, spieler_id, ausgewaehlte_optionen"),
@@ -5500,63 +5540,60 @@ function Umfragen({ profil, zielUmfrageId }) {
   // Hat der Spieler am selben Tag schon etwas anderes? Verbandsseitig ist die Zahl
   // der Aushilfe-Einsätze unbegrenzt, zwei Spiele gleichzeitig gehen aber trotzdem nicht.
   async function terminkonfliktText(spielerId, spielId) {
-    const { data: spiel } = await supabase
-      .from("verbands_spiele")
-      .select("datum, verlegt_auf")
-      .eq("id", spielId)
-      .maybeSingle();
+    // Die drei Grundabfragen laufen gleichzeitig statt nacheinander — auf dem Handy
+    // war das die Hauptursache für die Wartezeit nach dem Tippen auf "einplanen".
+    const [{ data: spiel }, { data: spielerDaten }, { data: andereEinsaetze }] = await Promise.all([
+      supabase.from("verbands_spiele").select("datum, verlegt_auf").eq("id", spielId).maybeSingle(),
+      supabase.from("profiles").select("mannschaft_id").eq("id", spielerId).maybeSingle(),
+      supabase.from("spiel_aushilfen").select("spiel_id").eq("spieler_id", spielerId).neq("spiel_id", spielId),
+    ]);
     const termin = spiel ? effektivesSpielDatum(spiel) : null;
     if (!termin) return null;
     const tag = tagesSchluessel(termin);
     const treffer = [];
 
     // 1. Spiele der eigenen Stammmannschaft am selben Tag
-    const { data: spielerDaten } = await supabase
-      .from("profiles")
-      .select("mannschaft_id")
-      .eq("id", spielerId)
-      .maybeSingle();
-
-    if (spielerDaten?.mannschaft_id) {
+    const eigeneSpieleSuchen = async () => {
+      if (!spielerDaten?.mannschaft_id) return [];
       const { data: saisons } = await supabase
         .from("saisons")
         .select("id")
         .eq("mannschaft_id", spielerDaten.mannschaft_id)
         .eq("aktiv", true);
       const saisonIds = (saisons ?? []).map((sa) => sa.id);
-      if (saisonIds.length > 0) {
-        const { data: eigeneSpiele } = await supabase
-          .from("verbands_spiele")
-          .select("id, datum, verlegt_auf, heimteam, gastteam, ist_heimspiel")
-          .in("saison_id", saisonIds);
-        (eigeneSpiele ?? []).forEach((sp) => {
-          const d = effektivesSpielDatum(sp);
-          if (sp.id !== spielId && d && tagesSchluessel(d) === tag) {
-            treffer.push(`eigenes Spiel gegen ${sp.ist_heimspiel ? sp.gastteam : sp.heimteam}`);
-          }
-        });
-      }
-    }
+      if (saisonIds.length === 0) return [];
+      const { data: eigeneSpiele } = await supabase
+        .from("verbands_spiele")
+        .select("id, datum, verlegt_auf, heimteam, gastteam, ist_heimspiel")
+        .in("saison_id", saisonIds);
+      return eigeneSpiele ?? [];
+    };
 
     // 2. Bereits woanders als Aushilfe eingeplant
-    const { data: andereEinsaetze } = await supabase
-      .from("spiel_aushilfen")
-      .select("spiel_id")
-      .eq("spieler_id", spielerId)
-      .neq("spiel_id", spielId);
-    const andereIds = [...new Set((andereEinsaetze ?? []).map((a) => a.spiel_id))];
-    if (andereIds.length > 0) {
+    const andereSpieleSuchen = async () => {
+      const andereIds = [...new Set((andereEinsaetze ?? []).map((a) => a.spiel_id))];
+      if (andereIds.length === 0) return [];
       const { data: andereSpiele } = await supabase
         .from("verbands_spiele")
         .select("id, datum, verlegt_auf, heimteam, gastteam, ist_heimspiel")
         .in("id", andereIds);
-      (andereSpiele ?? []).forEach((sp) => {
-        const d = effektivesSpielDatum(sp);
-        if (d && tagesSchluessel(d) === tag) {
-          treffer.push(`schon als Aushilfe eingeplant gegen ${sp.ist_heimspiel ? sp.gastteam : sp.heimteam}`);
-        }
-      });
-    }
+      return andereSpiele ?? [];
+    };
+
+    const [eigeneSpiele, andereSpiele] = await Promise.all([eigeneSpieleSuchen(), andereSpieleSuchen()]);
+
+    eigeneSpiele.forEach((sp) => {
+      const d = effektivesSpielDatum(sp);
+      if (sp.id !== spielId && d && tagesSchluessel(d) === tag) {
+        treffer.push(`eigenes Spiel gegen ${sp.ist_heimspiel ? sp.gastteam : sp.heimteam}`);
+      }
+    });
+    andereSpiele.forEach((sp) => {
+      const d = effektivesSpielDatum(sp);
+      if (d && tagesSchluessel(d) === tag) {
+        treffer.push(`schon als Aushilfe eingeplant gegen ${sp.ist_heimspiel ? sp.gastteam : sp.heimteam}`);
+      }
+    });
 
     if (treffer.length === 0) return null;
     return (
@@ -5566,42 +5603,106 @@ function Umfragen({ profil, zielUmfrageId }) {
     );
   }
 
+  // Trägt genau einen Spieler als Aushilfe ein (mit Terminprüfung und E-Mail).
+  // Gibt true zurück, wenn der Spieler jetzt eingeplant ist.
+  async function aushilfeEintragen(umfrage, spielerId) {
+    const konflikt = await terminkonfliktText(spielerId, umfrage.bezug_spiel_id);
+    if (konflikt && !window.confirm(konflikt)) return false;
+
+    const { error } = await supabase.from("spiel_aushilfen").insert({
+      spiel_id: umfrage.bezug_spiel_id,
+      spieler_id: spielerId,
+      umfrage_id: umfrage.id,
+      zugeordnet_von: profil.id,
+    });
+    if (error) {
+      setFehler(error.message);
+      return false;
+    }
+    supabase.functions.invoke("notify-aushilfe", {
+      body: { art: "eingeplant", spielId: umfrage.bezug_spiel_id, spielerId },
+    }); // bewusst nicht awaited
+    return true;
+  }
+
+  // Wie viele Spieler fehlen für das Spiel noch, und wer hat in dieser Umfrage
+  // außerdem zugesagt, ist aber noch nicht eingeplant?
+  async function bedarfPruefen(umfrage) {
+    const spielId = umfrage.bezug_spiel_id;
+    const [{ data: team }, { data: zusagenEigene }, { data: helferNun }, { data: antwortenNun }] = await Promise.all([
+      umfrage.ziel_mannschaft_id
+        ? supabase.from("mannschaften").select("benoetigte_spieler").eq("id", umfrage.ziel_mannschaft_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      supabase.from("spielerplanung_meldungen").select("spieler_id").eq("spiel_id", spielId).eq("status", "ja"),
+      supabase.from("spiel_aushilfen").select("spieler_id").eq("spiel_id", spielId),
+      supabase.from("umfrage_antworten").select("spieler_id, ausgewaehlte_optionen").eq("umfrage_id", umfrage.id),
+    ]);
+    const benoetigt = team?.benoetigte_spieler ?? 4;
+    const eingeplant = new Set((helferNun ?? []).map((h) => h.spieler_id));
+    // Zusagen der eigenen Spieler und eingeplante Aushilfen — jeder höchstens einmal
+    const verfuegbar = new Set([...(zusagenEigene ?? []).map((m) => m.spieler_id), ...eingeplant]).size;
+    const offeneZusagen = (antwortenNun ?? [])
+      .filter((a) => istZusage(a, umfrage) && !eingeplant.has(a.spieler_id))
+      .map((a) => a.spieler_id);
+    return { fehlend: benoetigt - verfuegbar, offeneZusagen };
+  }
+
   async function aushilfeUmschalten(umfrage, spielerId, einplanen) {
+    if (einplanenLaeuft) return; // Doppeltes Tippen würde sonst zweimal einplanen
     setFehler(null);
     if (!umfrage.bezug_spiel_id) return setFehler("Zu dieser Umfrage ist kein Spiel hinterlegt.");
 
-    if (einplanen) {
-      // Terminkollision prüfen, bevor der Einsatz gespeichert wird
-      const konflikt = await terminkonfliktText(spielerId, umfrage.bezug_spiel_id);
-      if (konflikt && !window.confirm(konflikt)) return;
+    setEinplanenLaeuft(`${umfrage.id}:${spielerId}`);
+    try {
+      if (einplanen) {
+        if (!(await aushilfeEintragen(umfrage, spielerId))) return;
 
-      const { error } = await supabase.from("spiel_aushilfen").insert({
-        spiel_id: umfrage.bezug_spiel_id,
-        spieler_id: spielerId,
-        umfrage_id: umfrage.id,
-        zugeordnet_von: profil.id,
-      });
-      if (error) return setFehler(error.message);
-      supabase.functions.invoke("notify-aushilfe", {
-        body: { art: "eingeplant", spielId: umfrage.bezug_spiel_id, spielerId },
-      }); // bewusst nicht awaited
+        // Nach jedem Einplanen neu rechnen: Fehlt noch jemand, und gibt es weitere
+        // Zusagen aus dieser Umfrage? Dann gleich anbieten, statt die Anfrage
+        // zu schließen, obwohl noch ein Platz frei ist.
+        let { fehlend, offeneZusagen } = await bedarfPruefen(umfrage);
+        let zuletzt = spielerListe.find((p) => p.id === spielerId);
+        let abgebrochen = false;
 
-      // Steht die Aushilfe fest, sollen die übrigen Gefragten nicht weiter warten
-      if (umfrage.aktiv !== false && window.confirm(
-        "Eingeplant. Soll die Anfrage jetzt abgeschlossen werden?\n\n" +
-        "Die Umfrage wird beendet und alle Gefragten erfahren per E-Mail, wer aushilft."
-      )) {
-        await anfrageAbschliessen(umfrage);
+        while (fehlend > 0 && offeneZusagen.length > 0) {
+          const naechsterId = offeneZusagen.shift();
+          const naechster = spielerListe.find((p) => p.id === naechsterId);
+          const wer = (p) => (p ? `${p.vorname} ${p.nachname}` : "Ein Spieler");
+          const bedarfText = fehlend === 1 ? "fehlt noch 1 Spieler" : `fehlen noch ${fehlend} Spieler`;
+          const weiter = window.confirm(
+            `${wer(zuletzt)} ist eingeplant. Für das Spiel ${bedarfText}.\n\n` +
+            `${wer(naechster)} hat ebenfalls zugesagt — auch einplanen?`
+          );
+          if (!weiter) { abgebrochen = true; break; }
+          if (await aushilfeEintragen(umfrage, naechsterId)) {
+            zuletzt = naechster;
+            fehlend -= 1;
+          }
+        }
+
+        if (fehlend > 0 && !abgebrochen) {
+          window.alert(
+            `Eingeplant. Für das Spiel ${fehlend === 1 ? "fehlt noch 1 Spieler" : `fehlen noch ${fehlend} Spieler`} — ` +
+            `bisher hat sich niemand weiteres gemeldet. Die Anfrage bleibt offen.`
+          );
+        } else if (fehlend <= 0 && umfrage.aktiv !== false && window.confirm(
+          "Alle Plätze sind besetzt. Soll die Anfrage jetzt abgeschlossen werden?\n\n" +
+          "Die Umfrage wird beendet und alle Gefragten erfahren per E-Mail, wer aushilft."
+        )) {
+          await anfrageAbschliessen(umfrage);
+        }
+      } else {
+        const { error } = await supabase
+          .from("spiel_aushilfen")
+          .delete()
+          .eq("spiel_id", umfrage.bezug_spiel_id)
+          .eq("spieler_id", spielerId);
+        if (error) return setFehler(error.message);
       }
-    } else {
-      const { error } = await supabase
-        .from("spiel_aushilfen")
-        .delete()
-        .eq("spiel_id", umfrage.bezug_spiel_id)
-        .eq("spieler_id", spielerId);
-      if (error) return setFehler(error.message);
+    } finally {
+      await laden(true);
+      setEinplanenLaeuft(null);
     }
-    laden();
   }
 
   // Aushilfe-Anfrage beenden und alle Gefragten über das Ergebnis informieren
@@ -5618,7 +5719,7 @@ function Umfragen({ profil, zielUmfrageId }) {
       if (mailFehler || data?.error) {
         setFehler(`Die Umfrage wurde beendet, die Info-Mail schlug aber fehl: ${await echteFehlermeldung(mailFehler, data)}`);
       }
-      await laden();
+      await laden(true);
     } finally {
       setAbschlussLaeuft(null);
     }
@@ -5927,7 +6028,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               umfrage={u}
               antworten={antwortenNachUmfrage[u.id] ?? []}
               zielAnzahl={zielAnzahl}
-              zielIds={ziele.map((z) => z.spieler_id)}
+              zielIds={ziele}
               profil={profil}
               spielerListe={spielerListe}
               hervorgehoben={u.id === zielUmfrageId}
@@ -5938,6 +6039,7 @@ function Umfragen({ profil, zielUmfrageId }) {
               onTerminAnsetzen={terminAnsetzen}
               aushilfen={aushilfen.filter((a) => a.spiel_id === u.bezug_spiel_id)}
               onAushilfeUmschalten={aushilfeUmschalten}
+              einplanenLaeuft={einplanenLaeuft}
               onAnfrageAbschliessen={() => anfrageAbschliessen(u)}
               abschlussLaeuft={abschlussLaeuft === u.id}
             />
@@ -5956,7 +6058,7 @@ function terminAusOption(option) {
   return `${jahr}-${monat}-${tag}`;
 }
 
-function UmfrageKarte({ umfrage, antworten, zielAnzahl, zielIds = [], profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten, onAnfrageAbschliessen, abschlussLaeuft = false }) {
+function UmfrageKarte({ umfrage, antworten, zielAnzahl, zielIds = [], profil, spielerListe, hervorgehoben, onAbstimmen, onBeenden, onLoeschen, onTerminAnsetzen, onSpeichern, aushilfen = [], onAushilfeUmschalten, einplanenLaeuft = null, onAnfrageAbschliessen, abschlussLaeuft = false }) {
   const eigeneAntwort = antworten.find((a) => a.spieler_id === profil.id);
   const [auswahl, setAuswahl] = useState(eigeneAntwort?.ausgewaehlte_optionen ?? []);
   const [loeschenBestaetigen, setLoeschenBestaetigen] = useState(false);
@@ -6171,12 +6273,19 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, zielIds = [], profil, sp
                             </span>
                             <button
                               onClick={() => onAushilfeUmschalten?.(umfrage, id, !eingeplant)}
-                              className="px-2 py-1 rounded-md font-semibold shrink-0"
-                              style={eingeplant
-                                ? { background: "#DDF0EA", color: COLORS.petrol }
-                                : { background: COLORS.orange, color: "white" }}
+                              disabled={Boolean(einplanenLaeuft)}
+                              className="px-2 py-1 rounded-md font-semibold shrink-0 inline-flex items-center gap-1"
+                              style={{
+                                ...(eingeplant
+                                  ? { background: "#DDF0EA", color: COLORS.petrol }
+                                  : { background: COLORS.orange, color: "white" }),
+                                opacity: einplanenLaeuft && einplanenLaeuft !== `${umfrage.id}:${id}` ? 0.45 : 1,
+                              }}
                             >
-                              {eingeplant ? "✓ eingeplant" : "einplanen"}
+                              {einplanenLaeuft === `${umfrage.id}:${id}` && <Loader2 size={12} className="animate-spin" />}
+                              {einplanenLaeuft === `${umfrage.id}:${id}`
+                                ? (eingeplant ? "wird entfernt…" : "wird eingeplant…")
+                                : eingeplant ? "✓ eingeplant" : "einplanen"}
                             </button>
                           </div>
                         );
@@ -9521,15 +9630,22 @@ const TEAM_FUELLWOERTER = new Set([
 ]);
 
 function teamMerkmale(text) {
-  // Zusätze wie ", 1. Erwachsene" abschneiden, sonst verfälschen sie die Nummer
-  const ohneZusatz = nameNormalisieren(text).replace(/\b\d+\s+(erwachsene|mannschaft|herren|damen|jugend|senioren)\b.*$/, "");
+  // Zusätze wie ", 1. Erwachsene" gehören nicht zum Namen. Die Zahl darin ist aber die
+  // Mannschaftsnummer: "SV Laußnitz, 4. Erwachsene" ist die 4. Mannschaft.
+  const norm = nameNormalisieren(text);
+  const zusatzMuster = /\b(\d+)\s+(?:erwachsene|mannschaft|herren|damen|jugend|senioren)\b.*$/;
+  const ausZusatz = norm.match(zusatzMuster);
+  const ohneZusatz = norm.replace(zusatzMuster, "");
   const teile = ohneZusatz.split(" ").filter(Boolean);
 
   const zahlen = teile.filter((t) => /^\d+$/.test(t));
-  // Letzte Zahl ist die Mannschaftsnummer; Gründungsjahre wie "1890" oder "97"
+  // Sonst ist die letzte Zahl die Mannschaftsnummer; Gründungsjahre wie "1890" oder "97"
   // stehen weiter vorn und werden hier bewusst nicht als Nummer gewertet.
   const letzte = zahlen[zahlen.length - 1];
-  const nummer = letzte && Number(letzte) <= 12 ? Number(letzte) : 1;
+  const zusatzNummer = ausZusatz ? Number(ausZusatz[1]) : 0;
+  const nummer = zusatzNummer >= 1 && zusatzNummer <= 12
+    ? zusatzNummer
+    : letzte && Number(letzte) <= 12 ? Number(letzte) : 1;
 
   const kern = teile.filter((t) => t.length >= 4 && !/^\d+$/.test(t) && !TEAM_FUELLWOERTER.has(t));
   // Vereinskürzel wie sv, sg, tv, ttv, tus — nötig, um Vereine am selben Ort
@@ -9589,7 +9705,12 @@ const REIHENFOLGE_VIERER = [
 
 // Erzeugt einen druckbaren Aufstellungsbogen und öffnet den Druckdialog.
 // Über "Als PDF sichern" landet er in den Dateien — ohne zusätzliche Bibliothek.
-function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person }) {
+//
+// modus "drucken": Bogen in die Seite einblenden und den Druckdialog öffnen.
+// modus "fenster": Bogen in einem eigenen Fenster öffnen, dort gibt es einen
+// eigenen Drucken-Knopf. Der Ausweg, wenn der Druckdialog nicht erscheint
+// (z. B. wenn die App vom Home-Bildschirm gestartet wurde).
+function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person, modus = "drucken" }) {
   const termin = effektivesSpielDatum(spiel);
   const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
   const heim = spiel.ist_heimspiel ? mannschaftName : gegner;
@@ -9773,6 +9894,30 @@ ${planZeilen ? `<table>
   Spielbericht. Unterschriften und Ergebnisse bitte am Spieltag ergänzen.
 </p>`;
 
+  if (modus === "fenster") {
+    const seite = `<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=820">
+<title>${dateiname({ termin, heim, gast })}</title>
+<style>
+  body { margin: 0; background: #e9e9e6; }
+  .leiste { position: sticky; top: 0; padding: 10px; background: #0F2E2A; text-align: center; z-index: 5; }
+  .leiste button { font-size: 16px; font-weight: bold; padding: 10px 18px; border: 0; border-radius: 6px; background: #E2632B; color: #fff; }
+  .blatt { width: 194mm; margin: 12px auto; padding: 8mm; background: #fff; box-sizing: content-box; }
+  @page { size: A4 portrait; margin: 8mm; }
+  @media print { body { background: #fff; } .leiste { display: none; } .blatt { width: auto; margin: 0; padding: 0; } }
+</style></head><body>
+<div class="leiste"><button onclick="window.print()">Drucken oder als PDF sichern</button></div>
+<div class="blatt"><div id="druckbereich">${inhalt}</div></div>
+</body></html>`;
+    // Das Fenster muss direkt beim Antippen geöffnet werden, sonst blockiert es der Browser
+    const fenster = window.open("", "_blank");
+    if (!fenster) throw new Error("Der Browser hat das neue Fenster blockiert. Bitte Pop-ups für diese Seite erlauben.");
+    fenster.document.open();
+    fenster.document.write(seite);
+    fenster.document.close();
+    return;
+  }
+
   // iOS blockiert das Drucken aus einem versteckten Rahmen. Deshalb blenden wir den
   // Bogen kurzzeitig in die Seite selbst ein und verstecken beim Drucken alles andere.
   const alterBereich = document.getElementById("druckbereich");
@@ -9909,6 +10054,16 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
 
   function person(id) {
     return kandidaten.find((k) => k.id === id);
+  }
+
+  // Fehler beim Erstellen des Bogens sichtbar machen, statt dass "nichts passiert"
+  function bogenDrucken(modus = "drucken") {
+    setFehler(null);
+    try {
+      aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person, modus });
+    } catch (e) {
+      setFehler(`Der Aufstellungsbogen konnte nicht erstellt werden: ${e?.message ?? e}`);
+    }
   }
 
   function tauschen(index, richtung) {
@@ -10153,13 +10308,21 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
           )}
 
           {(vorhanden || !darfBearbeiten) && reihenfolge.length > 0 && (
-            <button
-              onClick={() => aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person })}
-              className="w-full px-4 py-2 rounded-md text-sm font-semibold border flex items-center justify-center gap-2"
-              style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
-            >
-              <FileText size={14} /> Aufstellungsbogen drucken oder als PDF sichern
-            </button>
+            <div className="space-y-1">
+              <button
+                onClick={() => bogenDrucken("drucken")}
+                className="w-full px-4 py-2 rounded-md text-sm font-semibold border flex items-center justify-center gap-2"
+                style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+              >
+                <FileText size={14} /> Aufstellungsbogen drucken oder als PDF sichern
+              </button>
+              <button
+                onClick={() => bogenDrucken("fenster")}
+                className="w-full text-[11px] underline text-gray-400"
+              >
+                Es öffnet sich nichts? Bogen in eigenem Fenster öffnen
+              </button>
+            </div>
           )}
 
           {darfBearbeiten ? (
