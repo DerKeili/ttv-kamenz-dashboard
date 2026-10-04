@@ -9703,14 +9703,427 @@ const REIHENFOLGE_VIERER = [
   ["E3", "E1"], ["E1", "E3"], ["E2", "E4"], ["E4", "E2"],
 ];
 
+/* ---------- Aufstellungsbogen als PDF ----------
+   iOS führt window.print() in der als App abgelegten Ansicht nicht (mehr) aus, und ein
+   zusätzliches Fenster hat dort keine Zurück-Taste. Deshalb wird der Bogen hier als echte
+   PDF-Datei erzeugt — ohne zusätzliche Bibliothek — und über das Teilen-Menü übergeben.
+   Dort stehen "Drucken" und "In Dateien sichern" zur Wahl.
+   Schrift: Helvetica (in jedem PDF-Betrachter vorhanden), Kodierung WinAnsi. Die Tabellen
+   enthalten die Zeichenbreiten in 1/1000 der Schriftgröße für die Codes 32 bis 255. */
+
+const PDF_BREITEN_NORMAL = [
+  278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+  556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
+  1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778,
+  667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556,
+  333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556,
+  556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584, 761,
+  556, 0, 222, 556, 333, 1000, 556, 556, 333, 1000, 667, 333, 1000, 0, 611, 0,
+  0, 222, 222, 333, 333, 350, 556, 1000, 333, 1000, 500, 333, 944, 0, 500, 667,
+  278, 333, 556, 556, 556, 556, 260, 556, 333, 737, 370, 556, 584, 333, 737, 333,
+  400, 584, 333, 333, 333, 556, 537, 278, 333, 333, 365, 556, 834, 834, 834, 611,
+  667, 667, 667, 667, 667, 667, 1000, 722, 667, 667, 667, 667, 278, 278, 278, 278,
+  722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611,
+  556, 556, 556, 556, 556, 556, 889, 500, 556, 556, 556, 556, 278, 278, 278, 278,
+  556, 556, 556, 556, 556, 556, 556, 584, 611, 556, 556, 556, 556, 500, 556, 500,
+];
+const PDF_BREITEN_FETT = [
+  278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278,
+  556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611,
+  975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778,
+  667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556,
+  333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611,
+  611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584, 761,
+  556, 0, 278, 556, 500, 1000, 556, 556, 333, 1000, 667, 333, 1000, 0, 611, 0,
+  0, 278, 278, 500, 500, 350, 556, 1000, 333, 1000, 556, 333, 944, 0, 500, 667,
+  278, 333, 556, 556, 556, 556, 280, 556, 333, 737, 370, 556, 584, 333, 737, 333,
+  400, 584, 333, 333, 333, 611, 556, 278, 333, 333, 365, 556, 834, 834, 834, 611,
+  722, 722, 722, 722, 722, 722, 1000, 722, 667, 667, 667, 667, 278, 278, 278, 278,
+  722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611,
+  556, 556, 556, 556, 556, 556, 889, 556, 556, 556, 556, 556, 278, 278, 278, 278,
+  611, 611, 611, 611, 611, 611, 611, 584, 611, 611, 611, 611, 611, 556, 611, 556,
+];
+
+// Zeichen außerhalb von Latin-1, die WinAnsi trotzdem kennt
+const PDF_SONDERZEICHEN = {
+  "€": 128, "‚": 130, "„": 132, "…": 133, "‘": 145, "’": 146, "“": 147, "”": 148,
+  "•": 149, "–": 150, "—": 151, "™": 153,
+};
+
+const PDF_PT = 72 / 25.4; // Punkt je Millimeter
+
+function pdfCode(zeichen) {
+  const c = zeichen.charCodeAt(0);
+  if (c >= 32 && c <= 126) return c;
+  if (c >= 160 && c <= 255) return c;
+  return PDF_SONDERZEICHEN[zeichen] ?? 63; // 63 = "?"
+}
+
+// Breite eines Textes in Punkt
+function pdfBreite(text, fett, groesse) {
+  const tabelle = fett ? PDF_BREITEN_FETT : PDF_BREITEN_NORMAL;
+  let summe = 0;
+  for (const zeichen of String(text ?? "")) summe += tabelle[pdfCode(zeichen) - 32] ?? 556;
+  return (summe * groesse) / 1000;
+}
+
+// Text in Zeilen umbrechen; sehr lange Wörter werden hart getrennt
+function pdfUmbrechen(text, fett, groesse, maxBreitePt) {
+  const zeilen = [];
+  for (const absatz of String(text ?? "").split("\n")) {
+    let aktuell = "";
+    for (const wort of absatz.split(" ")) {
+      const probe = aktuell ? `${aktuell} ${wort}` : wort;
+      if (pdfBreite(probe, fett, groesse) <= maxBreitePt) {
+        aktuell = probe;
+        continue;
+      }
+      if (aktuell) {
+        zeilen.push(aktuell);
+        aktuell = "";
+      }
+      let rest = wort;
+      while (rest.length > 1 && pdfBreite(rest, fett, groesse) > maxBreitePt) {
+        let n = rest.length - 1;
+        while (n > 1 && pdfBreite(rest.slice(0, n), fett, groesse) > maxBreitePt) n--;
+        zeilen.push(rest.slice(0, n));
+        rest = rest.slice(n);
+      }
+      aktuell = rest;
+    }
+    zeilen.push(aktuell);
+  }
+  return zeilen;
+}
+
+// Text als PDF-Zeichenkette: auf WinAnsi abbilden und Klammern maskieren
+function pdfZeichenkette(text) {
+  let aus = "";
+  for (const zeichen of String(text ?? "")) {
+    const c = String.fromCharCode(pdfCode(zeichen));
+    aus += c === "\\" || c === "(" || c === ")" ? `\\${c}` : c;
+  }
+  return `(${aus})`;
+}
+
+// Einfache Zeichenfläche (DIN A4 hochkant), Maße in Millimetern von oben links
+function pdfSeite() {
+  const hoehePt = 841.89;
+  const ops = [];
+  const n = (zahl) => String(Math.round(zahl * 100) / 100);
+  const X = (mm) => n(mm * PDF_PT);
+  const Y = (mm) => n(hoehePt - mm * PDF_PT);
+
+  return {
+    ops,
+    rechteck(x, y, w, h, { fuell = null, rahmen = true } = {}) {
+      if (fuell !== null) ops.push(`${fuell} g ${X(x)} ${Y(y + h)} ${n(w * PDF_PT)} ${n(h * PDF_PT)} re f`);
+      if (rahmen) ops.push(`0 G 0.5 w ${X(x)} ${Y(y + h)} ${n(w * PDF_PT)} ${n(h * PDF_PT)} re S`);
+    },
+    // ausrichtung: "l" = ab x, "c" = um x zentriert, "r" = rechts bei x endend
+    text(x, grundlinie, text, { fett = false, groesse = 9, ausrichtung = "l", grau = 0 } = {}) {
+      const breiteMm = pdfBreite(text, fett, groesse) / PDF_PT;
+      const start = ausrichtung === "c" ? x - breiteMm / 2 : ausrichtung === "r" ? x - breiteMm : x;
+      ops.push(`${grau} g BT /${fett ? "F2" : "F1"} ${groesse} Tf 1 0 0 1 ${X(start)} ${Y(grundlinie)} Tm ${pdfZeichenkette(text)} Tj ET`);
+    },
+  };
+}
+
+// Setzt aus dem Seiteninhalt eine vollständige PDF-Datei zusammen
+function pdfDatei(inhalt, titel) {
+  const teile = [];
+  let laenge = 0;
+  const offsets = [];
+  const schreibe = (s) => {
+    const b = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 255;
+    teile.push(b);
+    laenge += b.length;
+  };
+  const objekt = (nr, text) => {
+    offsets[nr] = laenge;
+    schreibe(`${nr} 0 obj\n${text}\nendobj\n`);
+  };
+
+  schreibe("%PDF-1.4\n");
+  objekt(1, "<< /Type /Catalog /Pages 2 0 R >>");
+  objekt(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+  objekt(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>");
+  objekt(4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+  objekt(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+  offsets[6] = laenge;
+  schreibe(`6 0 obj\n<< /Length ${inhalt.length} >>\nstream\n`);
+  schreibe(inhalt);
+  schreibe("\nendstream\nendobj\n");
+  objekt(7, `<< /Title ${pdfZeichenkette(titel)} /Producer (TTV 97 Kamenz App) >>`);
+
+  const xrefPos = laenge;
+  let xref = "xref\n0 8\n0000000000 65535 f \n";
+  for (let nr = 1; nr <= 7; nr++) xref += `${String(offsets[nr]).padStart(10, "0")} 00000 n \n`;
+  schreibe(xref);
+  schreibe(`trailer\n<< /Size 8 /Root 1 0 R /Info 7 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`);
+
+  const gesamt = new Uint8Array(laenge);
+  let pos = 0;
+  for (const b of teile) {
+    gesamt.set(b, pos);
+    pos += b.length;
+  }
+  return gesamt;
+}
+
+// Zeichnet den Aufstellungsbogen — gleicher Aufbau wie die gedruckte Fassung
+function aufstellungPdfErzeugen({ spiel, mannschaftName, reihenfolge, doppel, person }) {
+  const termin = effektivesSpielDatum(spiel);
+  const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+  const heim = spiel.ist_heimspiel ? mannschaftName : gegner;
+  const gast = spiel.ist_heimspiel ? gegner : mannschaftName;
+  const istHeim = Boolean(spiel.ist_heimspiel);
+
+  const name = (id) => {
+    const p = person(id);
+    return p ? `${p.nachname}, ${p.vorname}` : "";
+  };
+  const passnr = (id) => String(person(id)?.passnummer ?? "");
+
+  const plaetze = reihenfolge.length === 6 ? 6 : 4;
+  const eng = plaetze === 6;
+  const spielfolge =
+    reihenfolge.length === 6 ? REIHENFOLGE_SECHSER : reihenfolge.length === 4 ? REIHENFOLGE_VIERER : null;
+
+  const werSpielt = (code) => {
+    if (code.startsWith("D")) {
+      const d = doppel.find((x) => `D${x.nr}` === code);
+      return d ? d.spieler.map((id) => person(id)?.nachname ?? "").filter(Boolean).join("/") : "";
+    }
+    return name(reihenfolge[Number(code.slice(1)) - 1]?.spieler_id);
+  };
+
+  // ---- Maße (Millimeter) ----
+  const R = 8; // Seitenrand
+  const B = 194; // Breite des Bogens
+  const LUECKE = 2;
+  const PAD_H = 1.2;
+  const PAD_V = 0.9;
+
+  const infoFs = eng ? 8.2 : 9;
+  const infoZeilen = [
+    ["Verband", "Kreisfachverband Bautzen"],
+    ["Spielklasse", spiel.spielklasse ?? ""],
+    ["Spielnummer", spiel.spielnummer ?? ""],
+    ["Datum", formatDatum(termin)],
+    ["Spielstart", uhrzeit(termin) ?? ""],
+    ["Spielende", ""],
+    ["Austragungsort", istHeim ? "Kamenz" : ""],
+    ["Spielsystem", plaetze === 6 ? "6er Paarkreuz" : "4er Werner Scheffler"],
+    ["VMM check", "Ja  |  Nein"],
+    ["Einh. Trikot A", "Ja  |  Nein"],
+    ["Einh. Trikot B", "Ja  |  Nein"],
+    ["Zählgeräte", "Ja  |  Nein"],
+    ["Banden", "Ja  |  Nein"],
+  ];
+  // Beschriftungsspalte so breit, dass auch "Austragungsort" in einer Zeile steht
+  const infoLabel = Math.ceil(
+    Math.max(...infoZeilen.map(([label]) => pdfBreite(label, true, infoFs))) / PDF_PT + 2 * PAD_H + 0.5
+  );
+  const infoWert = 29;
+  const RB = infoLabel + infoWert; // Breite der Infotabelle rechts
+  const LB = B - LUECKE - RB; // Breite der Spielertabelle links
+  const NR = 7, PS = 15;
+  const NAME = (LB - 2 * (NR + PS)) / 2;
+
+  const fs = eng ? 8.8 : 9.8; // Schriftgröße im Fließtext (Punkt)
+  const fsKopf = eng ? 7.6 : 8.4;
+  const fsTeam = eng ? 9.8 : 10.8;
+  const zeilenH = (groesse) => (groesse * 1.15) / PDF_PT; // Höhe einer Textzeile in mm
+
+  // Zeilenhöhen vor dem Zeichnen festlegen, damit alles auf eine Seite passt
+  const H = {
+    titel: 8, team: 6.4, kopf: 5.2,
+    einzel: eng ? 6.0 : 7.4,
+    doppel: eng ? 9.0 : 11.0,
+    ersatzKopf: 5.2, ersatz: eng ? 6.0 : 7.4,
+    planKopf: 5.2, plan: eng ? 7.0 : 8.4,
+    signKopf: 5.2, sign: eng ? 13 : 15,
+    luecke: 2.5, fussnote: 9,
+  };
+  const planZeilen = spielfolge ? spielfolge.length : 0;
+  const linksH = H.titel + H.team + H.kopf + plaetze * H.einzel + (plaetze / 2) * H.doppel + H.luecke + H.ersatzKopf + 3 * H.ersatz;
+  const gesamt = linksH + H.luecke + H.planKopf + planZeilen * H.plan + H.luecke + H.signKopf + 2 * H.sign + H.fussnote;
+  const verfuegbar = 297 - 2 * R;
+  // Nur leicht strecken oder bei Bedarf stauchen — die Schrift bleibt unverändert
+  const s = Math.min(1.06, verfuegbar / gesamt);
+
+  const seite = pdfSeite();
+  const GRAU_KOPF = 0.93, GRAU_SEITE = 0.87, GRAU_LABEL = 0.957;
+
+  // Eine Tabellenzelle: Fläche, Rahmen und Text (umgebrochen, kleiner gestellt, wenn nötig)
+  function zelle(x, y, w, h, text, o = {}) {
+    const { fett = false, groesse = fs, ausrichtung = "l", fuell = null, vertikal = "mitte", grau = 0 } = o;
+    seite.rechteck(x, y, w, h, { fuell });
+    if (text === "" || text === null || text === undefined) return;
+    const innen = (w - 2 * PAD_H) * PDF_PT;
+    const zeilen = pdfUmbrechen(text, fett, groesse, innen);
+    const zh = zeilenH(groesse);
+    const block = zeilen.length * zh;
+    const oben = vertikal === "unten" ? y + h - PAD_V - block : vertikal === "oben" ? y + PAD_V : y + (h - block) / 2;
+    const tx = ausrichtung === "c" ? x + w / 2 : ausrichtung === "r" ? x + w - PAD_H : x + PAD_H;
+    zeilen.forEach((zeile, i) => {
+      seite.text(tx, oben + i * zh + (0.8 * groesse) / PDF_PT, zeile, { fett, groesse, ausrichtung, grau });
+    });
+  }
+
+  // Passt ein Text nicht in die Zelle, die Schrift verkleinern statt umzubrechen
+  function einzeiligePassend(text, breiteMm, fett, groesse) {
+    let g = groesse;
+    while (g > 6 && pdfBreite(text, fett, g) > (breiteMm - 2 * PAD_H) * PDF_PT) g -= 0.4;
+    return g;
+  }
+
+  // ---- Titel ----
+  seite.text(R, R + 5.6, "PUNKTMANNSCHAFTSSPIEL", { fett: true, groesse: 14 });
+
+  // ---- Spielertabelle (links) ----
+  let y = R + H.titel;
+  const a0 = R, a1 = a0 + NR, a2 = a1 + NAME;
+  const b0 = a2 + PS, b1 = b0 + NR, b2 = b1 + NAME;
+  const teamH = H.team * s;
+
+  zelle(a0, y, NR, teamH, "A", { fett: true, groesse: fsTeam, ausrichtung: "c", fuell: GRAU_SEITE });
+  zelle(a1, y, NAME + PS, teamH, heim, {
+    fett: true, ausrichtung: "c", fuell: GRAU_KOPF,
+    groesse: einzeiligePassend(heim, NAME + PS, true, fsTeam),
+  });
+  zelle(b0, y, NR, teamH, "B", { fett: true, groesse: fsTeam, ausrichtung: "c", fuell: GRAU_SEITE });
+  zelle(b1, y, NAME + PS, teamH, gast, {
+    fett: true, ausrichtung: "c", fuell: GRAU_KOPF,
+    groesse: einzeiligePassend(gast, NAME + PS, true, fsTeam),
+  });
+  y += teamH;
+
+  const kopfH = H.kopf * s;
+  [a0, b0].forEach((x0) => {
+    zelle(x0, y, NR, kopfH, "Nr", { fett: true, groesse: fsKopf, ausrichtung: "c", fuell: GRAU_KOPF });
+    zelle(x0 + NR, y, NAME, kopfH, "Name, Vorname", { fett: true, groesse: fsKopf, fuell: GRAU_KOPF });
+    zelle(x0 + NR + NAME, y, PS, kopfH, "Passnr.", { fett: true, groesse: fsKopf, ausrichtung: "r", fuell: GRAU_KOPF });
+  });
+  y += kopfH;
+
+  // Eine Zeile mit Nummer, Name(n) und Passnummer(n) für beide Seiten
+  function spielerZeile(nummer, h, eigenName, eigenPass, vertikal) {
+    // Der längste Name bestimmt die Schriftgröße, damit nichts in die nächste Spalte ragt
+    const nameGroesse = Math.min(fs, ...String(eigenName).split("\n").map((z) => einzeiligePassend(z, NAME, false, fs)));
+    [[a0, istHeim], [b0, !istHeim]].forEach(([x0, eigeneSeite]) => {
+      zelle(x0, y, NR, h, nummer, { fett: true, ausrichtung: "c", vertikal });
+      zelle(x0 + NR, y, NAME, h, eigeneSeite ? eigenName : "", { vertikal, groesse: nameGroesse });
+      zelle(x0 + NR + NAME, y, PS, h, eigeneSeite ? eigenPass : "", { ausrichtung: "r", vertikal });
+    });
+    y += h;
+  }
+
+  for (let i = 0; i < plaetze; i++) {
+    const eintrag = reihenfolge[i];
+    spielerZeile(String(i + 1), H.einzel * s, eintrag ? name(eintrag.spieler_id) : "", eintrag ? passnr(eintrag.spieler_id) : "", "mitte");
+  }
+  for (let i = 0; i < plaetze / 2; i++) {
+    const d = doppel.find((x) => x.nr === i + 1);
+    const namen = d ? d.spieler.map(name).filter(Boolean).join("\n") : "";
+    const nummern = d ? d.spieler.map(passnr).filter(Boolean).join("\n") : "";
+    spielerZeile(`D${i + 1}`, H.doppel * s, namen, nummern, "oben");
+  }
+
+  // ---- Ersatzspieler ----
+  y += H.luecke;
+  const halb = LB / 2;
+  zelle(R, y, halb, H.ersatzKopf * s, "Ersatzspieler / Liga / Position", { fett: true, groesse: fsKopf, fuell: GRAU_KOPF });
+  zelle(R + halb, y, halb, H.ersatzKopf * s, "Ersatzspieler / Liga / Position", { fett: true, groesse: fsKopf, fuell: GRAU_KOPF });
+  y += H.ersatzKopf * s;
+  for (let i = 0; i < 3; i++) {
+    zelle(R, y, halb, H.ersatz * s, "");
+    zelle(R + halb, y, halb, H.ersatz * s, "");
+    y += H.ersatz * s;
+  }
+  const linksEnde = y;
+
+  // ---- Infotabelle (rechts, oben bündig mit dem Titel) ----
+  const infoX = R + LB + LUECKE;
+  let yi = R;
+  infoZeilen.forEach(([label, wert]) => {
+    const zeilenWert = pdfUmbrechen(wert, false, infoFs, (infoWert - 2 * PAD_H) * PDF_PT).length;
+    const zeilenLabel = pdfUmbrechen(label, true, infoFs, (infoLabel - 2 * PAD_H) * PDF_PT).length;
+    const h = Math.max((eng ? 5.6 : 6.2) * s, Math.max(zeilenWert, zeilenLabel) * zeilenH(infoFs) + 2 * PAD_V);
+    zelle(infoX, yi, infoLabel, h, label, { fett: true, groesse: infoFs, fuell: GRAU_LABEL });
+    zelle(infoX + infoLabel, yi, infoWert, h, wert, { groesse: infoFs });
+    yi += h;
+  });
+
+  y = Math.max(linksEnde, yi) + H.luecke;
+
+  // ---- Spielfolge ----
+  if (spielfolge) {
+    const sp = [8, 38, 8, 38, 13, 13, 13, 13, 13, 11, 13, 13]; // Spaltenbreiten
+    const kopf = ["Nr", "Mannschaft A", "Nr", "Mannschaft B", "1.", "2.", "3.", "4.", "5.", "AK", "Satz", "Pkt."];
+    let x = R;
+    kopf.forEach((text, i) => {
+      zelle(x, y, sp[i], H.planKopf * s, text, { fett: true, groesse: fsKopf, fuell: GRAU_KOPF, ausrichtung: i === 1 || i === 3 ? "l" : "c" });
+      x += sp[i];
+    });
+    y += H.planKopf * s;
+
+    spielfolge.forEach(([a, b]) => {
+      const eigen = werSpielt(istHeim ? a : b);
+      const h = H.plan * s;
+      x = R;
+      const inhalte = [a, istHeim ? eigen : "", b, istHeim ? "" : eigen, "", "", "", "", "", "", ":", ":"];
+      inhalte.forEach((text, i) => {
+        zelle(x, y, sp[i], h, text, {
+          fett: i === 0 || i === 2,
+          ausrichtung: i === 1 || i === 3 ? "l" : "c",
+          groesse: i === 1 || i === 3 ? einzeiligePassend(text, sp[i], false, fs) : fs,
+        });
+        x += sp[i];
+      });
+      y += h;
+    });
+  }
+
+  // ---- Unterschriften und Endstand ----
+  y += H.luecke;
+  const summeB = 26;
+  const summeX = R + B - summeB;
+  const signB = summeX - LUECKE - R;
+  const signSpalte = signB / 3;
+  const signH = H.signKopf * s + 2 * H.sign * s;
+  ["Gastgeber", "Gast", "Oberschiedsrichter"].forEach((text, i) => {
+    zelle(R + i * signSpalte, y, signSpalte, H.signKopf * s, text, { fett: true, groesse: fsKopf, fuell: GRAU_KOPF });
+  });
+  ["Unterschrift", "Druckschrift"].forEach((text, zeile) => {
+    for (let i = 0; i < 3; i++) {
+      zelle(R + i * signSpalte, y + H.signKopf * s + zeile * H.sign * s, signSpalte, H.sign * s, text, {
+        groesse: 6.8, vertikal: "unten", grau: 0.2,
+      });
+    }
+  });
+  ["Satz", "Punkt"].forEach((text, zeile) => {
+    zelle(summeX, y + (zeile * signH) / 2, summeB / 2, signH / 2, text, { fett: true, groesse: fsKopf, fuell: GRAU_LABEL });
+    zelle(summeX + summeB / 2, y + (zeile * signH) / 2, summeB / 2, signH / 2, "");
+  });
+  y += signH;
+
+  // ---- Fußnote ----
+  const hinweis =
+    "Erstellt mit der Mannschafts-App des TTV 97 Kamenz e.V. — Aufstellungshilfe, kein amtlicher Spielbericht. " +
+    "Unterschriften und Ergebnisse bitte am Spieltag ergänzen.";
+  pdfUmbrechen(hinweis, false, 6.8, B * PDF_PT).forEach((zeile, i) => {
+    seite.text(R, y + 3.4 + i * zeilenH(6.8), zeile, { groesse: 6.8, grau: 0.2 });
+  });
+
+  return pdfDatei(seite.ops.join("\n"), dateiname({ termin, heim, gast }));
+}
+
 // Erzeugt einen druckbaren Aufstellungsbogen und öffnet den Druckdialog.
 // Über "Als PDF sichern" landet er in den Dateien — ohne zusätzliche Bibliothek.
-//
-// modus "drucken": Bogen in die Seite einblenden und den Druckdialog öffnen.
-// modus "fenster": Bogen in einem eigenen Fenster öffnen, dort gibt es einen
-// eigenen Drucken-Knopf. Der Ausweg, wenn der Druckdialog nicht erscheint
-// (z. B. wenn die App vom Home-Bildschirm gestartet wurde).
-function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person, modus = "drucken" }) {
+function aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person }) {
   const termin = effektivesSpielDatum(spiel);
   const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
   const heim = spiel.ist_heimspiel ? mannschaftName : gegner;
@@ -9894,30 +10307,6 @@ ${planZeilen ? `<table>
   Spielbericht. Unterschriften und Ergebnisse bitte am Spieltag ergänzen.
 </p>`;
 
-  if (modus === "fenster") {
-    const seite = `<!doctype html><html lang="de"><head><meta charset="utf-8">
-<meta name="viewport" content="width=820">
-<title>${dateiname({ termin, heim, gast })}</title>
-<style>
-  body { margin: 0; background: #e9e9e6; }
-  .leiste { position: sticky; top: 0; padding: 10px; background: #0F2E2A; text-align: center; z-index: 5; }
-  .leiste button { font-size: 16px; font-weight: bold; padding: 10px 18px; border: 0; border-radius: 6px; background: #E2632B; color: #fff; }
-  .blatt { width: 194mm; margin: 12px auto; padding: 8mm; background: #fff; box-sizing: content-box; }
-  @page { size: A4 portrait; margin: 8mm; }
-  @media print { body { background: #fff; } .leiste { display: none; } .blatt { width: auto; margin: 0; padding: 0; } }
-</style></head><body>
-<div class="leiste"><button onclick="window.print()">Drucken oder als PDF sichern</button></div>
-<div class="blatt"><div id="druckbereich">${inhalt}</div></div>
-</body></html>`;
-    // Das Fenster muss direkt beim Antippen geöffnet werden, sonst blockiert es der Browser
-    const fenster = window.open("", "_blank");
-    if (!fenster) throw new Error("Der Browser hat das neue Fenster blockiert. Bitte Pop-ups für diese Seite erlauben.");
-    fenster.document.open();
-    fenster.document.write(seite);
-    fenster.document.close();
-    return;
-  }
-
   // iOS blockiert das Drucken aus einem versteckten Rahmen. Deshalb blenden wir den
   // Bogen kurzzeitig in die Seite selbst ein und verstecken beim Drucken alles andere.
   const alterBereich = document.getElementById("druckbereich");
@@ -9990,6 +10379,49 @@ function dateiname({ termin, heim, gast }) {
   return `${datum}_${kurz(heim)}_vs_${kurz(gast)}_Aufstellung`;
 }
 
+// Handy oder Tablet? Dort wird der Bogen als PDF über das Teilen-Menü übergeben, weil
+// window.print() in der als App abgelegten Ansicht nicht zuverlässig funktioniert.
+// iPadOS meldet sich als "Macintosh", verrät sich aber durch den Touchscreen.
+function istTouchGeraet() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const mobil = /iPhone|iPad|iPod|Android/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return mobil && typeof navigator.canShare === "function" && typeof navigator.share === "function";
+}
+
+// Erzeugt die PDF-Datei und öffnet das Teilen-Menü (dort: "Drucken", "In Dateien sichern").
+// Muss direkt aus einem Tippen heraus aufgerufen werden, sonst verweigert iOS das Teilen.
+async function aufstellungAlsPdfTeilen(daten) {
+  const termin = effektivesSpielDatum(daten.spiel);
+  const gegner = daten.spiel.ist_heimspiel ? daten.spiel.gastteam : daten.spiel.heimteam;
+  const heim = daten.spiel.ist_heimspiel ? daten.mannschaftName : gegner;
+  const gast = daten.spiel.ist_heimspiel ? gegner : daten.mannschaftName;
+  const titel = dateiname({ termin, heim, gast });
+
+  const bytes = aufstellungPdfErzeugen(daten);
+  const datei = new File([bytes], `${titel}.pdf`, { type: "application/pdf" });
+
+  if (navigator.canShare({ files: [datei] })) {
+    try {
+      await navigator.share({ files: [datei], title: titel });
+    } catch (e) {
+      if (e?.name === "AbortError") return; // Menü wurde bewusst geschlossen
+      throw e;
+    }
+    return;
+  }
+
+  // Kein Teilen möglich: Datei zum Herunterladen anbieten
+  const url = URL.createObjectURL(datei);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${titel}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
 function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbeiten, vorhanden, mannschaftName, onSchliessen, onGespeichert }) {
   const [reihenfolge, setReihenfolge] = useState([]);
   const [doppel, setDoppel] = useState([]);
@@ -10057,10 +10489,15 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
   }
 
   // Fehler beim Erstellen des Bogens sichtbar machen, statt dass "nichts passiert"
-  function bogenDrucken(modus = "drucken") {
+  async function bogenDrucken() {
     setFehler(null);
+    const daten = { spiel, mannschaftName, reihenfolge, doppel, person };
     try {
-      aufstellungDrucken({ spiel, mannschaftName, reihenfolge, doppel, person, modus });
+      if (istTouchGeraet()) {
+        await aufstellungAlsPdfTeilen(daten);
+      } else {
+        aufstellungDrucken(daten);
+      }
     } catch (e) {
       setFehler(`Der Aufstellungsbogen konnte nicht erstellt werden: ${e?.message ?? e}`);
     }
@@ -10310,18 +10747,17 @@ function AufstellungFenster({ spiel, kandidaten, meldung, benoetigt, darfBearbei
           {(vorhanden || !darfBearbeiten) && reihenfolge.length > 0 && (
             <div className="space-y-1">
               <button
-                onClick={() => bogenDrucken("drucken")}
+                onClick={bogenDrucken}
                 className="w-full px-4 py-2 rounded-md text-sm font-semibold border flex items-center justify-center gap-2"
                 style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
               >
                 <FileText size={14} /> Aufstellungsbogen drucken oder als PDF sichern
               </button>
-              <button
-                onClick={() => bogenDrucken("fenster")}
-                className="w-full text-[11px] underline text-gray-400"
-              >
-                Es öffnet sich nichts? Bogen in eigenem Fenster öffnen
-              </button>
+              {istTouchGeraet() && (
+                <p className="text-[11px] text-gray-400 text-center">
+                  Es öffnet sich das Teilen-Menü — dort „Drucken“ oder „In Dateien sichern“ wählen.
+                </p>
+              )}
             </div>
           )}
 
