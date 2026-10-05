@@ -1240,6 +1240,16 @@ function AushilfeAnfrageDialog({ info, onAbbrechen, onSenden }) {
   );
 }
 
+// Zeitpunkt für <input type="datetime-local"> in lokaler Zeit ("2026-10-09T19:30").
+// toISOString() liefert UTC und würde die Uhrzeit um 1 bis 2 Stunden verschieben.
+function lokalFuerEingabe(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function tagesSchluessel(datum) {
   const d = new Date(datum);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -1828,6 +1838,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [fehler, setFehler] = useState(null);
   const [verlegung, setVerlegung] = useState(null); // { spiel, datum, grund }
   const [verlegungLadend, setVerlegungLadend] = useState(false);
+  const [verlegungFehler, setVerlegungFehler] = useState(null); // Meldung direkt im Formular, nicht oben auf der Seite
   const [schreibschutzAus, setSchreibschutzAus] = useState(false);
   const [aushilfen, setAushilfen] = useState([]);
   const [anfrageLadendId, setAnfrageLadendId] = useState(null);
@@ -1878,10 +1889,12 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
 
   function verlegungOeffnen(spiel) {
     setFehler(null);
+    setVerlegungFehler(null);
     setVerlegung({
       spiel,
-      // Vorhandenen Ersatztermin für das Eingabefeld aufbereiten (lokale Zeit, ohne Sekunden)
-      datum: spiel.verlegt_auf ? new Date(spiel.verlegt_auf).toISOString().slice(0, 16) : "",
+      // Vorhandenen Ersatztermin, sonst den bisherigen Termin als Vorgabe (lokale Zeit, ohne Sekunden).
+      // So ist das Feld nie leer und man sieht sofort, was man ändert.
+      datum: lokalFuerEingabe(spiel.verlegt_auf ?? spiel.datum),
       grund: spiel.verlegt_grund ?? "",
     });
   }
@@ -2026,56 +2039,120 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
 
   async function verlegungSpeichern(mitTermin) {
     setFehler(null);
-    if (mitTermin && !verlegung.datum) return setFehler("Bitte einen neuen Termin angeben.");
+    setVerlegungFehler(null);
+    if (verlegungLadend) return; // doppeltes Tippen
+    const spiel = verlegung.spiel;
+
+    const neuerTermin = mitTermin && verlegung.datum ? new Date(verlegung.datum) : null;
+    if (mitTermin && !neuerTermin) return setVerlegungFehler("Bitte einen neuen Termin angeben.");
+    if (neuerTermin && isNaN(neuerTermin.getTime())) {
+      return setVerlegungFehler("Der neue Termin ist ungültig — bitte Datum und Uhrzeit neu wählen.");
+    }
+    if (neuerTermin && !spiel.verlegt && Math.abs(neuerTermin.getTime() - new Date(spiel.datum).getTime()) < 60000) {
+      return setVerlegungFehler("Der neue Termin ist derselbe wie der bisherige. Bitte ein anderes Datum oder eine andere Uhrzeit wählen.");
+    }
+
+    // Nichts passiert hier unbemerkt: Wer schon geantwortet hat, wird vorher gefragt
+    const antworten = Object.values(meldungen[spiel.id] ?? {}).filter((st) => st === "ja" || st === "nein").length;
+    if (antworten > 0 && !window.confirm(
+      `${antworten === 1 ? "1 Rückmeldung" : `${antworten} Rückmeldungen`} (Kann / Kann nicht) für den bisherigen Termin ` +
+      `${antworten === 1 ? "wird" : "werden"} zurückgesetzt, weil sie sich auf den alten Termin bezogen.\n\nFortfahren?`
+    )) return;
+
     setVerlegungLadend(true);
+    try {
+      const neuerIso = neuerTermin ? neuerTermin.toISOString() : null;
+      const { data: gespeichert, error } = await supabase
+        .from("verbands_spiele")
+        .update({
+          verlegt: true,
+          verlegt_auf: neuerIso,
+          verlegt_grund: verlegung.grund.trim() || null,
+          verlegt_von: profil.id,
+          verlegt_am: new Date().toISOString(),
+        })
+        .eq("id", spiel.id)
+        .select("id");
 
-    const neuerTermin = mitTermin ? new Date(verlegung.datum).toISOString() : null;
-    const { error } = await supabase
-      .from("verbands_spiele")
-      .update({
-        verlegt: true,
-        verlegt_auf: neuerTermin,
-        verlegt_grund: verlegung.grund.trim() || null,
-        verlegt_von: profil.id,
-        verlegt_am: new Date().toISOString(),
-      })
-      .eq("id", verlegung.spiel.id);
+      if (error) return setVerlegungFehler(error.message);
+      // Eine Datenbank-Regel kann die Änderung ohne Fehlermeldung verwerfen — dann kommt hier nichts zurück.
+      if (!gespeichert || gespeichert.length === 0) {
+        return setVerlegungFehler(
+          "Die Datenbank hat die Verlegung nicht übernommen (vermutlich fehlt die Berechtigung für dieses Spiel). " +
+          "Es wurde nichts geändert, und keine Rückmeldung wurde zurückgesetzt."
+        );
+      }
 
-    if (error) {
+      // Erst jetzt, nachdem die Verlegung sicher gespeichert ist: Rückmeldungen zurücksetzen.
+      // Krankmeldungen bleiben, wenn der Spieler auch am neuen Termin noch krank ist.
+      const hinweise = [];
+      const { error: loeschFehler } = await supabase
+        .from("spielerplanung_meldungen")
+        .delete()
+        .eq("spiel_id", spiel.id)
+        .neq("status", "krank");
+      if (loeschFehler) hinweise.push(`Rückmeldungen konnten nicht zurückgesetzt werden: ${loeschFehler.message}`);
+
+      if (neuerIso) {
+        const tag = tagesSchluessel(neuerIso);
+        const { data: krankDaten } = await supabase
+          .from("abwesenheiten")
+          .select("spieler_id")
+          .eq("grund", "krank")
+          .lte("von", tag)
+          .gte("bis", tag);
+        const weiterKrank = [...new Set((krankDaten ?? []).map((k) => k.spieler_id))];
+        let krankLoeschen = supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", spiel.id).eq("status", "krank");
+        if (weiterKrank.length > 0) krankLoeschen = krankLoeschen.not("spieler_id", "in", `(${weiterKrank.join(",")})`);
+        const { error: krankFehler } = await krankLoeschen;
+        if (krankFehler) hinweise.push(`Krankmeldungen konnten nicht angepasst werden: ${krankFehler.message}`);
+
+        supabase.functions.invoke("notify-spielverlegung", {
+          body: {
+            spielId: spiel.id,
+            neuerTermin: neuerIso,
+            altesDatum: spiel.datum,
+            grund: verlegung.grund.trim() || null,
+            mannschaftId: saison.mannschaft_id,
+          },
+        }); // bewusst nicht awaited
+      }
+
+      setVerlegung(null);
+      await laden(true);
+      window.alert(
+        (neuerIso
+          ? `Spiel verlegt auf ${wochentagLang(neuerIso)}, ${formatDatum(neuerIso)}${uhrzeit(neuerIso) ? ` um ${uhrzeit(neuerIso)}` : ""}.\n\n` +
+            "Die Rückmeldungen wurden zurückgesetzt. Deine Mannschaft bekommt eine E-Mail mit altem und neuem Termin."
+          : "Spiel als verlegt markiert. Die Spalte ist gesperrt, bis ein Ersatztermin feststeht. Die Rückmeldungen wurden zurückgesetzt.") +
+        (hinweise.length > 0 ? `\n\nHinweis: ${hinweise.join(" · ")}` : "")
+      );
+    } catch (e) {
+      setVerlegungFehler(`Unerwarteter Fehler: ${e?.message ?? e}`);
+    } finally {
       setVerlegungLadend(false);
-      return setFehler(error.message);
     }
-
-    // Bisherige Rückmeldungen gelten für den alten Termin und werden zurückgesetzt,
-    // damit niemand fälschlich als verfügbar gezählt wird.
-    await supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", verlegung.spiel.id);
-
-    if (neuerTermin) {
-      supabase.functions.invoke("notify-spielverlegung", {
-        body: {
-          spielId: verlegung.spiel.id,
-          neuerTermin,
-          altesDatum: verlegung.spiel.datum,
-          grund: verlegung.grund.trim() || null,
-          mannschaftId: saison.mannschaft_id,
-        },
-      }); // bewusst nicht awaited
-    }
-
-    setVerlegungLadend(false);
-    setVerlegung(null);
-    laden();
   }
 
   async function verlegungAufheben() {
+    setVerlegungFehler(null);
+    if (!window.confirm("Verlegung aufheben? Das Spiel gilt dann wieder am ursprünglichen Termin. Bereits zurückgesetzte Rückmeldungen kommen dadurch nicht zurück.")) return;
     setVerlegungLadend(true);
-    await supabase
-      .from("verbands_spiele")
-      .update({ verlegt: false, verlegt_auf: null, verlegt_grund: null, verlegt_von: null, verlegt_am: null })
-      .eq("id", verlegung.spiel.id);
-    setVerlegungLadend(false);
-    setVerlegung(null);
-    laden();
+    try {
+      const { data: geaendert, error } = await supabase
+        .from("verbands_spiele")
+        .update({ verlegt: false, verlegt_auf: null, verlegt_grund: null, verlegt_von: null, verlegt_am: null })
+        .eq("id", verlegung.spiel.id)
+        .select("id");
+      if (error) return setVerlegungFehler(error.message);
+      if (!geaendert || geaendert.length === 0) {
+        return setVerlegungFehler("Die Datenbank hat die Änderung nicht übernommen (vermutlich fehlt die Berechtigung für dieses Spiel).");
+      }
+      setVerlegung(null);
+      await laden(true);
+    } finally {
+      setVerlegungLadend(false);
+    }
   }
 
   // still = true: Daten im Hintergrund neu holen, ohne Ladebildschirm. Sonst würde
@@ -2423,6 +2500,87 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
 
   if (ladend) return <Leerzustand text="Lade Spielerplanung…" />;
 
+  const verlegungFormular = verlegung && (
+    <div className="p-4 border-b sm:border-b rounded-lg sm:rounded-none border sm:border-x-0 sm:border-t-0 mb-3 sm:mb-0" style={{ background: COLORS.paper }}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <CalendarClock size={16} style={{ color: COLORS.konflikt }} />
+                      <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>
+                        Spiel verlegen: {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
+                      </p>
+                    </div>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Ursprünglich am {wochentagLang(verlegung.spiel.datum)}, {formatDatum(verlegung.spiel.datum)}{uhrzeit(verlegung.spiel.datum) ? ` um ${uhrzeit(verlegung.spiel.datum)}` : ""}. Solange kein Ersatztermin feststeht,
+                      ist die Spalte gesperrt und niemand kann sich eintragen. Sobald du einen Termin einträgst,
+                      wird die Spalte wieder freigegeben — bereits gegebene Rückmeldungen werden dabei zurückgesetzt,
+                      weil sie sich auf den alten Termin bezogen.
+                    </p>
+                    <div className="grid sm:grid-cols-2 gap-3 mb-3">
+                      <div className="min-w-0">
+                        <label className="block text-xs text-gray-500 mb-1">Neuer Termin</label>
+                        <input
+                          type="datetime-local"
+                          value={verlegung.datum}
+                          onChange={(e) => { setVerlegungFehler(null); setVerlegung({ ...verlegung, datum: e.target.value }); }}
+                          style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
+                          className="w-full border rounded-md px-3 py-2 text-sm"
+                        />
+                        <p className="text-[11px] mt-1" style={{ color: verlegung.datum ? COLORS.petrol : "#999" }}>
+                          {verlegung.datum && !isNaN(new Date(verlegung.datum).getTime())
+                            ? `→ ${wochentagLang(new Date(verlegung.datum).toISOString())}, ${formatDatum(new Date(verlegung.datum).toISOString())}${uhrzeit(new Date(verlegung.datum).toISOString()) ? ` um ${uhrzeit(new Date(verlegung.datum).toISOString())}` : ""}`
+                            : "Noch kein Termin gewählt"}
+                        </p>
+                      </div>
+                      <div className="min-w-0">
+                        <label className="block text-xs text-gray-500 mb-1">Grund (optional)</label>
+                        <input
+                          value={verlegung.grund}
+                          onChange={(e) => setVerlegung({ ...verlegung, grund: e.target.value })}
+                          placeholder="z. B. zu wenige Spieler"
+                          className="w-full border rounded-md px-3 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-gray-400 mb-2 flex items-start gap-1">
+                      <Mail size={11} className="mt-0.5 shrink-0" />
+                      <span>Sobald du einen neuen Termin ansetzt, bekommt deine Mannschaft automatisch eine E-Mail mit dem alten und dem neuen Termin.</span>
+                    </p>
+                    {verlegungFehler && (
+                      <p className="text-xs font-semibold mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+                        {verlegungFehler}
+                      </p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => verlegungSpeichern(true)}
+                        disabled={verlegungLadend}
+                        className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+                        style={{ background: COLORS.orange, opacity: verlegungLadend ? 0.6 : 1 }}
+                      >
+                        {verlegungLadend ? "Wird gespeichert…" : "Neuen Termin ansetzen"}
+                      </button>
+                      <button
+                        onClick={() => verlegungSpeichern(false)}
+                        disabled={verlegungLadend}
+                        className="px-4 py-2 rounded-md text-sm font-semibold border"
+                        style={{ borderColor: COLORS.konflikt, color: COLORS.konflikt }}
+                      >
+                        Nur als verlegt markieren
+                      </button>
+                      {verlegung.spiel.verlegt && (
+                        <button onClick={verlegungAufheben} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
+                          Verlegung aufheben
+                        </button>
+                      )}
+                      <button onClick={() => setVerlegung(null)} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
+                        Abbrechen
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-gray-400 mt-2">
+                      „Nur als verlegt markieren“ sperrt die Spalte, bis ein Ersatztermin feststeht — ohne E-Mail. Die bisherigen Rückmeldungen werden auch dabei zurückgesetzt.
+                    </p>
+                  </div>
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -2516,6 +2674,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
 
           {/* Hochformat auf dem Handy: Karten statt Tabelle — eine Karte je Spieltag */}
           <div className="sm:hidden space-y-3">
+            {verlegungFormular}
             {spiele.map((s) => {
               const gesperrt = spielGesperrt(s);
               const termin = effektivesSpielDatum(s);
@@ -2712,73 +2871,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           </div>
 
           <div className="hidden sm:block bg-white rounded-lg border overflow-auto max-h-[75vh]">
-            {verlegung && (
-              <div className="p-4 border-b" style={{ background: COLORS.paper }}>
-                <div className="flex items-center gap-2 mb-2">
-                  <CalendarClock size={16} style={{ color: COLORS.konflikt }} />
-                  <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>
-                    Spiel verlegen: {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
-                  </p>
-                </div>
-                <p className="text-xs text-gray-500 mb-3">
-                  Ursprünglich am {wochentagLang(verlegung.spiel.datum)}, {formatDatum(verlegung.spiel.datum)}{uhrzeit(verlegung.spiel.datum) ? ` um ${uhrzeit(verlegung.spiel.datum)}` : ""}. Solange kein Ersatztermin feststeht,
-                  ist die Spalte gesperrt und niemand kann sich eintragen. Sobald du einen Termin einträgst,
-                  wird die Spalte wieder freigegeben — bereits gegebene Rückmeldungen werden dabei zurückgesetzt,
-                  weil sie sich auf den alten Termin bezogen.
-                </p>
-                <div className="grid sm:grid-cols-2 gap-3 mb-3">
-                  <div className="min-w-0">
-                    <label className="block text-xs text-gray-500 mb-1">Neuer Termin</label>
-                    <input
-                      type="datetime-local"
-                      value={verlegung.datum}
-                      onChange={(e) => setVerlegung({ ...verlegung, datum: e.target.value })}
-                      style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
-                      className="w-full border rounded-md px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div className="min-w-0">
-                    <label className="block text-xs text-gray-500 mb-1">Grund (optional)</label>
-                    <input
-                      value={verlegung.grund}
-                      onChange={(e) => setVerlegung({ ...verlegung, grund: e.target.value })}
-                      placeholder="z. B. zu wenige Spieler"
-                      className="w-full border rounded-md px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-                <p className="text-[11px] text-gray-400 mb-2 flex items-start gap-1">
-                  <Mail size={11} className="mt-0.5 shrink-0" />
-                  <span>Sobald du einen neuen Termin ansetzt, bekommt deine Mannschaft automatisch eine E-Mail mit dem alten und dem neuen Termin.</span>
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => verlegungSpeichern(true)}
-                    disabled={verlegungLadend}
-                    className="px-4 py-2 rounded-md text-white text-sm font-semibold"
-                    style={{ background: COLORS.orange, opacity: verlegungLadend ? 0.6 : 1 }}
-                  >
-                    Neuen Termin ansetzen
-                  </button>
-                  <button
-                    onClick={() => verlegungSpeichern(false)}
-                    disabled={verlegungLadend}
-                    className="px-4 py-2 rounded-md text-sm font-semibold border"
-                    style={{ borderColor: COLORS.konflikt, color: COLORS.konflikt }}
-                  >
-                    Nur als verlegt markieren
-                  </button>
-                  {verlegung.spiel.verlegt && (
-                    <button onClick={verlegungAufheben} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
-                      Verlegung aufheben
-                    </button>
-                  )}
-                  <button onClick={() => setVerlegung(null)} className="px-4 py-2 rounded-md text-sm border">
-                    Abbrechen
-                  </button>
-                </div>
-              </div>
-            )}
+            {verlegungFormular}
 
             <table className="w-full text-sm min-w-[640px]">
               <thead className="sticky top-0 z-20">
