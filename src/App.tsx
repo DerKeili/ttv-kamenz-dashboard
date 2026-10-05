@@ -1896,6 +1896,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       // So ist das Feld nie leer und man sieht sofort, was man ändert.
       datum: lokalFuerEingabe(spiel.verlegt_auf ?? spiel.datum),
       grund: spiel.verlegt_grund ?? "",
+      tauschen: false, // true = aus Heim wird Auswärts oder umgekehrt
     });
   }
 
@@ -2062,6 +2063,36 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     setVerlegungLadend(true);
     try {
       const neuerIso = neuerTermin ? neuerTermin.toISOString() : null;
+
+      // Heimrecht tauschen: Heim- und Gastteam wechseln die Plätze. Die Anschrift der Halle
+      // gehört zum Heimteam und wird deshalb von einem anderen Spiel dieses Teams übernommen.
+      const tauschen = Boolean(verlegung.tauschen) && !spiel.ergebnis;
+      let tauschFelder = {};
+      if (tauschen) {
+        tauschFelder = {
+          ist_heimspiel: !spiel.ist_heimspiel,
+          heimteam: spiel.gastteam,
+          gastteam: spiel.heimteam,
+          // Merker für den Abgleich mit dem Verband (fetch-spielplan), damit das Spiel nicht doppelt angelegt wird
+          heim_getauscht: !spiel.heim_getauscht,
+        };
+        if ("spielort_adresse" in spiel) {
+          const { data: schwester } = await supabase
+            .from("verbands_spiele")
+            .select("spielort_name, spielort_adresse, spielort_hinweis")
+            .eq("saison_id", spiel.saison_id)
+            .eq("heimteam", spiel.gastteam)
+            .not("spielort_adresse", "is", null)
+            .limit(1);
+          tauschFelder = {
+            ...tauschFelder,
+            spielort_name: schwester?.[0]?.spielort_name ?? null,
+            spielort_adresse: schwester?.[0]?.spielort_adresse ?? null,
+            spielort_hinweis: schwester?.[0]?.spielort_hinweis ?? null,
+          };
+        }
+      }
+
       const { data: gespeichert, error } = await supabase
         .from("verbands_spiele")
         .update({
@@ -2070,6 +2101,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           verlegt_grund: verlegung.grund.trim() || null,
           verlegt_von: profil.id,
           verlegt_am: new Date().toISOString(),
+          ...tauschFelder,
         })
         .eq("id", spiel.id)
         .select("id");
@@ -2114,6 +2146,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
             altesDatum: spiel.datum,
             grund: verlegung.grund.trim() || null,
             mannschaftId: saison.mannschaft_id,
+            ortGeaendert: tauschen,
           },
         }); // bewusst nicht awaited
       }
@@ -2125,6 +2158,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           ? `Spiel verlegt auf ${wochentagLang(neuerIso)}, ${formatDatum(neuerIso)}${uhrzeit(neuerIso) ? ` um ${uhrzeit(neuerIso)}` : ""}.\n\n` +
             "Die Rückmeldungen wurden zurückgesetzt. Deine Mannschaft bekommt eine E-Mail mit altem und neuem Termin."
           : "Spiel als verlegt markiert. Die Spalte ist gesperrt, bis ein Ersatztermin feststeht. Die Rückmeldungen wurden zurückgesetzt.") +
+        (tauschen ? `\n\nDas Spiel ist jetzt ein ${spiel.ist_heimspiel ? "Auswärtsspiel" : "Heimspiel"}.` : "") +
         (hinweise.length > 0 ? `\n\nHinweis: ${hinweise.join(" · ")}` : "")
       );
     } catch (e) {
@@ -2544,6 +2578,40 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                       <Mail size={11} className="mt-0.5 shrink-0" />
                       <span>Sobald du einen neuen Termin ansetzt, bekommt deine Mannschaft automatisch eine E-Mail mit dem alten und dem neuen Termin.</span>
                     </p>
+                    {!verlegung.spiel.ergebnis && (
+                      <div className="mb-3">
+                        <label className="block text-xs text-gray-500 mb-1">
+                          Spielort — {verlegung.spiel.ist_heimspiel ? "bisher Heimspiel" : "bisher Auswärtsspiel"} gegen{" "}
+                          {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                          {[
+                            [false, verlegung.spiel.ist_heimspiel ? "Bleibt Heimspiel" : "Bleibt Auswärtsspiel"],
+                            [true, verlegung.spiel.ist_heimspiel ? "Wird Auswärtsspiel" : "Wird Heimspiel"],
+                          ].map(([wert, text]) => {
+                            const gewaehlt = Boolean(verlegung.tauschen) === wert;
+                            return (
+                              <button
+                                key={text}
+                                type="button"
+                                onClick={() => setVerlegung({ ...verlegung, tauschen: wert })}
+                                className="px-3 py-1.5 rounded-md text-sm border font-semibold"
+                                style={gewaehlt
+                                  ? { background: COLORS.konflikt, color: "white", borderColor: COLORS.konflikt }
+                                  : { background: "white", color: "#555" }}
+                              >
+                                {text}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {verlegung.tauschen && (
+                          <p className="text-[11px] mt-1" style={{ color: COLORS.konflikt }}>
+                            Heim- und Gastteam werden getauscht, die Anschrift der Halle wird angepasst. Dem Verband musst du den Wechsel weiterhin selbst melden.
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {verlegungFehler && (
                       <p className="text-xs font-semibold mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
                         {verlegungFehler}
