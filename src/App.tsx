@@ -1250,6 +1250,184 @@ function lokalFuerEingabe(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/* ---------- Verlegung: gemeinsamer Kern ----------
+   Wird von der Spielerplanung ("verlegen") und von "Diesen Termin ansetzen" in der
+   Umfrage benutzt, damit beide gleich arbeiten: Änderung prüfen, Rückmeldungen
+   sichern und zurücksetzen, Mannschaft informieren — und alles wieder herstellen können. */
+
+const MELDUNG_SPALTEN = "saison_id, spiel_id, spieler_id, status, aktualisiert_am, gesetzt_von";
+
+// Alles, was eine Verlegung am Spiel verändern kann — damit sie sich vollständig zurücknehmen lässt
+function spielZustandFuerSicherung(spiel) {
+  const z = { ist_heimspiel: spiel.ist_heimspiel, heimteam: spiel.heimteam, gastteam: spiel.gastteam };
+  if ("heim_getauscht" in spiel) z.heim_getauscht = spiel.heim_getauscht ?? false;
+  if ("spielort_adresse" in spiel) {
+    z.spielort_name = spiel.spielort_name ?? null;
+    z.spielort_adresse = spiel.spielort_adresse ?? null;
+    z.spielort_hinweis = spiel.spielort_hinweis ?? null;
+  }
+  return z;
+}
+
+// neuerTermin: Date oder null ("nur als verlegt markieren"). Gibt { fehler, hinweise, tauschen } zurück.
+async function spielVerlegenAusfuehren({ spiel, neuerTermin, grund, tauschen, mannschaftId, profil }) {
+  const hinweise = [];
+  const neuerIso = neuerTermin ? neuerTermin.toISOString() : null;
+  const tauschenJetzt = Boolean(tauschen) && !spiel.ergebnis;
+
+  // 1. Stand vor der Verlegung sichern. Nur beim ersten Mal: Wird ein schon verlegtes Spiel
+  //    erneut verschoben, bleibt die Sicherung vom ursprünglichen Termin erhalten.
+  const sicherungMoeglich = "verlegt_sicherung" in spiel;
+  let sicherung = null;
+  if (sicherungMoeglich) {
+    if (spiel.verlegt) {
+      sicherung = spiel.verlegt_sicherung ?? null;
+    } else {
+      const { data: alt, error: altFehler } = await supabase
+        .from("spielerplanung_meldungen")
+        .select(MELDUNG_SPALTEN)
+        .eq("spiel_id", spiel.id);
+      if (altFehler) return { fehler: `Die bisherigen Rückmeldungen konnten nicht gesichert werden: ${altFehler.message}`, hinweise };
+      sicherung = { version: 1, am: new Date().toISOString(), meldungen: alt ?? [], zustand: spielZustandFuerSicherung(spiel) };
+    }
+  }
+
+  // 2. Heimrecht tauschen: Heim- und Gastteam wechseln die Plätze, die Halle gehört zum Heimteam
+  let tauschFelder = {};
+  if (tauschenJetzt) {
+    tauschFelder = {
+      ist_heimspiel: !spiel.ist_heimspiel,
+      heimteam: spiel.gastteam,
+      gastteam: spiel.heimteam,
+      // Merker für den Abgleich mit dem Verband (fetch-spielplan), damit das Spiel nicht doppelt angelegt wird
+      heim_getauscht: !spiel.heim_getauscht,
+    };
+    if ("spielort_adresse" in spiel) {
+      const { data: schwester } = await supabase
+        .from("verbands_spiele")
+        .select("spielort_name, spielort_adresse, spielort_hinweis")
+        .eq("saison_id", spiel.saison_id)
+        .eq("heimteam", spiel.gastteam)
+        .not("spielort_adresse", "is", null)
+        .limit(1);
+      tauschFelder = {
+        ...tauschFelder,
+        spielort_name: schwester?.[0]?.spielort_name ?? null,
+        spielort_adresse: schwester?.[0]?.spielort_adresse ?? null,
+        spielort_hinweis: schwester?.[0]?.spielort_hinweis ?? null,
+      };
+    }
+  }
+
+  // 3. Speichern — und prüfen, ob die Datenbank die Änderung wirklich übernommen hat.
+  //    Eine Datenbank-Regel kann sie ohne Fehlermeldung verwerfen; dann kommt hier nichts zurück.
+  const { data: gespeichert, error } = await supabase
+    .from("verbands_spiele")
+    .update({
+      verlegt: true,
+      verlegt_auf: neuerIso,
+      verlegt_grund: grund || null,
+      verlegt_von: profil.id,
+      verlegt_am: new Date().toISOString(),
+      ...(sicherungMoeglich ? { verlegt_sicherung: sicherung } : {}),
+      ...tauschFelder,
+    })
+    .eq("id", spiel.id)
+    .select("id");
+  if (error) return { fehler: error.message, hinweise };
+  if (!gespeichert || gespeichert.length === 0) {
+    return {
+      fehler:
+        "Die Datenbank hat die Verlegung nicht übernommen (vermutlich fehlt die Berechtigung für dieses Spiel). " +
+        "Es wurde nichts geändert, und keine Rückmeldung wurde zurückgesetzt.",
+      hinweise,
+    };
+  }
+  if (!sicherungMoeglich) {
+    hinweise.push("Die Verlegung lässt sich später nicht mit der alten Spielerplanung rückgängig machen (die Datenbank-Spalte dafür fehlt noch).");
+  }
+
+  // 4. Erst jetzt Rückmeldungen zurücksetzen. Krankmeldungen bleiben, wenn der Spieler auch am neuen Termin noch krank ist.
+  const { error: loeschFehler } = await supabase
+    .from("spielerplanung_meldungen")
+    .delete()
+    .eq("spiel_id", spiel.id)
+    .neq("status", "krank");
+  if (loeschFehler) hinweise.push(`Rückmeldungen konnten nicht zurückgesetzt werden: ${loeschFehler.message}`);
+
+  if (neuerIso) {
+    const tag = tagesSchluessel(neuerIso);
+    const { data: krankDaten } = await supabase
+      .from("abwesenheiten")
+      .select("spieler_id")
+      .eq("grund", "krank")
+      .lte("von", tag)
+      .gte("bis", tag);
+    const weiterKrank = [...new Set((krankDaten ?? []).map((k) => k.spieler_id))];
+    let krankLoeschen = supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", spiel.id).eq("status", "krank");
+    if (weiterKrank.length > 0) krankLoeschen = krankLoeschen.not("spieler_id", "in", `(${weiterKrank.join(",")})`);
+    const { error: krankFehler } = await krankLoeschen;
+    if (krankFehler) hinweise.push(`Krankmeldungen konnten nicht angepasst werden: ${krankFehler.message}`);
+
+    // Mannschaft informieren: Das Spiel wurde verlegt, bitte alle neu eintragen
+    supabase.functions.invoke("notify-spielverlegung", {
+      body: {
+        spielId: spiel.id,
+        neuerTermin: neuerIso,
+        altesDatum: spiel.datum,
+        grund: grund || null,
+        mannschaftId,
+        ortGeaendert: tauschenJetzt,
+      },
+    }); // bewusst nicht awaited
+  }
+
+  return { fehler: null, hinweise, tauschen: tauschenJetzt };
+}
+
+// Verlegung zurücknehmen: Termin und Spielort wie vorher, die damaligen Rückmeldungen wieder da.
+async function verlegungRueckgaengigAusfuehren({ spiel, mannschaftId, mailSenden }) {
+  const hinweise = [];
+  const sicherung = spiel.verlegt_sicherung ?? null;
+
+  const felder = {
+    verlegt: false,
+    verlegt_auf: null,
+    verlegt_grund: null,
+    verlegt_von: null,
+    verlegt_am: null,
+    ...("verlegt_sicherung" in spiel ? { verlegt_sicherung: null } : {}),
+    ...(sicherung?.zustand ?? {}), // Heim/Auswärts, Halle usw. wie vor der Verlegung
+  };
+  const { data: geaendert, error } = await supabase.from("verbands_spiele").update(felder).eq("id", spiel.id).select("id");
+  if (error) return { fehler: error.message, hinweise };
+  if (!geaendert || geaendert.length === 0) {
+    return { fehler: "Die Datenbank hat die Änderung nicht übernommen (vermutlich fehlt die Berechtigung für dieses Spiel).", hinweise };
+  }
+
+  if (Array.isArray(sicherung?.meldungen)) {
+    // Antworten, die inzwischen für den Ersatztermin kamen, gelten nicht mehr — die alten kommen zurück
+    const { error: loeschFehler } = await supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", spiel.id);
+    if (loeschFehler) {
+      hinweise.push(`Die alten Rückmeldungen konnten nicht wiederhergestellt werden: ${loeschFehler.message}`);
+    } else if (sicherung.meldungen.length > 0) {
+      const { error: zurueckFehler } = await supabase
+        .from("spielerplanung_meldungen")
+        .upsert(sicherung.meldungen, { onConflict: "spiel_id,spieler_id" });
+      if (zurueckFehler) hinweise.push(`Die alten Rückmeldungen konnten nicht wiederhergestellt werden: ${zurueckFehler.message}`);
+    }
+  } else {
+    hinweise.push("Die alten Rückmeldungen lassen sich nicht wiederherstellen: Für diese Verlegung wurde keine Sicherung angelegt.");
+  }
+
+  if (mailSenden) {
+    supabase.functions.invoke("notify-spielverlegung", {
+      body: { spielId: spiel.id, rueckgaengig: true, altesDatum: spiel.datum, mannschaftId },
+    }); // bewusst nicht awaited
+  }
+  return { fehler: null, hinweise, wiederhergestellt: Array.isArray(sicherung?.meldungen) };
+}
+
 function tagesSchluessel(datum) {
   const d = new Date(datum);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -1897,6 +2075,12 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       datum: lokalFuerEingabe(spiel.verlegt_auf ?? spiel.datum),
       grund: spiel.verlegt_grund ?? "",
       tauschen: false, // true = aus Heim wird Auswärts oder umgekehrt
+      // Ein schon verlegtes Spiel wird direkt bearbeitet; sonst zuerst fragen, ob es schon einen Termin gibt
+      schritt: spiel.verlegt ? "termin" : "frage", // "frage" | "termin" | "vorschlaege"
+      vorschlaege: null,
+      gewaehlt: [],
+      vorschlaegeLaedt: false,
+      vorschlaegeHinweise: [],
     });
   }
 
@@ -2057,109 +2241,32 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     const antworten = Object.values(meldungen[spiel.id] ?? {}).filter((st) => st === "ja" || st === "nein").length;
     if (antworten > 0 && !window.confirm(
       `${antworten === 1 ? "1 Rückmeldung" : `${antworten} Rückmeldungen`} (Kann / Kann nicht) für den bisherigen Termin ` +
-      `${antworten === 1 ? "wird" : "werden"} zurückgesetzt, weil sie sich auf den alten Termin bezogen.\n\nFortfahren?`
+      `${antworten === 1 ? "wird" : "werden"} zurückgesetzt, weil sie sich auf den alten Termin bezogen. ` +
+      `Falls du die Verlegung zurücknimmst, werden sie wiederhergestellt.\n\nFortfahren?`
     )) return;
 
     setVerlegungLadend(true);
     try {
+      const ergebnis = await spielVerlegenAusfuehren({
+        spiel,
+        neuerTermin,
+        grund: verlegung.grund.trim() || null,
+        tauschen: verlegung.tauschen,
+        mannschaftId: saison.mannschaft_id,
+        profil,
+      });
+      if (ergebnis.fehler) return setVerlegungFehler(ergebnis.fehler);
+
       const neuerIso = neuerTermin ? neuerTermin.toISOString() : null;
-
-      // Heimrecht tauschen: Heim- und Gastteam wechseln die Plätze. Die Anschrift der Halle
-      // gehört zum Heimteam und wird deshalb von einem anderen Spiel dieses Teams übernommen.
-      const tauschen = Boolean(verlegung.tauschen) && !spiel.ergebnis;
-      let tauschFelder = {};
-      if (tauschen) {
-        tauschFelder = {
-          ist_heimspiel: !spiel.ist_heimspiel,
-          heimteam: spiel.gastteam,
-          gastteam: spiel.heimteam,
-          // Merker für den Abgleich mit dem Verband (fetch-spielplan), damit das Spiel nicht doppelt angelegt wird
-          heim_getauscht: !spiel.heim_getauscht,
-        };
-        if ("spielort_adresse" in spiel) {
-          const { data: schwester } = await supabase
-            .from("verbands_spiele")
-            .select("spielort_name, spielort_adresse, spielort_hinweis")
-            .eq("saison_id", spiel.saison_id)
-            .eq("heimteam", spiel.gastteam)
-            .not("spielort_adresse", "is", null)
-            .limit(1);
-          tauschFelder = {
-            ...tauschFelder,
-            spielort_name: schwester?.[0]?.spielort_name ?? null,
-            spielort_adresse: schwester?.[0]?.spielort_adresse ?? null,
-            spielort_hinweis: schwester?.[0]?.spielort_hinweis ?? null,
-          };
-        }
-      }
-
-      const { data: gespeichert, error } = await supabase
-        .from("verbands_spiele")
-        .update({
-          verlegt: true,
-          verlegt_auf: neuerIso,
-          verlegt_grund: verlegung.grund.trim() || null,
-          verlegt_von: profil.id,
-          verlegt_am: new Date().toISOString(),
-          ...tauschFelder,
-        })
-        .eq("id", spiel.id)
-        .select("id");
-
-      if (error) return setVerlegungFehler(error.message);
-      // Eine Datenbank-Regel kann die Änderung ohne Fehlermeldung verwerfen — dann kommt hier nichts zurück.
-      if (!gespeichert || gespeichert.length === 0) {
-        return setVerlegungFehler(
-          "Die Datenbank hat die Verlegung nicht übernommen (vermutlich fehlt die Berechtigung für dieses Spiel). " +
-          "Es wurde nichts geändert, und keine Rückmeldung wurde zurückgesetzt."
-        );
-      }
-
-      // Erst jetzt, nachdem die Verlegung sicher gespeichert ist: Rückmeldungen zurücksetzen.
-      // Krankmeldungen bleiben, wenn der Spieler auch am neuen Termin noch krank ist.
-      const hinweise = [];
-      const { error: loeschFehler } = await supabase
-        .from("spielerplanung_meldungen")
-        .delete()
-        .eq("spiel_id", spiel.id)
-        .neq("status", "krank");
-      if (loeschFehler) hinweise.push(`Rückmeldungen konnten nicht zurückgesetzt werden: ${loeschFehler.message}`);
-
-      if (neuerIso) {
-        const tag = tagesSchluessel(neuerIso);
-        const { data: krankDaten } = await supabase
-          .from("abwesenheiten")
-          .select("spieler_id")
-          .eq("grund", "krank")
-          .lte("von", tag)
-          .gte("bis", tag);
-        const weiterKrank = [...new Set((krankDaten ?? []).map((k) => k.spieler_id))];
-        let krankLoeschen = supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", spiel.id).eq("status", "krank");
-        if (weiterKrank.length > 0) krankLoeschen = krankLoeschen.not("spieler_id", "in", `(${weiterKrank.join(",")})`);
-        const { error: krankFehler } = await krankLoeschen;
-        if (krankFehler) hinweise.push(`Krankmeldungen konnten nicht angepasst werden: ${krankFehler.message}`);
-
-        supabase.functions.invoke("notify-spielverlegung", {
-          body: {
-            spielId: spiel.id,
-            neuerTermin: neuerIso,
-            altesDatum: spiel.datum,
-            grund: verlegung.grund.trim() || null,
-            mannschaftId: saison.mannschaft_id,
-            ortGeaendert: tauschen,
-          },
-        }); // bewusst nicht awaited
-      }
-
       setVerlegung(null);
       await laden(true);
       window.alert(
         (neuerIso
           ? `Spiel verlegt auf ${wochentagLang(neuerIso)}, ${formatDatum(neuerIso)}${uhrzeit(neuerIso) ? ` um ${uhrzeit(neuerIso)}` : ""}.\n\n` +
-            "Die Rückmeldungen wurden zurückgesetzt. Deine Mannschaft bekommt eine E-Mail mit altem und neuem Termin."
+            "Die Rückmeldungen wurden zurückgesetzt. Deine Mannschaft bekommt eine E-Mail und trägt sich neu ein."
           : "Spiel als verlegt markiert. Die Spalte ist gesperrt, bis ein Ersatztermin feststeht. Die Rückmeldungen wurden zurückgesetzt.") +
-        (tauschen ? `\n\nDas Spiel ist jetzt ein ${spiel.ist_heimspiel ? "Auswärtsspiel" : "Heimspiel"}.` : "") +
-        (hinweise.length > 0 ? `\n\nHinweis: ${hinweise.join(" · ")}` : "")
+        (ergebnis.tauschen ? `\n\nDas Spiel ist jetzt ein ${spiel.ist_heimspiel ? "Auswärtsspiel" : "Heimspiel"}.` : "") +
+        (ergebnis.hinweise.length > 0 ? `\n\nHinweis: ${ergebnis.hinweise.join(" · ")}` : "")
       );
     } catch (e) {
       setVerlegungFehler(`Unerwarteter Fehler: ${e?.message ?? e}`);
@@ -2168,22 +2275,172 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     }
   }
 
+  // Verlegung zurücknehmen: alter Termin, alter Spielort und die damaligen Rückmeldungen
   async function verlegungAufheben() {
     setVerlegungFehler(null);
-    if (!window.confirm("Verlegung aufheben? Das Spiel gilt dann wieder am ursprünglichen Termin. Bereits zurückgesetzte Rückmeldungen kommen dadurch nicht zurück.")) return;
+    const spiel = verlegung.spiel;
+    const hatSicherung = Array.isArray(spiel.verlegt_sicherung?.meldungen);
+    if (!window.confirm(
+      "Verlegung rückgängig machen?\n\n" +
+      "Das Spiel gilt wieder am ursprünglichen Termin" +
+      (hatSicherung
+        ? ", und die damaligen Rückmeldungen werden wiederhergestellt. Rückmeldungen, die inzwischen für den Ersatztermin gegeben wurden, gehen dabei verloren."
+        : ". Die damaligen Rückmeldungen lassen sich nicht wiederherstellen, weil für diese Verlegung keine Sicherung vorliegt.")
+    )) return;
+
+    // Wurde die Mannschaft über einen neuen Termin informiert, soll sie auch von der Rücknahme erfahren
+    const mailSenden = Boolean(spiel.verlegt_auf) && window.confirm(
+      "Soll deine Mannschaft per E-Mail erfahren, dass die Verlegung zurückgenommen wurde?\n\nOK = E-Mail senden, Abbrechen = keine E-Mail"
+    );
+
     setVerlegungLadend(true);
     try {
-      const { data: geaendert, error } = await supabase
-        .from("verbands_spiele")
-        .update({ verlegt: false, verlegt_auf: null, verlegt_grund: null, verlegt_von: null, verlegt_am: null })
-        .eq("id", verlegung.spiel.id)
-        .select("id");
-      if (error) return setVerlegungFehler(error.message);
-      if (!geaendert || geaendert.length === 0) {
-        return setVerlegungFehler("Die Datenbank hat die Änderung nicht übernommen (vermutlich fehlt die Berechtigung für dieses Spiel).");
-      }
+      const ergebnis = await verlegungRueckgaengigAusfuehren({ spiel, mannschaftId: saison.mannschaft_id, mailSenden });
+      if (ergebnis.fehler) return setVerlegungFehler(ergebnis.fehler);
       setVerlegung(null);
       await laden(true);
+      window.alert(
+        `Verlegung rückgängig gemacht. Das Spiel gilt wieder am ${wochentagLang(spiel.datum)}, ${formatDatum(spiel.datum)}` +
+        `${uhrzeit(spiel.datum) ? ` um ${uhrzeit(spiel.datum)}` : ""}.` +
+        (ergebnis.wiederhergestellt ? " Die damaligen Rückmeldungen sind wieder da." : "") +
+        (ergebnis.hinweise.length > 0 ? `\n\nHinweis: ${ergebnis.hinweise.join(" · ")}` : "")
+      );
+    } catch (e) {
+      setVerlegungFehler(`Unerwarteter Fehler: ${e?.message ?? e}`);
+    } finally {
+      setVerlegungLadend(false);
+    }
+  }
+
+  /* ---- Verlegung ohne festen Termin: freie Termine vorschlagen und per Umfrage abstimmen lassen ---- */
+
+  // Freie Termine holen. Die Edge Function liest den Spielplan der Liga und prüft, dass weder
+  // wir noch der Gegner an dem Tag ein Spiel haben. Fällt sie aus, wird nur mit dem
+  // Vereinsspielplan und dem Kalender gerechnet.
+  async function vorschlaegeHolen(spiel, heimspiel) {
+    setVerlegung((v) => v && { ...v, vorschlaegeLaedt: true, vorschlaege: null, gewaehlt: [], vorschlaegeHinweise: [] });
+    let liste = [];
+    let hinweise = [];
+    try {
+      const { data, error } = await supabase.functions.invoke("terminvorschlaege", { body: { spielId: spiel.id, heimspiel } });
+      if (error || data?.error) throw new Error(await echteFehlermeldung(error, data));
+      liste = data.vorschlaege ?? [];
+      hinweise = data.hinweise ?? [];
+    } catch (e) {
+      const lokal = await verlegungsTermineFinden(spiel, saison.mannschaft_id);
+      const p = (n) => String(n).padStart(2, "0");
+      liste = lokal.map((d) => ({
+        datum: tagesSchluessel(d),
+        uhrzeit: `${p(d.getHours())}:${p(d.getMinutes())}`,
+        hinweis: "",
+      }));
+      hinweise = [
+        `Der Spielplan des Gegners konnte nicht geprüft werden (${e?.message ?? e}). Berücksichtigt wurden nur Spiele und Termine des Vereins.`,
+      ];
+    }
+    setVerlegung((v) => v && { ...v, vorschlaege: liste, gewaehlt: [], vorschlaegeLaedt: false, vorschlaegeHinweise: hinweise });
+  }
+
+  function vorschlaegeStarten() {
+    if (!verlegung) return;
+    const spiel = verlegung.spiel;
+    const heim = verlegung.tauschen && !spiel.ergebnis ? !spiel.ist_heimspiel : Boolean(spiel.ist_heimspiel);
+    setVerlegungFehler(null);
+    setVerlegung({ ...verlegung, schritt: "vorschlaege" });
+    vorschlaegeHolen(spiel, heim);
+  }
+
+  // Heim/Auswärts umstellen; bei den Vorschlägen ändert das den maßgeblichen Spieltag und die Termine werden neu gesucht
+  function spielortWaehlen(tauschen) {
+    const spiel = verlegung.spiel;
+    setVerlegung({ ...verlegung, tauschen });
+    if (verlegung.schritt === "vorschlaege") {
+      vorschlaegeHolen(spiel, tauschen && !spiel.ergebnis ? !spiel.ist_heimspiel : Boolean(spiel.ist_heimspiel));
+    }
+  }
+
+  function vorschlagUmschalten(datum) {
+    setVerlegung((v) => {
+      const schon = v.gewaehlt.includes(datum);
+      if (!schon && v.gewaehlt.length >= VERLEGUNG_MAX_VORSCHLAEGE) return v;
+      return { ...v, gewaehlt: schon ? v.gewaehlt.filter((x) => x !== datum) : [...v.gewaehlt, datum] };
+    });
+  }
+
+  async function terminUmfrageSenden() {
+    setVerlegungFehler(null);
+    if (verlegungLadend) return;
+    const v = verlegung;
+    const spiel = v.spiel;
+    const gewaehlt = (v.vorschlaege ?? []).filter((x) => v.gewaehlt.includes(x.datum)).sort((a, b) => a.datum.localeCompare(b.datum));
+    if (gewaehlt.length === 0) return setVerlegungFehler("Bitte mindestens einen Termin ankreuzen.");
+
+    setVerlegungLadend(true);
+    try {
+      const { data: laufende } = await supabase
+        .from("umfragen")
+        .select("id")
+        .eq("art", "verlegung")
+        .eq("bezug_spiel_id", spiel.id)
+        .limit(1);
+      if (laufende && laufende.length > 0 && !window.confirm("Für dieses Spiel gibt es schon eine Terminumfrage. Trotzdem eine neue senden?")) return;
+
+      const wirdHeim = v.tauschen && !spiel.ergebnis ? !spiel.ist_heimspiel : Boolean(spiel.ist_heimspiel);
+      const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
+      const optionen = [
+        ...gewaehlt.map((x) => {
+          const iso = new Date(`${x.datum}T${x.uhrzeit || "19:30"}:00`).toISOString();
+          return `${wochentagKurz(iso)}, ${formatDatum(iso)}, ${x.uhrzeit || "19:30"} Uhr`;
+        }),
+        "Keiner der Termine passt mir",
+      ];
+
+      // Laufzeit: 3 Tage, aber nie über den ursprünglichen Spieltag hinaus
+      const frist = new Date();
+      frist.setDate(frist.getDate() + 3);
+      const spaetestens = new Date(new Date(spiel.datum).getTime() - 24 * 60 * 60 * 1000);
+      const endetAm = new Date(Math.max(Date.now() + 24 * 60 * 60 * 1000, Math.min(frist.getTime(), spaetestens.getTime())));
+
+      const { data: umfrage, error } = await supabase
+        .from("umfragen")
+        .insert({
+          titel: `Terminabfrage Spielverlegung: ${gegner} (bisher ${formatDatum(spiel.datum)})`,
+          beschreibung:
+            `Das Spiel gegen ${gegner} am ${wochentagLang(spiel.datum)}, ${formatDatum(spiel.datum)}` +
+            `${uhrzeit(spiel.datum) ? ` um ${uhrzeit(spiel.datum)}` : ""} muss verlegt werden. Ein neuer Termin steht noch nicht fest. ` +
+            `Das Spiel findet dann als ${wirdHeim ? "Heimspiel" : "Auswärtsspiel"} statt. ` +
+            `Bitte kreuze alle Termine an, an denen du kannst (Mehrfachauswahl möglich). Der Mannschaftsführer legt danach den Termin fest und sagt euch Bescheid.`,
+          optionen,
+          mehrfachauswahl: true,
+          erstellt_von: profil.id,
+          mannschaft_id: saison.mannschaft_id,
+          art: "verlegung",
+          bezug_spiel_id: spiel.id,
+          ziel_mannschaft_id: saison.mannschaft_id,
+          eskalation_erledigt: true,
+          endet_am: endetAm.toISOString(),
+        })
+        .select()
+        .single();
+      if (error || !umfrage) return setVerlegungFehler(error?.message ?? "Die Umfrage konnte nicht angelegt werden.");
+
+      const { data: team } = await supabase.from("profiles").select("id").eq("mannschaft_id", saison.mannschaft_id);
+      const empfaengerIds = (team ?? []).map((p) => p.id);
+      if (empfaengerIds.length > 0) {
+        await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: umfrage.id, spieler_id })));
+        supabase.functions.invoke("notify-neue-umfrage", {
+          body: { titel: umfrage.titel, beschreibung: umfrage.beschreibung, empfaengerIds },
+        }); // bewusst nicht awaited
+      }
+
+      setVerlegung(null);
+      window.alert(
+        `Die Terminabfrage ist raus an ${empfaengerIds.length} Spieler (bis ${formatDatum(endetAm.toISOString())}).\n\n` +
+        `Das Spiel bleibt bis dahin unverändert. Unter „Umfragen“ siehst du die Antworten und kannst dort „Diesen Termin ansetzen“ wählen — ` +
+        `dann wird das Spiel verlegt und die Mannschaft per E-Mail informiert.`
+      );
+    } catch (e) {
+      setVerlegungFehler(`Unerwarteter Fehler: ${e?.message ?? e}`);
     } finally {
       setVerlegungLadend(false);
     }
@@ -2534,119 +2791,242 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
 
   if (ladend) return <Leerzustand text="Lade Spielerplanung…" />;
 
+  // Auswahl Heim/Auswärts — gilt für beide Wege (Termin steht / Termine vorschlagen)
+  const spielortAuswahl = verlegung && !verlegung.spiel.ergebnis && (
+    <div className="mb-3">
+      <label className="block text-xs text-gray-500 mb-1">
+        Spielort — {verlegung.spiel.ist_heimspiel ? "bisher Heimspiel" : "bisher Auswärtsspiel"} gegen{" "}
+        {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
+      </label>
+      <div className="flex flex-wrap gap-2">
+        {[
+          [false, verlegung.spiel.ist_heimspiel ? "Bleibt Heimspiel" : "Bleibt Auswärtsspiel"],
+          [true, verlegung.spiel.ist_heimspiel ? "Wird Auswärtsspiel" : "Wird Heimspiel"],
+        ].map(([wert, text]) => {
+          const gewaehlt = Boolean(verlegung.tauschen) === wert;
+          return (
+            <button
+              key={text}
+              type="button"
+              onClick={() => spielortWaehlen(wert)}
+              disabled={verlegungLadend}
+              className="px-3 py-1.5 rounded-md text-sm border font-semibold"
+              style={gewaehlt
+                ? { background: COLORS.konflikt, color: "white", borderColor: COLORS.konflikt }
+                : { background: "white", color: "#555" }}
+            >
+              {text}
+            </button>
+          );
+        })}
+      </div>
+      {verlegung.tauschen && (
+        <p className="text-[11px] mt-1" style={{ color: COLORS.konflikt }}>
+          Heim- und Gastteam werden getauscht, die Anschrift der Halle wird angepasst. Dem Verband musst du den Wechsel weiterhin selbst melden.
+        </p>
+      )}
+    </div>
+  );
+
   const verlegungFormular = verlegung && (
     <div className="p-4 border-b sm:border-b rounded-lg sm:rounded-none border sm:border-x-0 sm:border-t-0 mb-3 sm:mb-0" style={{ background: COLORS.paper }}>
-                    <div className="flex items-center gap-2 mb-2">
-                      <CalendarClock size={16} style={{ color: COLORS.konflikt }} />
-                      <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>
-                        Spiel verlegen: {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
-                      </p>
-                    </div>
-                    <p className="text-xs text-gray-500 mb-3">
-                      Ursprünglich am {wochentagLang(verlegung.spiel.datum)}, {formatDatum(verlegung.spiel.datum)}{uhrzeit(verlegung.spiel.datum) ? ` um ${uhrzeit(verlegung.spiel.datum)}` : ""}. Solange kein Ersatztermin feststeht,
-                      ist die Spalte gesperrt und niemand kann sich eintragen. Sobald du einen Termin einträgst,
-                      wird die Spalte wieder freigegeben — bereits gegebene Rückmeldungen werden dabei zurückgesetzt,
-                      weil sie sich auf den alten Termin bezogen.
-                    </p>
-                    <div className="grid sm:grid-cols-2 gap-3 mb-3">
-                      <div className="min-w-0">
-                        <label className="block text-xs text-gray-500 mb-1">Neuer Termin</label>
-                        <input
-                          type="datetime-local"
-                          value={verlegung.datum}
-                          onChange={(e) => { setVerlegungFehler(null); setVerlegung({ ...verlegung, datum: e.target.value }); }}
-                          style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
-                          className="w-full border rounded-md px-3 py-2 text-sm"
-                        />
-                        <p className="text-[11px] mt-1" style={{ color: verlegung.datum ? COLORS.petrol : "#999" }}>
-                          {verlegung.datum && !isNaN(new Date(verlegung.datum).getTime())
-                            ? `→ ${wochentagLang(new Date(verlegung.datum).toISOString())}, ${formatDatum(new Date(verlegung.datum).toISOString())}${uhrzeit(new Date(verlegung.datum).toISOString()) ? ` um ${uhrzeit(new Date(verlegung.datum).toISOString())}` : ""}`
-                            : "Noch kein Termin gewählt"}
-                        </p>
-                      </div>
-                      <div className="min-w-0">
-                        <label className="block text-xs text-gray-500 mb-1">Grund (optional)</label>
-                        <input
-                          value={verlegung.grund}
-                          onChange={(e) => setVerlegung({ ...verlegung, grund: e.target.value })}
-                          placeholder="z. B. zu wenige Spieler"
-                          className="w-full border rounded-md px-3 py-2 text-sm"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-gray-400 mb-2 flex items-start gap-1">
-                      <Mail size={11} className="mt-0.5 shrink-0" />
-                      <span>Sobald du einen neuen Termin ansetzt, bekommt deine Mannschaft automatisch eine E-Mail mit dem alten und dem neuen Termin.</span>
-                    </p>
-                    {!verlegung.spiel.ergebnis && (
-                      <div className="mb-3">
-                        <label className="block text-xs text-gray-500 mb-1">
-                          Spielort — {verlegung.spiel.ist_heimspiel ? "bisher Heimspiel" : "bisher Auswärtsspiel"} gegen{" "}
-                          {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
-                        </label>
-                        <div className="flex flex-wrap gap-2">
-                          {[
-                            [false, verlegung.spiel.ist_heimspiel ? "Bleibt Heimspiel" : "Bleibt Auswärtsspiel"],
-                            [true, verlegung.spiel.ist_heimspiel ? "Wird Auswärtsspiel" : "Wird Heimspiel"],
-                          ].map(([wert, text]) => {
-                            const gewaehlt = Boolean(verlegung.tauschen) === wert;
-                            return (
-                              <button
-                                key={text}
-                                type="button"
-                                onClick={() => setVerlegung({ ...verlegung, tauschen: wert })}
-                                className="px-3 py-1.5 rounded-md text-sm border font-semibold"
-                                style={gewaehlt
-                                  ? { background: COLORS.konflikt, color: "white", borderColor: COLORS.konflikt }
-                                  : { background: "white", color: "#555" }}
-                              >
-                                {text}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        {verlegung.tauschen && (
-                          <p className="text-[11px] mt-1" style={{ color: COLORS.konflikt }}>
-                            Heim- und Gastteam werden getauscht, die Anschrift der Halle wird angepasst. Dem Verband musst du den Wechsel weiterhin selbst melden.
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    {verlegungFehler && (
-                      <p className="text-xs font-semibold mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
-                        {verlegungFehler}
-                      </p>
-                    )}
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={() => verlegungSpeichern(true)}
-                        disabled={verlegungLadend}
-                        className="px-4 py-2 rounded-md text-white text-sm font-semibold"
-                        style={{ background: COLORS.orange, opacity: verlegungLadend ? 0.6 : 1 }}
-                      >
-                        {verlegungLadend ? "Wird gespeichert…" : "Neuen Termin ansetzen"}
-                      </button>
-                      <button
-                        onClick={() => verlegungSpeichern(false)}
-                        disabled={verlegungLadend}
-                        className="px-4 py-2 rounded-md text-sm font-semibold border"
-                        style={{ borderColor: COLORS.konflikt, color: COLORS.konflikt }}
-                      >
-                        Nur als verlegt markieren
-                      </button>
-                      {verlegung.spiel.verlegt && (
-                        <button onClick={verlegungAufheben} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
-                          Verlegung aufheben
-                        </button>
-                      )}
-                      <button onClick={() => setVerlegung(null)} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
-                        Abbrechen
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-gray-400 mt-2">
-                      „Nur als verlegt markieren“ sperrt die Spalte, bis ein Ersatztermin feststeht — ohne E-Mail. Die bisherigen Rückmeldungen werden auch dabei zurückgesetzt.
-                    </p>
-                  </div>
+      <div className="flex items-center gap-2 mb-2">
+        <CalendarClock size={16} style={{ color: COLORS.konflikt }} />
+        <p className="font-semibold text-sm" style={{ color: COLORS.anthracite }}>
+          Spiel verlegen: {verlegung.spiel.ist_heimspiel ? verlegung.spiel.gastteam : verlegung.spiel.heimteam}
+        </p>
+      </div>
+      <p className="text-xs text-gray-500 mb-3">
+        Ursprünglich am {wochentagLang(verlegung.spiel.datum)}, {formatDatum(verlegung.spiel.datum)}
+        {uhrzeit(verlegung.spiel.datum) ? ` um ${uhrzeit(verlegung.spiel.datum)}` : ""}.
+        {verlegung.spiel.verlegt && verlegung.spiel.verlegt_auf
+          ? ` Bisher verlegt auf ${wochentagLang(verlegung.spiel.verlegt_auf)}, ${formatDatum(verlegung.spiel.verlegt_auf)}${uhrzeit(verlegung.spiel.verlegt_auf) ? ` um ${uhrzeit(verlegung.spiel.verlegt_auf)}` : ""}.`
+          : ""}
+      </p>
+
+      {/* Schritt 1: Gibt es schon einen Termin? */}
+      {verlegung.schritt === "frage" && (
+        <div>
+          <p className="text-sm font-semibold mb-2" style={{ color: COLORS.anthracite }}>Gibt es schon einen Termin für die Verlegung?</p>
+          <div className="flex flex-wrap gap-2 mb-2">
+            <button
+              onClick={() => setVerlegung({ ...verlegung, schritt: "termin" })}
+              className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+              style={{ background: COLORS.orange }}
+            >
+              Ja, der Termin steht
+            </button>
+            <button
+              onClick={vorschlaegeStarten}
+              className="px-4 py-2 rounded-md text-sm font-semibold border"
+              style={{ borderColor: COLORS.konflikt, color: COLORS.konflikt }}
+            >
+              Nein, noch nicht
+            </button>
+            <button onClick={() => setVerlegung(null)} className="px-4 py-2 rounded-md text-sm border">
+              Abbrechen
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-400">
+            Ja: Du trägst den Termin ein, deine Mannschaft bekommt eine E-Mail und trägt sich neu ein. Nein: Die App schlägt freie
+            Termine vor und schickt sie als Umfrage an deine Mannschaft — das Spiel bleibt bis zur Entscheidung unverändert.
+          </p>
+        </div>
+      )}
+
+      {/* Schritt 2a: Termin steht */}
+      {verlegung.schritt === "termin" && (
+        <div>
+          <div className="grid sm:grid-cols-2 gap-3 mb-3">
+            <div className="min-w-0">
+              <label className="block text-xs text-gray-500 mb-1">Neuer Termin</label>
+              <input
+                type="datetime-local"
+                value={verlegung.datum}
+                onChange={(e) => { setVerlegungFehler(null); setVerlegung({ ...verlegung, datum: e.target.value }); }}
+                style={{ width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", WebkitAppearance: "none", appearance: "none" }}
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              />
+              <p className="text-[11px] mt-1" style={{ color: verlegung.datum ? COLORS.petrol : "#999" }}>
+                {verlegung.datum && !isNaN(new Date(verlegung.datum).getTime())
+                  ? `→ ${wochentagLang(new Date(verlegung.datum).toISOString())}, ${formatDatum(new Date(verlegung.datum).toISOString())}${uhrzeit(new Date(verlegung.datum).toISOString()) ? ` um ${uhrzeit(new Date(verlegung.datum).toISOString())}` : ""}`
+                  : "Noch kein Termin gewählt"}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <label className="block text-xs text-gray-500 mb-1">Grund (optional)</label>
+              <input
+                value={verlegung.grund}
+                onChange={(e) => setVerlegung({ ...verlegung, grund: e.target.value })}
+                placeholder="z. B. zu wenige Spieler"
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+          <p className="text-[11px] text-gray-400 mb-3 flex items-start gap-1">
+            <Mail size={11} className="mt-0.5 shrink-0" />
+            <span>Sobald du den Termin ansetzt, bekommt deine Mannschaft eine E-Mail: Das Spiel wurde verlegt, bitte alle tragen sich neu ein. Die bisherigen Rückmeldungen werden zurückgesetzt.</span>
+          </p>
+          {spielortAuswahl}
+          {verlegungFehler && (
+            <p className="text-xs font-semibold mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+              {verlegungFehler}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => verlegungSpeichern(true)}
+              disabled={verlegungLadend}
+              className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+              style={{ background: COLORS.orange, opacity: verlegungLadend ? 0.6 : 1 }}
+            >
+              {verlegungLadend ? "Wird gespeichert…" : "Neuen Termin ansetzen"}
+            </button>
+            <button
+              onClick={() => verlegungSpeichern(false)}
+              disabled={verlegungLadend}
+              className="px-4 py-2 rounded-md text-sm font-semibold border"
+              style={{ borderColor: COLORS.konflikt, color: COLORS.konflikt }}
+            >
+              Nur als verlegt markieren
+            </button>
+            {verlegung.spiel.verlegt && (
+              <button
+                onClick={verlegungAufheben}
+                disabled={verlegungLadend}
+                className="px-4 py-2 rounded-md text-sm font-semibold border"
+                style={{ borderColor: COLORS.petrol, color: COLORS.petrol }}
+              >
+                Verlegung rückgängig machen
+              </button>
+            )}
+            {!verlegung.spiel.verlegt && (
+              <button onClick={() => setVerlegung({ ...verlegung, schritt: "frage" })} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
+                Zurück
+              </button>
+            )}
+            <button onClick={() => setVerlegung(null)} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
+              Abbrechen
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-400 mt-2">
+            „Nur als verlegt markieren“ sperrt die Spalte, bis ein Ersatztermin feststeht — ohne E-Mail. „Verlegung rückgängig machen“ stellt Termin, Spielort und die damaligen Rückmeldungen wieder her.
+          </p>
+        </div>
+      )}
+
+      {/* Schritt 2b: noch kein Termin — freie Termine vorschlagen */}
+      {verlegung.schritt === "vorschlaege" && (
+        <div>
+          {spielortAuswahl}
+          <p className="text-sm font-semibold mb-1" style={{ color: COLORS.anthracite }}>Mögliche Termine</p>
+          <p className="text-[11px] text-gray-500 mb-2">
+            An diesen Tagen hat weder deine Mannschaft noch der Gegner ein Spiel, und es ist ein Spieltag einer der beiden Mannschaften.
+            Kreuze an, welche Termine deine Mannschaft zur Auswahl bekommen soll (höchstens {VERLEGUNG_MAX_VORSCHLAEGE}).
+          </p>
+
+          {verlegung.vorschlaegeLaedt ? (
+            <p className="text-sm text-gray-500 flex items-center gap-2 mb-3">
+              <Loader2 size={14} className="animate-spin" /> Freie Termine werden gesucht…
+            </p>
+          ) : (
+            <div className="space-y-1.5 mb-3">
+              {(verlegung.vorschlaege ?? []).length === 0 && (
+                <p className="text-sm text-gray-500">
+                  Es wurden keine freien Termine gefunden. Sprich einen Termin mit dem Gegner ab und trage ihn direkt ein.
+                </p>
+              )}
+              {(verlegung.vorschlaege ?? []).map((v) => {
+                const gewaehlt = verlegung.gewaehlt.includes(v.datum);
+                const iso = new Date(`${v.datum}T${v.uhrzeit || "19:30"}:00`).toISOString();
+                const voll = !gewaehlt && verlegung.gewaehlt.length >= VERLEGUNG_MAX_VORSCHLAEGE;
+                return (
+                  <label
+                    key={v.datum}
+                    className="flex items-start gap-2 text-sm p-2 rounded-md border bg-white"
+                    style={{ opacity: voll ? 0.5 : 1, borderColor: gewaehlt ? COLORS.konflikt : undefined }}
+                  >
+                    <input type="checkbox" checked={gewaehlt} disabled={voll || verlegungLadend} onChange={() => vorschlagUmschalten(v.datum)} className="mt-1" />
+                    <span>
+                      <span className="font-semibold">{wochentagLang(iso)}, {formatDatum(iso)}</span> · {v.uhrzeit || "19:30"} Uhr
+                      {v.hinweis && <span className="block text-[11px] text-gray-400">{v.hinweis}</span>}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          {(verlegung.vorschlaegeHinweise ?? []).map((h, i) => (
+            <p key={i} className="text-[11px] mb-2" style={{ color: COLORS.konflikt }}>{h}</p>
+          ))}
+          {verlegungFehler && (
+            <p className="text-xs font-semibold mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
+              {verlegungFehler}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={terminUmfrageSenden}
+              disabled={verlegungLadend || verlegung.vorschlaegeLaedt || verlegung.gewaehlt.length === 0}
+              className="px-4 py-2 rounded-md text-white text-sm font-semibold"
+              style={{ background: COLORS.orange, opacity: verlegungLadend || verlegung.vorschlaegeLaedt || verlegung.gewaehlt.length === 0 ? 0.5 : 1 }}
+            >
+              {verlegungLadend ? "Wird gesendet…" : `Terminabfrage senden${verlegung.gewaehlt.length > 0 ? ` (${verlegung.gewaehlt.length})` : ""}`}
+            </button>
+            <button onClick={() => setVerlegung({ ...verlegung, schritt: "frage" })} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
+              Zurück
+            </button>
+            <button onClick={() => setVerlegung(null)} disabled={verlegungLadend} className="px-4 py-2 rounded-md text-sm border">
+              Abbrechen
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-400 mt-2">
+            Die Verbandsfristen für Verlegungen werden nicht geprüft. Vor dem Ansetzen bitte mit dem Gegner abstimmen.
+          </p>
+        </div>
+      )}
+    </div>
   );
 
   return (
@@ -5195,6 +5575,8 @@ function Spielerverwaltung({ profil }) {
       mannschaftId: s.mannschaft_id ?? (profil.ist_admin ? "ohne" : ""),
       istAdmin: s.ist_admin ?? false,
       darfNews: s.darf_news ?? false,
+      darfNewsAlle: s.darf_news_alle ?? false,
+      darfNewsAlleVorher: s.darf_news_alle ?? false, // um zu erkennen, ob sich etwas geändert hat
       passnummer: s.passnummer ?? "",
     });
   }
@@ -5211,11 +5593,30 @@ function Spielerverwaltung({ profil }) {
         passnummer: bearbeiteSpielerForm.passnummer,
       },
     });
-    setSpielerBearbeitenLadend(false);
     if (error || data?.error) {
+      setSpielerBearbeitenLadend(false);
       setSpielerBearbeitenFehler(await echteFehlermeldung(error, data));
       return;
     }
+
+    // Die Zusatzberechtigung "für alle Mannschaften" läuft über eine eigene Datenbank-Funktion,
+    // die selbst prüft, dass nur Admins sie vergeben dürfen. Ohne "Darf Neuigkeiten schreiben" entfällt sie.
+    if (profil.ist_admin) {
+      const neuerWert = Boolean(bearbeiteSpielerForm.darfNews && bearbeiteSpielerForm.darfNewsAlle);
+      if (neuerWert !== Boolean(bearbeiteSpielerForm.darfNewsAlleVorher)) {
+        const { error: rechtFehler } = await supabase.rpc("setze_darf_news_alle", {
+          p_spieler_id: bearbeiteSpielerId,
+          p_wert: neuerWert,
+        });
+        if (rechtFehler) {
+          setSpielerBearbeitenLadend(false);
+          setSpielerBearbeitenFehler(`Die übrigen Änderungen sind gespeichert, aber „für alle Mannschaften“ nicht: ${rechtFehler.message}`);
+          ladenAlles();
+          return;
+        }
+      }
+    }
+    setSpielerBearbeitenLadend(false);
     setBearbeiteSpielerId(null);
     ladenAlles();
   }
@@ -5525,10 +5926,26 @@ function Spielerverwaltung({ profil }) {
                     <span>
                       Darf Neuigkeiten schreiben
                       <span className="block text-[11px] text-gray-400">
-                        Auch ohne Mannschaftsführer-Rolle — etwa für jemanden, der die Vereinsnachrichten pflegt.
+                        Auch ohne Mannschaftsführer-Rolle — etwa für jemanden, der die Vereinsnachrichten pflegt. Ohne die Zusatzoption schreibt er nur für die eigene Mannschaft.
                       </span>
                     </span>
                   </label>
+                  {profil.ist_admin && bearbeiteSpielerForm.darfNews && (
+                    <label className="flex items-start gap-2 text-sm ml-6">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(bearbeiteSpielerForm.darfNewsAlle)}
+                        onChange={(e) => setBearbeiteSpielerForm({ ...bearbeiteSpielerForm, darfNewsAlle: e.target.checked })}
+                        className="mt-1"
+                      />
+                      <span>
+                        … auch für alle Mannschaften und den ganzen Verein
+                        <span className="block text-[11px] text-gray-400">
+                          Dann kann er bei jedem Beitrag wählen, wer ihn sieht.
+                        </span>
+                      </span>
+                    </label>
+                  )}
                   {spielerBearbeitenFehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{spielerBearbeitenFehler}</p>}
                   <div className="flex gap-2">
                     <button onClick={spielerBearbeitenSpeichern} disabled={spielerBearbeitenLadend} className="px-3 py-1.5 rounded-md text-white text-xs font-semibold" style={{ background: COLORS.orange, opacity: spielerBearbeitenLadend ? 0.6 : 1 }}>
@@ -5560,7 +5977,7 @@ function Spielerverwaltung({ profil }) {
                       )}
                       {s.darf_news && !s.ist_admin && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ml-2" style={{ background: "#E4F2EE", color: COLORS.petrol }}>
-                          Neuigkeiten
+                          {s.darf_news_alle ? "Neuigkeiten · alle Teams" : "Neuigkeiten"}
                         </span>
                       )}
                       {/* Zeigt, wer sich noch nie selbst angemeldet und ein eigenes Passwort vergeben hat */}
@@ -5886,7 +6303,7 @@ function Umfragen({ profil, zielUmfrageId }) {
     }
   }
 
-  async function terminAnsetzen(umfrage, datumTag) {
+  async function terminAnsetzen(umfrage, datumTag, optionText) {
     if (!umfrage.bezug_spiel_id) return setFehler("Zu dieser Umfrage ist kein Spiel hinterlegt.");
     setFehler(null);
 
@@ -5897,43 +6314,40 @@ function Umfragen({ profil, zielUmfrageId }) {
       .maybeSingle();
     if (!spiel) return setFehler("Das zugehörige Spiel wurde nicht gefunden.");
 
-    // Anspielzeit vom ursprünglichen Termin übernehmen
+    // Uhrzeit: Neue Terminumfragen nennen sie in der Option, ältere nicht — dann gilt die vom ursprünglichen Termin
     const ursprung = new Date(spiel.datum);
+    const zeit = String(optionText ?? "").match(/(\d{1,2}):(\d{2})/);
+    const std = zeit ? Number(zeit[1]) : ursprung.getHours();
+    const min = zeit ? Number(zeit[2]) : ursprung.getMinutes();
     const [jahr, monat, tag] = datumTag.split("-").map(Number);
-    const neuerTermin = new Date(jahr, monat - 1, tag, ursprung.getHours(), ursprung.getMinutes(), 0, 0);
+    const neuerTermin = new Date(jahr, monat - 1, tag, std, min, 0, 0);
+
+    // Heim oder Auswärts: Steht in der Beschreibung der Umfrage ("… findet dann als Heimspiel statt")
+    const ort = String(umfrage.beschreibung ?? "").match(/als (Heimspiel|Auswärtsspiel) statt/);
+    const sollHeim = ort ? ort[1] === "Heimspiel" : Boolean(spiel.ist_heimspiel);
+    const tauschen = sollHeim !== Boolean(spiel.ist_heimspiel) && !spiel.ergebnis;
 
     const bestaetigt = window.confirm(
       `Spiel gegen ${spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam} verbindlich auf ` +
       `${neuerTermin.toLocaleString("de-DE", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} Uhr legen?\n\n` +
+      (tauschen ? `Das Spiel wird dabei zum ${sollHeim ? "Heimspiel" : "Auswärtsspiel"}.\n\n` : "") +
       `Bitte nur bestätigen, wenn der Termin mit dem Gegner abgesprochen ist. ` +
-      `Die bisherigen Rückmeldungen zu diesem Spiel werden zurückgesetzt.`
+      `Die bisherigen Rückmeldungen zu diesem Spiel werden zurückgesetzt — bei einer Rücknahme der Verlegung kommen sie wieder.`
     );
     if (!bestaetigt) return;
 
-    const { error } = await supabase
-      .from("verbands_spiele")
-      .update({
-        verlegt: true,
-        verlegt_auf: neuerTermin.toISOString(),
-        verlegt_grund: "Neuer Termin aus der Umfrage",
-        verlegt_von: profil.id,
-        verlegt_am: new Date().toISOString(),
-      })
-      .eq("id", spiel.id);
-    if (error) return setFehler(error.message);
+    const ergebnis = await spielVerlegenAusfuehren({
+      spiel,
+      neuerTermin,
+      grund: "Neuer Termin aus der Umfrage",
+      tauschen,
+      mannschaftId: umfrage.ziel_mannschaft_id ?? umfrage.mannschaft_id ?? null,
+      profil,
+    });
+    if (ergebnis.fehler) return setFehler(ergebnis.fehler);
 
-    await supabase.from("spielerplanung_meldungen").delete().eq("spiel_id", spiel.id);
     await supabase.from("umfragen").update({ endet_am: new Date().toISOString() }).eq("id", umfrage.id);
-
-    supabase.functions.invoke("notify-spielverlegung", {
-      body: {
-        spielId: spiel.id,
-        neuerTermin: neuerTermin.toISOString(),
-        altesDatum: spiel.datum,
-        grund: "Termin aus der Umfrage übernommen",
-        mannschaftId: umfrage.ziel_mannschaft_id ?? umfrage.mannschaft_id ?? null,
-      },
-    }); // bewusst nicht awaited
+    if (ergebnis.hinweise.length > 0) window.alert(`Hinweis: ${ergebnis.hinweise.join(" · ")}`);
 
     laden();
   }
@@ -6468,7 +6882,7 @@ function UmfrageKarte({ umfrage, antworten, zielAnzahl, zielIds = [], profil, sp
                   )}
                 {umfrage.art === "verlegung" && darfMannschaftVerwalten(profil, umfrage.mannschaft_id) && terminAusOption(option) && (
                   <button
-                    onClick={() => onTerminAnsetzen?.(umfrage, terminAusOption(option))}
+                    onClick={() => onTerminAnsetzen?.(umfrage, terminAusOption(option), option)}
                     className="text-[11px] font-semibold mt-1 underline"
                     style={{ color: COLORS.konflikt }}
                   >
@@ -8762,6 +9176,9 @@ function News({ profil }) {
   const [fehler, setFehler] = useState(null);
 
   const darfSchreiben = profil.ist_admin || istTeamLeiter(profil) || profil.darf_news === true;
+  // Admins und Personen mit der Zusatzberechtigung dürfen für jede Mannschaft und den ganzen Verein schreiben,
+  // alle anderen nur für die eigene Mannschaft
+  const darfFuerAlle = Boolean(profil.ist_admin || profil.darf_news_alle === true);
 
   async function laden() {
     setLadend(true);
@@ -8785,8 +9202,8 @@ function News({ profil }) {
       setForm({ titel: beitrag.titel, inhalt: beitrag.inhalt, mannschaftId: beitrag.mannschaft_id ?? "" });
     } else {
       setBearbeiteId(null);
-      // Mannschaftsführer schreiben standardmäßig für die eigene Mannschaft
-      setForm({ titel: "", inhalt: "", mannschaftId: profil.ist_admin ? "" : (profil.mannschaft_id ?? "") });
+      // Wer nur für die eigene Mannschaft schreiben darf, startet mit ihr; wer für alle schreiben darf, mit dem ganzen Verein
+      setForm({ titel: "", inhalt: "", mannschaftId: darfFuerAlle ? "" : (profil.mannschaft_id ?? "") });
     }
     setFormOffen(true);
   }
@@ -8862,16 +9279,16 @@ function News({ profil }) {
           <select
             value={form.mannschaftId}
             onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })}
-            disabled={!profil.ist_admin}
+            disabled={!darfFuerAlle}
             className="w-full border rounded-md px-3 py-2 text-sm mb-3"
-            style={{ opacity: profil.ist_admin ? 1 : 0.7 }}
+            style={{ opacity: darfFuerAlle ? 1 : 0.7 }}
           >
             <option value="">Ganzer Verein</option>
             {mannschaften.map((m) => <option key={m.id} value={m.id}>Nur {m.name}</option>)}
           </select>
-          {!profil.ist_admin && (
+          {!darfFuerAlle && (
             <p className="text-[11px] text-gray-400 mb-3">
-              Du schreibst für deine eigene Mannschaft. Vereinsweite Beiträge kann ein Admin anlegen.
+              Du schreibst für deine eigene Mannschaft. Beiträge für andere Mannschaften oder den ganzen Verein kann ein Admin anlegen — oder er gibt dir diese Berechtigung.
             </p>
           )}
           {fehler && <p className="text-xs mb-2" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
