@@ -230,6 +230,20 @@ function effektivesSpielDatum(spiel) {
   return spiel?.verlegt_auf ?? spiel?.datum ?? null;
 }
 
+// Verlegt UND der ursprüngliche Termin ist bekannt — nur dann gibt es etwas durchzustreichen.
+// Bei vom Verband verlegten Spielen ohne bekannten alten Termin sind datum und verlegt_auf gleich.
+function verlegungMitAltemTermin(spiel) {
+  return (
+    Boolean(spiel?.verlegt && spiel?.verlegt_auf && spiel?.datum) &&
+    Math.abs(new Date(spiel.verlegt_auf).getTime() - new Date(spiel.datum).getTime()) >= 60000
+  );
+}
+
+// Wurde die Verlegung vom Verband (TischtennisLive) gemeldet — nicht in der App eingetragen?
+function vomVerbandVerlegt(spiel) {
+  return Boolean(spiel?.verlegt) && spiel?.verlegt_grund === "Vom Verband verlegt";
+}
+
 // Solange kein Ersatztermin feststeht, kann sich niemand eintragen
 function spielGesperrt(spiel) {
   return Boolean(spiel?.verlegt) && !spiel?.verlegt_auf;
@@ -1334,7 +1348,16 @@ async function spielVerlegenAusfuehren({ spiel, neuerTermin, grund, tauschen, ma
     })
     .eq("id", spiel.id)
     .select("id");
-  if (error) return { fehler: error.message, hinweise };
+  if (error) {
+    // 23505 = doppelter Eintrag: Das Spiel gibt es mit vertauschtem Heim- und Gastteam schon (z. B. durch einen früheren Spielplan-Abgleich)
+    const doppelt = error.code === "23505" || /duplicate key|natural_key/i.test(error.message ?? "");
+    return {
+      fehler: doppelt
+        ? "Dieses Spiel gibt es in der Datenbank schon mit vertauschtem Heim- und Gastteam — vermutlich ein doppelter Eintrag aus dem Spielplan-Abgleich. Es wurde nichts geändert und keine Rückmeldung zurückgesetzt. Bitte den Admin informieren."
+        : error.message,
+      hinweise,
+    };
+  }
   if (!gespeichert || gespeichert.length === 0) {
     return {
       fehler:
@@ -2908,6 +2931,12 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
             <span>Sobald du den Termin ansetzt, bekommt deine Mannschaft eine E-Mail: Das Spiel wurde verlegt, bitte alle tragen sich neu ein. Die bisherigen Rückmeldungen werden zurückgesetzt.</span>
           </p>
           {spielortAuswahl}
+          {vomVerbandVerlegt(verlegung.spiel) && (
+            <p className="text-[11px] mb-3" style={{ color: COLORS.konflikt }}>
+              Dieses Spiel hat der Verband (TischtennisLive) verlegt. Beim nächsten Abgleich übernimmt die App dessen Termin wieder,
+              deshalb gibt es hier kein „Rückgängig“. Eine Änderung musst du beim Verband veranlassen.
+            </p>
+          )}
           {verlegungFehler && (
             <p className="text-xs font-semibold mb-3 p-2 rounded-md" style={{ background: "#FBE2DA", color: COLORS.orangeDeep }}>
               {verlegungFehler}
@@ -2930,7 +2959,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
             >
               Nur als verlegt markieren
             </button>
-            {verlegung.spiel.verlegt && (
+            {verlegung.spiel.verlegt && !vomVerbandVerlegt(verlegung.spiel) && (
               <button
                 onClick={verlegungAufheben}
                 disabled={verlegungLadend}
@@ -3145,10 +3174,15 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                     <div className="flex items-start justify-between gap-2 text-white">
                       <div className="min-w-0">
                         <p className="font-semibold text-sm">
-                          <span style={s.verlegt && s.verlegt_auf ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
+                          <span style={verlegungMitAltemTermin(s) ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
                             {wochentagLang(s.datum)}, {formatDatum(s.datum)}
                           </span>
-                          {s.verlegt && s.verlegt_auf && <span className="block">→ {wochentagLang(s.verlegt_auf)}, {formatDatum(s.verlegt_auf)}</span>}
+                          {verlegungMitAltemTermin(s) && <span className="block">→ {wochentagLang(s.verlegt_auf)}, {formatDatum(s.verlegt_auf)}</span>}
+                          {s.verlegt && s.verlegt_auf && (vomVerbandVerlegt(s) || !verlegungMitAltemTermin(s)) && (
+                            <span className="block text-[11px] font-normal opacity-90">
+                              {verlegungMitAltemTermin(s) ? "vom Verband verlegt" : "verlegt (laut Verband)"}
+                            </span>
+                          )}
                         </p>
                         <p className="text-xs opacity-90">
                           {uhrzeit(termin) && `${uhrzeit(termin)} · `}
@@ -3350,18 +3384,23 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                         style={{ background: COLORS.petrolDark, ...kopfStil }}
                       >
                         <div className="flex items-center justify-center gap-1">
-                          <span style={s.verlegt && s.verlegt_auf ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
+                          <span style={verlegungMitAltemTermin(s) ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
                             {wochentagLang(s.datum)}, {formatDatum(s.datum)}
                           </span>
                           {hatUeberschneidung && !gesperrt && <CalendarClock size={13} />}
                         </div>
-                        {!s.verlegt_auf && uhrzeit(s.datum) && (
+                        {!verlegungMitAltemTermin(s) && uhrzeit(s.datum) && (
                           <div className="text-[11px] font-normal opacity-80">{uhrzeit(s.datum)}</div>
                         )}
-                        {s.verlegt && s.verlegt_auf && (
+                        {verlegungMitAltemTermin(s) && (
                           <div className="text-[11px] font-semibold mt-0.5">
                             → {wochentagLang(s.verlegt_auf)}, {formatDatum(s.verlegt_auf)}
                             {uhrzeit(s.verlegt_auf) && <span className="block font-normal opacity-90">{uhrzeit(s.verlegt_auf)}</span>}
+                          </div>
+                        )}
+                        {s.verlegt && s.verlegt_auf && (vomVerbandVerlegt(s) || !verlegungMitAltemTermin(s)) && (
+                          <div className="text-[10px] font-semibold mt-0.5">
+                            {verlegungMitAltemTermin(s) ? "vom Verband verlegt" : "verlegt (laut Verband)"}
                           </div>
                         )}
                         {gesperrt && <div className="text-[10px] font-semibold mt-0.5">verlegt · Termin offen</div>}
