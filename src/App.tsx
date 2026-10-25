@@ -2660,6 +2660,23 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       setFehler(await echteFehlermeldung(error, data));
       return;
     }
+
+    // Rückmeldung, was der Abgleich verändert hat — sonst sieht man nicht, ob etwas passiert ist
+    const zeilen = [];
+    if (data?.verbandVerlegt > 0) {
+      zeilen.push(`${data.verbandVerlegt === 1 ? "1 Spiel" : `${data.verbandVerlegt} Spiele`} vom Verband als verlegt gekennzeichnet`);
+    }
+    if (data?.alteEintraegeBereinigt > 0) {
+      zeilen.push(`${data.alteEintraegeBereinigt === 1 ? "1 überholter Eintrag" : `${data.alteEintraegeBereinigt} überholte Einträge`} bereinigt`);
+    }
+    if (data?.hinweise?.length > 0) zeilen.push(`Hinweis: ${data.hinweise.join(" · ")}`);
+
+    if (zeilen.length > 0) {
+      window.alert(`Spielplan aktualisiert.\n\n• ${zeilen.join("\n• ")}`);
+    } else if (!data?.version && profil.ist_admin) {
+      // Eine ältere Version der Function liefert keine Angaben — nur für Admins ein Hinweis
+      window.alert("Spielplan aktualisiert.\n\nHinweis: Die Supabase-Function „fetch-spielplan“ ist noch nicht auf dem neuesten Stand. Verlegungen und Tausch vom Verband werden erst mit der neuen Version übernommen.");
+    }
     laden();
   }
 
