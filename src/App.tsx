@@ -396,6 +396,43 @@ async function echteFehlermeldung(error, data) {
   return error?.message ?? "Unbekannter Fehler";
 }
 
+// Woher die Daten kommen — damit man nach dem Aktualisieren sieht, ob sie aktuell sind und aus welcher Quelle
+const QUELLEN_NAMEN = {
+  xml: "TischtennisLive (XML-Schnittstelle)",
+  ical: "Kalender-Export von TischtennisLive",
+  vereinsseite: "Vereinsseite ttv97-kamenz.de",
+  webseite: "Webseite von TischtennisLive",
+};
+
+function abrufStatus(data) {
+  const jetzt = new Date();
+  const datum = jetzt.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", timeZone: "Europe/Berlin" });
+  const uhr = jetzt.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" });
+  const quelle = QUELLEN_NAMEN[data?.quelle];
+  return {
+    text: `Aktuell — abgerufen am ${datum} um ${uhr} Uhr${quelle ? ` · Quelle: ${quelle}` : ""}`,
+    hinweise: Array.isArray(data?.hinweise) ? data.hinweise : [],
+    ersatz: Boolean(quelle) && data?.quelle !== "xml",
+  };
+}
+
+function AbrufStatus({ status }) {
+  if (!status) return null;
+  return (
+    <div className="text-xs space-y-0.5">
+      <p style={{ color: COLORS.petrol }}>
+        <span className="font-bold">✓</span> {status.text}
+      </p>
+      {status.ersatz && status.hinweise.length > 0 && (
+        <p className="text-gray-500">Die Hauptquelle war nicht nutzbar, deshalb wurde eine Ersatzquelle verwendet. Die Daten sind trotzdem aktuell.</p>
+      )}
+      {status.hinweise.map((h) => (
+        <p key={h} className="text-gray-500">Hinweis: {h}</p>
+      ))}
+    </div>
+  );
+}
+
 /* ---------- Login ---------- */
 
 const APP_ADRESSE = "https://derkeili.github.io/ttv-kamenz-dashboard/";
@@ -1917,6 +1954,7 @@ function Tabelle({ saison, profil }) {
   const [zeilen, setZeilen] = useState([]);
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [status, setStatus] = useState(null);
   const [fehler, setFehler] = useState(null);
 
   async function laden(still = false) {
@@ -1935,14 +1973,20 @@ function Tabelle({ saison, profil }) {
     if (error || data?.error) {
       // Beim automatischen Abruf im Hintergrund keine Fehlermeldung zeigen —
       // die bereits vorhandenen Daten bleiben einfach stehen.
-      if (!automatisch) setFehler(await echteFehlermeldung(error, data));
+      if (!automatisch) {
+        setStatus(null);
+        setFehler(await echteFehlermeldung(error, data));
+      }
       return;
     }
+    setFehler(null);
+    setStatus(abrufStatus(data));
     laden(true);
   }
 
   useEffect(() => {
     if (!saison) return;
+    setStatus(null);
     let abgebrochen = false;
     (async () => {
       await laden();
@@ -1986,6 +2030,7 @@ function Tabelle({ saison, profil }) {
       </div>
 
       {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+      <AbrufStatus status={status} />
 
       {ladend ? (
         <Leerzustand text="Lade Tabelle…" />
@@ -2036,6 +2081,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
   const [ueberschneidungen, setUeberschneidungen] = useState({}); // { [datumTag]: [{mannschaftName, gegner, istHeimspiel}] }
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [status, setStatus] = useState(null);
   const [fehler, setFehler] = useState(null);
   const [verlegung, setVerlegung] = useState(null); // { spiel, datum, grund }
   const [verlegungLadend, setVerlegungLadend] = useState(false);
@@ -2649,10 +2695,11 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     setLadend(false);
   }
 
-  useEffect(() => { if (saison) laden(); }, [saison, runde]);
+  useEffect(() => { setStatus(null); if (saison) laden(); }, [saison, runde]);
 
   async function aktualisieren() {
     setFehler(null);
+    setStatus(null);
     setAktualisiertLadend(true);
     const { data, error } = await supabase.functions.invoke("fetch-spielplan", { body: { saisonId: saison.id, runde } });
     setAktualisiertLadend(false);
@@ -2660,6 +2707,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       setFehler(await echteFehlermeldung(error, data));
       return;
     }
+    setStatus(abrufStatus(data));
 
     // Rückmeldung, was der Abgleich verändert hat — sonst sieht man nicht, ob etwas passiert ist
     const zeilen = [];
@@ -2669,7 +2717,6 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     if (data?.alteEintraegeBereinigt > 0) {
       zeilen.push(`${data.alteEintraegeBereinigt === 1 ? "1 überholter Eintrag" : `${data.alteEintraegeBereinigt} überholte Einträge`} bereinigt`);
     }
-    if (data?.hinweise?.length > 0) zeilen.push(`Hinweis: ${data.hinweise.join(" · ")}`);
 
     if (zeilen.length > 0) {
       window.alert(`Spielplan aktualisiert.\n\n• ${zeilen.join("\n• ")}`);
@@ -3109,6 +3156,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
         </div>
       </div>
       {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+      <AbrufStatus status={status} />
 
       {aufstellungFuer && (
         <AufstellungFenster
@@ -4958,6 +5006,7 @@ function Kader({ saison, profil }) {
   const [info, setInfo] = useState(null);
   const [ladend, setLadend] = useState(true);
   const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
+  const [status, setStatus] = useState(null);
   const [fehler, setFehler] = useState(null);
   const [abwesenheiten, setAbwesenheiten] = useState([]);
   const [abwesenheitFuerId, setAbwesenheitFuerId] = useState(null); // offenes Formular
@@ -5036,10 +5085,11 @@ function Kader({ saison, profil }) {
     setLadend(false);
   }
 
-  useEffect(() => { if (saison) laden(); }, [saison]);
+  useEffect(() => { setStatus(null); setFehler(null); if (saison) laden(); }, [saison]);
 
   async function aktualisieren() {
     setFehler(null);
+    setStatus(null);
     setAktualisiertLadend(true);
     const { data, error } = await supabase.functions.invoke("fetch-mannschaft", { body: { saisonId: saison.id } });
     setAktualisiertLadend(false);
@@ -5047,6 +5097,7 @@ function Kader({ saison, profil }) {
       setFehler(await echteFehlermeldung(error, data));
       return;
     }
+    setStatus(abrufStatus(data));
     laden();
   }
 
@@ -9987,6 +10038,7 @@ function Analyse({ saison, profil }) {
         </div>
 
         {fehler && <p className="text-xs mb-3" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+        <div className="mb-3"><AbrufStatus status={status} /></div>
         {stand && (
           <p className="text-[11px] text-gray-400 mb-3">
             Gegnerdaten vom {new Date(stand).toLocaleString("de-DE")}
