@@ -410,7 +410,7 @@ function abrufStatus(data) {
   const uhr = jetzt.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" });
   const quelle = QUELLEN_NAMEN[data?.quelle];
   return {
-    text: `Aktuell — abgerufen am ${datum} um ${uhr} Uhr${quelle ? ` · Quelle: ${quelle}` : ""}`,
+    text: `Aktuell — abgerufen am ${datum} um ${uhr} Uhr${quelle ? ` · Quelle: ${quelle}` : ""}${typeof data?.neu === "number" && data.neu > 0 ? ` · ${data.neu === 1 ? "1 neuer Bericht" : `${data.neu} neue Berichte`}` : ""}`,
     hinweise: Array.isArray(data?.hinweise) ? data.hinweise : [],
     ersatz: Boolean(quelle) && data?.quelle !== "xml",
   };
@@ -949,7 +949,7 @@ function PasswortAendern({ profil }) {
 
 /* ---------- Dashboard ---------- */
 
-function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender, onOeffneBericht }) {
+function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffneKalender, onOeffneBericht, onOeffneVerlegung }) {
   const [ladend, setLadend] = useState(true);
   const [eigenerTabellenplatz, setEigenerTabellenplatz] = useState(null);
   const [naechstesSpiel, setNaechstesSpiel] = useState(null);
@@ -1002,7 +1002,9 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
         </div>
       )}
 
-      <NeueSpielberichte profil={profil} onOeffnen={onOeffneBericht} onSchreiben={() => onOeffneBericht("neu")} />
+      <VerlegungsRueckfragen profil={profil} onPruefen={(spiel, mannschaftId) => onOeffneVerlegung?.(mannschaftId, spiel.id)} />
+
+      <NeueSpielberichte profil={profil} onOeffnen={onOeffneBericht} />
 
       <News profil={profil} />
 
@@ -1650,67 +1652,27 @@ function UmfrageEskalation({ profil }) {
           continue;
         }
 
-        // Wettlauf vermeiden: nur wer die Markierung setzt, legt die Folge-Umfrage an.
+        // Es wird NICHT mehr automatisch eine Umfrage an die Mannschaft geschickt. Stattdessen wird die
+        // Mannschaftsführung gefragt, ob eine Terminumfrage zur Verlegung gestartet werden soll.
+        if (!umfrage.bezug_spiel_id || !umfrage.ziel_mannschaft_id) continue;
+        const { data: spiel } = await supabase.from("verbands_spiele").select("*").eq("id", umfrage.bezug_spiel_id).maybeSingle();
+        const spielTermin = spiel ? effektivesSpielDatum(spiel) : null;
+        if (!spiel || !spielTermin || new Date(spielTermin) < new Date()) {
+          // Das Spiel gibt es nicht mehr oder es ist schon vorbei — nichts mehr zu entscheiden
+          await supabase.from("umfragen").update({ eskalation_erledigt: true }).eq("id", umfrage.id).eq("eskalation_erledigt", false);
+          continue;
+        }
+
+        // Wettlauf vermeiden: nur wer die Markierung setzt, löst die Rückfrage aus.
         const { data: markiert } = await supabase
           .from("umfragen")
-          .update({ eskalation_erledigt: true, endet_am: new Date().toISOString() })
+          .update({ eskalation_erledigt: true, endet_am: new Date().toISOString(), verlegung_rueckfrage: "offen" })
           .eq("id", umfrage.id)
           .eq("eskalation_erledigt", false)
           .select("id");
         if (!markiert || markiert.length === 0) continue;
 
-        if (!umfrage.bezug_spiel_id || !umfrage.ziel_mannschaft_id) continue;
-
-        const { data: spiel } = await supabase
-          .from("verbands_spiele")
-          .select("*")
-          .eq("id", umfrage.bezug_spiel_id)
-          .maybeSingle();
-        if (!spiel || !spiel.datum) continue;
-        if (new Date(spiel.datum) < new Date()) continue; // Spiel liegt schon in der Vergangenheit
-
-        const termine = await verlegungsTermineFinden(spiel, umfrage.ziel_mannschaft_id);
-        const gegner = spiel.ist_heimspiel ? spiel.gastteam : spiel.heimteam;
-        const optionen = [
-          ...termine.map((t) => `${wochentagKurz(t)}, ${formatDatum(t.toISOString())}`),
-          "Keiner der Termine passt mir",
-        ];
-
-        const { data: verlegung } = await supabase
-          .from("umfragen")
-          .insert({
-            titel: `Spielverlegung nötig: ${gegner} am ${formatDatum(spiel.datum)}`,
-            beschreibung:
-              `Für dieses Spiel hat sich aus den angefragten Mannschaften niemand als Aushilfe gemeldet. ` +
-              `Deshalb soll das Spiel verlegt werden. ` +
-              (termine.length > 0
-                ? `Die folgenden Termine sind laut Spielplan und Vereinskalender frei — bitte alle Termine ankreuzen, an denen du kannst (Mehrfachauswahl möglich).`
-                : `Es konnten automatisch keine freien Ausweichtermine gefunden werden — bitte meldet euch direkt beim Mannschaftsführer.`),
-            optionen,
-            mehrfachauswahl: true,
-            erstellt_von: profil.id,
-            mannschaft_id: umfrage.ziel_mannschaft_id,
-            art: "verlegung",
-            bezug_spiel_id: spiel.id,
-            ziel_mannschaft_id: umfrage.ziel_mannschaft_id,
-            eskalation_erledigt: true,
-          })
-          .select()
-          .single();
-
-        if (!verlegung) continue;
-
-        const { data: eigeneSpieler } = await supabase
-          .from("profiles")
-          .select("id")
-          .eq("mannschaft_id", umfrage.ziel_mannschaft_id);
-        const empfaengerIds = (eigeneSpieler ?? []).map((s) => s.id);
-        if (empfaengerIds.length > 0) {
-          await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: verlegung.id, spieler_id })));
-          supabase.functions.invoke("notify-neue-umfrage", {
-            body: { titel: verlegung.titel, beschreibung: verlegung.beschreibung, empfaengerIds },
-          }); // bewusst nicht awaited
-        }
+        supabase.functions.invoke("notify-verlegung-rueckfrage", { body: { umfrageId: umfrage.id } }); // bewusst nicht awaited
       }
     })();
 
@@ -1718,6 +1680,96 @@ function UmfrageEskalation({ profil }) {
   }, [profil?.id]);
 
   return null;
+}
+
+/* ---------- Rückfrage: Soll das Spiel verlegt werden? ----------
+   Hat bei einer Aushilfe-Anfrage niemand zugesagt, schickt die App NICHT von sich aus eine Umfrage raus.
+   Sie fragt hier die Mannschaftsführung. Die sieht die vorgeschlagenen Termine, wählt aus (oder ergänzt einen
+   eigenen) und startet die Umfrage selbst — oder lässt das Spiel, wie es ist. */
+
+function VerlegungsRueckfragen({ profil, mannschaftId = null, onPruefen }) {
+  const [karten, setKarten] = useState([]);
+  const [beschaeftigt, setBeschaeftigt] = useState(null);
+
+  async function laden() {
+    if (!profil?.ist_admin && !istTeamLeiter(profil)) return setKarten([]);
+    const { data: offene } = await supabase
+      .from("umfragen")
+      .select("id, bezug_spiel_id, ziel_mannschaft_id")
+      .eq("art", "aushilfe")
+      .eq("verlegung_rueckfrage", "offen");
+    const passende = (offene ?? []).filter(
+      (u) => u.bezug_spiel_id && darfMannschaftVerwalten(profil, u.ziel_mannschaft_id) && (!mannschaftId || u.ziel_mannschaft_id === mannschaftId)
+    );
+    if (passende.length === 0) return setKarten([]);
+
+    const spielIds = [...new Set(passende.map((u) => u.bezug_spiel_id))];
+    const [{ data: spiele }, { data: verlegungen }, { data: teams }] = await Promise.all([
+      supabase.from("verbands_spiele").select("*").in("id", spielIds),
+      supabase.from("umfragen").select("bezug_spiel_id").eq("art", "verlegung").in("bezug_spiel_id", spielIds),
+      supabase.from("mannschaften").select("id, name"),
+    ]);
+    const schonUmfrage = new Set((verlegungen ?? []).map((v) => v.bezug_spiel_id));
+    const liste = [];
+    const gesehen = new Set();
+    for (const u of passende) {
+      const spiel = (spiele ?? []).find((x) => x.id === u.bezug_spiel_id);
+      if (!spiel || gesehen.has(spiel.id) || schonUmfrage.has(spiel.id) || spiel.verlegt) continue;
+      const termin = effektivesSpielDatum(spiel);
+      if (!termin || new Date(termin) < new Date()) continue;
+      gesehen.add(spiel.id);
+      liste.push({ umfrageId: u.id, spiel, mannschaftId: u.ziel_mannschaft_id, team: (teams ?? []).find((t) => t.id === u.ziel_mannschaft_id)?.name ?? "" });
+    }
+    liste.sort((a, b) => effektivesSpielDatum(a.spiel).localeCompare(effektivesSpielDatum(b.spiel)));
+    setKarten(liste);
+  }
+
+  useEffect(() => { laden(); }, [profil?.id, mannschaftId]);
+
+  async function ablehnen(karte) {
+    if (!window.confirm("Das Spiel bleibt unverändert, und es wird niemand angeschrieben. Die Rückfrage verschwindet. Okay?")) return;
+    setBeschaeftigt(karte.umfrageId);
+    await supabase.from("umfragen").update({ verlegung_rueckfrage: "abgelehnt" }).eq("id", karte.umfrageId);
+    setBeschaeftigt(null);
+    laden();
+  }
+
+  if (karten.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      {karten.map((k) => {
+        const termin = effektivesSpielDatum(k.spiel);
+        const gegner = k.spiel.ist_heimspiel ? k.spiel.gastteam : k.spiel.heimteam;
+        return (
+          <div key={k.umfrageId} className="rounded-lg border p-4" style={{ background: "#FFF7F1", borderColor: COLORS.orange }}>
+            <p className="text-sm font-bold" style={{ color: COLORS.anthracite }}>Soll das Spiel verlegt werden?</p>
+            <p className="text-xs text-gray-600 mt-1 leading-relaxed">
+              {k.team ? `${k.team}: ` : ""}{k.spiel.ist_heimspiel ? "Heimspiel" : "Auswärtsspiel"} gegen {gegner} am {wochentagLang(termin)}, {formatDatum(termin)}
+              {uhrzeit(termin) ? ` um ${uhrzeit(termin)} Uhr` : ""}. Bei der Aushilfe-Anfrage hat sich niemand gemeldet.
+              Du entscheidest, ob eine Terminumfrage zur Verlegung gestartet wird — es wird nichts automatisch verschickt.
+            </p>
+            <div className="flex flex-wrap gap-2 mt-3">
+              <button
+                onClick={() => onPruefen?.(k.spiel, k.mannschaftId)}
+                className="px-3 py-2 rounded-md text-white text-xs font-semibold"
+                style={{ background: COLORS.orange }}
+              >
+                Ja, Termine auswählen
+              </button>
+              <button
+                onClick={() => ablehnen(k)}
+                disabled={beschaeftigt === k.umfrageId}
+                className="px-3 py-2 rounded-md text-xs border font-semibold bg-white"
+              >
+                Nein, Spiel bleibt
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /* ---------- Mannschaftsübersicht: nächstes Spiel & Zusagen aller Mannschaften ---------- */
@@ -2072,7 +2124,7 @@ function Tabelle({ saison, profil }) {
 
 /* ---------- Spielerplanung ---------- */
 
-function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
+function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId, onZielVerlegungVerbraucht }) {
   const [runde, setRunde] = useState("Hinrunde");
   const [spiele, setSpiele] = useState([]);
   const [spieler, setSpieler] = useState([]);
@@ -2428,6 +2480,62 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
     }
   }
 
+  // Aus der Rückfrage "Soll das Spiel verlegt werden?": direkt zu den vorgeschlagenen Terminen
+  function rueckfrageBearbeiten(spiel) {
+    setFehler(null);
+    setVerlegungFehler(null);
+    setVerlegung({
+      spiel,
+      datum: lokalFuerEingabe(spiel.verlegt_auf ?? spiel.datum),
+      grund: "Keine Aushilfe gefunden",
+      tauschen: false,
+      schritt: "vorschlaege",
+      vorschlaege: null,
+      gewaehlt: [],
+      vorschlaegeLaedt: false,
+      vorschlaegeHinweise: [],
+    });
+    vorschlaegeHolen(spiel, Boolean(spiel.ist_heimspiel));
+  }
+
+  // Vom Dashboard angesprungen: das Spiel kann in der anderen Runde liegen
+  useEffect(() => {
+    if (!zielVerlegungSpielId) return;
+    const treffer = spiele.find((x) => x.id === zielVerlegungSpielId);
+    if (treffer) {
+      rueckfrageBearbeiten(treffer);
+      onZielVerlegungVerbraucht?.();
+      return;
+    }
+    (async () => {
+      const { data } = await supabase.from("verbands_spiele").select("runde").eq("id", zielVerlegungSpielId).maybeSingle();
+      if (data?.runde && data.runde !== runde) setRunde(data.runde);
+      else if (!data) onZielVerlegungVerbraucht?.();
+    })();
+  }, [zielVerlegungSpielId, spiele]);
+
+  // Eigenen Termin zur Auswahl ergänzen (zusätzlich zu den vorgeschlagenen)
+  function eigenenTerminHinzufuegen() {
+    setVerlegungFehler(null);
+    const v = verlegung;
+    if (!v?.eigenesDatum) return setVerlegungFehler("Bitte ein Datum für den eigenen Termin wählen.");
+    const zeit = v.eigeneZeit || uhrzeit(v.spiel.datum) || "19:30";
+    if (new Date(`${v.eigenesDatum}T${zeit}:00`) < new Date()) return setVerlegungFehler("Dieser Termin liegt in der Vergangenheit.");
+    const schon = v.gewaehlt.includes(v.eigenesDatum);
+    if (!schon && v.gewaehlt.length >= VERLEGUNG_MAX_VORSCHLAEGE) {
+      return setVerlegungFehler(`Es sind schon ${VERLEGUNG_MAX_VORSCHLAEGE} Termine ausgewählt. Nimm erst einen heraus.`);
+    }
+    setVerlegung((x) => ({
+      ...x,
+      vorschlaege: [
+        ...(x.vorschlaege ?? []).filter((p) => p.datum !== x.eigenesDatum),
+        { datum: x.eigenesDatum, uhrzeit: zeit, hinweis: "Eigener Termin", eigen: true },
+      ].sort((a, b) => a.datum.localeCompare(b.datum)),
+      gewaehlt: [...new Set([...x.gewaehlt, x.eigenesDatum])],
+      eigenesDatum: "",
+    }));
+  }
+
   function vorschlagUmschalten(datum) {
     setVerlegung((v) => {
       const schon = v.gewaehlt.includes(datum);
@@ -2493,18 +2601,32 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
         .single();
       if (error || !umfrage) return setVerlegungFehler(error?.message ?? "Die Umfrage konnte nicht angelegt werden.");
 
-      const { data: team } = await supabase.from("profiles").select("id").eq("mannschaft_id", saison.mannschaft_id);
-      const empfaengerIds = (team ?? []).map((p) => p.id);
+      // Wer an ALLEN zur Wahl stehenden Terminen krank gemeldet ist, kann nicht spielen und wird nicht gefragt
+      // (weder in der App noch per Mail).
+      const [{ data: team }, { data: krankMeldungen }] = await Promise.all([
+        supabase.from("profiles").select("id, vorname, nachname").eq("mannschaft_id", saison.mannschaft_id),
+        supabase.from("abwesenheiten").select("spieler_id, von, bis").eq("grund", "krank"),
+      ]);
+      const tage = gewaehlt.map((x) => x.datum);
+      const krankDurchgehend = (id) =>
+        tage.length > 0 && tage.every((t) => (krankMeldungen ?? []).some((a) => a.spieler_id === id && a.von <= t && a.bis >= t));
+      const nichtAngefragt = (team ?? []).filter((p) => krankDurchgehend(p.id));
+      const empfaengerIds = (team ?? []).filter((p) => !krankDurchgehend(p.id)).map((p) => p.id);
       if (empfaengerIds.length > 0) {
         await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: umfrage.id, spieler_id })));
         supabase.functions.invoke("notify-neue-umfrage", {
           body: { titel: umfrage.titel, beschreibung: umfrage.beschreibung, empfaengerIds },
         }); // bewusst nicht awaited
       }
+      // Eine offene Rückfrage zu diesem Spiel ist damit beantwortet
+      await supabase.from("umfragen").update({ verlegung_rueckfrage: "gestartet" }).eq("bezug_spiel_id", spiel.id).eq("art", "aushilfe").eq("verlegung_rueckfrage", "offen");
 
       setVerlegung(null);
       window.alert(
         `Die Terminabfrage ist raus an ${empfaengerIds.length} Spieler (bis ${formatDatum(endetAm.toISOString())}).\n\n` +
+        (nichtAngefragt.length > 0
+          ? `Nicht angefragt, weil in dieser Zeit krank gemeldet: ${nichtAngefragt.map((p) => `${p.vorname} ${p.nachname}`).join(", ")}.\n\n`
+          : "") +
         `Das Spiel bleibt bis dahin unverändert. Unter „Umfragen“ siehst du die Antworten und kannst dort „Diesen Termin ansetzen“ wählen — ` +
         `dann wird das Spiel verlegt und die Mannschaft per E-Mail informiert.`
       );
@@ -3055,7 +3177,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
           <p className="text-sm font-semibold mb-1" style={{ color: COLORS.anthracite }}>Mögliche Termine</p>
           <p className="text-[11px] text-gray-500 mb-2">
             An diesen Tagen hat weder deine Mannschaft noch der Gegner ein Spiel, und es ist ein Spieltag einer der beiden Mannschaften.
-            Kreuze an, welche Termine deine Mannschaft zur Auswahl bekommen soll (höchstens {VERLEGUNG_MAX_VORSCHLAEGE}).
+            Kreuze an, welche Termine deine Mannschaft zur Auswahl bekommen soll (höchstens {VERLEGUNG_MAX_VORSCHLAEGE}) — oder ergänze unten einen eigenen.
+            Es geht erst etwas an die Mannschaft raus, wenn du „Terminabfrage senden“ wählst.
           </p>
 
           {verlegung.vorschlaegeLaedt ? (
@@ -3066,7 +3189,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
             <div className="space-y-1.5 mb-3">
               {(verlegung.vorschlaege ?? []).length === 0 && (
                 <p className="text-sm text-gray-500">
-                  Es wurden keine freien Termine gefunden. Sprich einen Termin mit dem Gegner ab und trage ihn direkt ein.
+                  Es wurden keine freien Termine gefunden. Ergänze unten einen eigenen Termin oder sprich einen Termin mit dem Gegner ab und trage ihn direkt ein.
                 </p>
               )}
               {(verlegung.vorschlaege ?? []).map((v) => {
@@ -3087,6 +3210,30 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
                   </label>
                 );
               })}
+            </div>
+          )}
+
+          {!verlegung.vorschlaegeLaedt && (
+            <div className="rounded-md border p-2.5 mb-3 bg-white">
+              <p className="text-xs font-semibold mb-1.5" style={{ color: COLORS.anthracite }}>Eigenen Termin ergänzen</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="date"
+                  value={verlegung.eigenesDatum ?? ""}
+                  min={tagesSchluessel(new Date())}
+                  onChange={(e) => setVerlegung({ ...verlegung, eigenesDatum: e.target.value })}
+                  className="border rounded-md px-2 py-1 text-sm"
+                />
+                <input
+                  type="time"
+                  value={verlegung.eigeneZeit ?? (uhrzeit(verlegung.spiel.datum) || "19:30")}
+                  onChange={(e) => setVerlegung({ ...verlegung, eigeneZeit: e.target.value })}
+                  className="border rounded-md px-2 py-1 text-sm"
+                />
+                <button onClick={eigenenTerminHinzufuegen} disabled={verlegungLadend} className="px-3 py-1 rounded-md text-xs border font-semibold">
+                  Zur Auswahl hinzufügen
+                </button>
+              </div>
             </div>
           )}
 
@@ -3157,6 +3304,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen }) {
       </div>
       {fehler && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
       <AbrufStatus status={status} />
+
+      <VerlegungsRueckfragen profil={profil} mannschaftId={saison.mannschaft_id} onPruefen={(spiel) => rueckfrageBearbeiten(spiel)} />
 
       {aufstellungFuer && (
         <AufstellungFenster
@@ -9525,6 +9674,8 @@ function darfBerichteSchreiben(profil) {
 }
 
 function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
+  const [status, setStatus] = useState(null);
+  const [aktualisiertLadend, setAktualisiertLadend] = useState(false);
   const [berichte, setBerichte] = useState([]);
   const [autoren, setAutoren] = useState({});
   const [mannschaften, setMannschaften] = useState([]);
@@ -9552,12 +9703,30 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
     setLadend(false);
   }
 
-  useEffect(() => { laden(); }, [profil.id]);
+  // Die Berichte werden auf der Vereinsseite geschrieben. Hier holt die App neue ab und legt sie an; für jeden
+  // neuen Bericht geht die Benachrichtigung an alle, die sie möchten (macht die Function).
+  async function vonVereinsseiteHolen({ automatisch = false } = {}) {
+    autoAktualisierungMerken("spielberichte");
+    if (!automatisch) { setFehler(null); setStatus(null); }
+    setAktualisiertLadend(true);
+    const { data, error } = await supabase.functions.invoke("fetch-spielberichte", { body: {} });
+    setAktualisiertLadend(false);
+    if (error || data?.error) {
+      if (!automatisch) setFehler(await echteFehlermeldung(error, data));
+      return;
+    }
+    setStatus(abrufStatus({ ...data, quelle: "vereinsseite" }));
+    if (data?.neu > 0 || data?.aktualisiert > 0) laden();
+  }
 
-  // Vom Dashboard herübergesprungen: entweder Formular öffnen oder zum Bericht
+  useEffect(() => {
+    laden();
+    if (autoAktualisierungFaellig("spielberichte")) vonVereinsseiteHolen({ automatisch: true });
+  }, [profil.id]);
+
+  // Vom Dashboard herübergesprungen: zum Bericht
   useEffect(() => {
     if (zielBerichtId === "neu") {
-      formularOeffnen(null);
       onZielVerbraucht?.();
       return;
     }
@@ -9644,16 +9813,26 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
             </button>
           );
         })}
-        {darfSchreiben && !formOffen && (
+        {darfSchreiben && (
           <button
-            onClick={() => formularOeffnen(null)}
-            className="ml-auto text-xs px-3 py-2 rounded-md text-white font-semibold flex items-center gap-1"
-            style={{ background: COLORS.orange }}
+            onClick={() => vonVereinsseiteHolen()}
+            disabled={aktualisiertLadend}
+            className="ml-auto text-xs px-3 py-2 rounded-md text-white font-semibold"
+            style={{ background: COLORS.orange, opacity: aktualisiertLadend ? 0.6 : 1 }}
           >
-            <Plus size={13} /> Bericht schreiben
+            {aktualisiertLadend ? "Lädt…" : "Jetzt aktualisieren"}
           </button>
         )}
       </div>
+
+      <p className="text-xs text-gray-500">
+        Spielberichte werden auf der Vereinsseite veröffentlicht und erscheinen hier automatisch.{" "}
+        <a href="https://www.ttv97-kamenz.de/spielberichte-1-mannschaft/" target="_blank" rel="noreferrer" className="underline" style={{ color: COLORS.petrol }}>
+          Zur Vereinsseite
+        </a>
+      </p>
+      {fehler && !formOffen && <p className="text-xs" style={{ color: COLORS.orangeDeep }}>{fehler}</p>}
+      <AbrufStatus status={status} />
 
       {formOffen && (
         <div className="bg-white rounded-lg border p-4">
@@ -9700,7 +9879,7 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
       {ladend ? (
         <Leerzustand text="Lade Spielberichte…" />
       ) : sichtbare.length === 0 ? (
-        <Leerzustand text={darfSchreiben ? "Noch kein Bericht — schreib den ersten." : "Für diese Auswahl gibt es noch keine Spielberichte."} />
+        <Leerzustand text="Für diese Auswahl gibt es noch keine Spielberichte." />
       ) : (
         sichtbare.map((b) => {
           const autor = autoren[b.autor_id];
@@ -9719,6 +9898,7 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
                   <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px] text-gray-400">
                     <span>{new Date(b.erstellt_am).toLocaleDateString("de-DE", { day: "2-digit", month: "long", year: "numeric" })}</span>
                     {autor && <span>· {autor.vorname} {autor.nachname}</span>}
+                    {b.quelle_url && <span>· von der Vereinsseite</span>}
                     {team && (
                       <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#E4F2EE", color: COLORS.petrol }}>
                         {team.name}
@@ -9727,7 +9907,7 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
                     {b.aktualisiert_am && <span>· bearbeitet</span>}
                   </div>
                 </div>
-                {darfSchreiben && (
+                {darfSchreiben && !b.quelle_url && (
                   <div className="flex items-center gap-2 shrink-0">
                     {loeschenBestaetigung === b.id ? (
                       <>
@@ -9737,8 +9917,7 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
                       </>
                     ) : (
                       <>
-                        <button onClick={() => formularOeffnen(b)} className="text-gray-400 hover:text-gray-600"><Pencil size={14} /></button>
-                        <button onClick={() => loeschen(b.id)} style={{ color: COLORS.orangeDeep }}><Trash2 size={14} /></button>
+                        <button onClick={() => loeschen(b.id)} style={{ color: COLORS.orangeDeep }} title="Alten, in der App geschriebenen Bericht löschen"><Trash2 size={14} /></button>
                       </>
                     )}
                   </div>
@@ -9747,6 +9926,11 @@ function Spielberichte({ profil, zielBerichtId, onZielVerbraucht }) {
               <p className="text-sm text-gray-600 mt-3 whitespace-pre-wrap leading-relaxed">
                 <TextMitLinks text={b.inhalt} />
               </p>
+              {b.quelle_url && (
+                <a href={b.quelle_url} target="_blank" rel="noreferrer" className="inline-block mt-3 text-xs font-semibold underline" style={{ color: COLORS.petrol }}>
+                  Auf der Vereinsseite lesen
+                </a>
+              )}
             </div>
           );
         })
@@ -9773,27 +9957,14 @@ function NeueSpielberichte({ profil, onOeffnen, onSchreiben }) {
     })();
   }, []);
 
-  const darfSchreiben = darfBerichteSchreiben(profil);
-  // Ohne Berichte und ohne Schreibrecht gibt es hier nichts zu zeigen
-  if (berichte.length === 0 && !darfSchreiben) return null;
+  // Ohne Berichte gibt es hier nichts zu zeigen
+  if (berichte.length === 0) return null;
 
   return (
     <div className="bg-white rounded-lg border p-5">
       <div className="flex items-start justify-between gap-3">
         <SectionLabel icon={FileText}>Neue Spielberichte</SectionLabel>
-        {darfSchreiben && (
-          <button
-            onClick={onSchreiben}
-            className="text-xs px-3 py-2 rounded-md text-white font-semibold flex items-center gap-1 shrink-0"
-            style={{ background: COLORS.orange }}
-          >
-            <Plus size={13} /> Bericht schreiben
-          </button>
-        )}
       </div>
-      {berichte.length === 0 && (
-        <p className="text-sm text-gray-400 mt-3">Noch kein Bericht — schreib den ersten.</p>
-      )}
 
       <div className="mt-3 space-y-2">
         {berichte.map((b) => {
@@ -11801,6 +11972,7 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [zielUmfrageId, setZielUmfrageId] = useState(null);
   const [zielBerichtId, setZielBerichtId] = useState(null); // vom Dashboard angesprungener Spielbericht
+  const [zielVerlegungSpielId, setZielVerlegungSpielId] = useState(null); // Spiel, dessen Verlegung die Mannschaftsführung prüfen soll
   const [zielSpielerId, setZielSpielerId] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
   const [saisons, setSaisons] = useState([]);
@@ -12094,6 +12266,11 @@ export default function App() {
                     setTab("nachrichten");
                   }}
                   onOeffneKalender={() => setTab("kalender")}
+                  onOeffneVerlegung={(mannschaftId, spielId) => {
+                    setAusgewaehlteMannschaftId(mannschaftId);
+                    setZielVerlegungSpielId(spielId);
+                    setTab("planung");
+                  }}
                 />
               )}
 
@@ -12130,6 +12307,8 @@ export default function App() {
                       saison={angezeigteSaison}
                       profil={profil}
                       onOeffneUmfragen={(umfrageId) => { setZielUmfrageId(umfrageId); setTab("umfragen"); }}
+                      zielVerlegungSpielId={zielVerlegungSpielId}
+                      onZielVerlegungVerbraucht={() => setZielVerlegungSpielId(null)}
                     />
                   )}
                   {tab === "kader" && <Kader saison={angezeigteSaison} profil={profil} />}
