@@ -1893,7 +1893,7 @@ function MannschaftsUebersicht({ profil }) {
       if (empfaengerIds.length > 0) {
         await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: neueUmfrage.id, spieler_id })));
         supabase.functions.invoke("notify-neue-umfrage", {
-          body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
+          body: { umfrageId: neueUmfrage.id, titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
         }); // bewusst nicht awaited
       }
       mindestensEine = true;
@@ -2127,6 +2127,9 @@ function Tabelle({ saison, profil }) {
 function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId, onZielVerlegungVerbraucht }) {
   const [runde, setRunde] = useState("Hinrunde");
   const [spiele, setSpiele] = useState([]);
+  const tabellenBehaelter = useRef(null); // waagerecht scrollender Bereich der Tabelle (Tablet/PC)
+  const [gesprungenFuer, setGesprungenFuer] = useState(null); // Saison+Runde, für die schon zum nächsten Spiel gesprungen wurde
+  const [rundeGeprueftFuer, setRundeGeprueftFuer] = useState(null); // Saison, für die schon geprüft wurde, ob die Hinrunde komplett gespielt ist
   const [spieler, setSpieler] = useState([]);
   const [meldungen, setMeldungen] = useState({}); // { [spielId]: { [spielerId]: status } }
   const [benoetigteSpieler, setBenoetigteSpieler] = useState(4);
@@ -2320,7 +2323,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId
         }
 
         supabase.functions.invoke("notify-neue-umfrage", {
-          body: { titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
+          body: { umfrageId: neueUmfrage.id, titel: neueUmfrage.titel, beschreibung: neueUmfrage.beschreibung, empfaengerIds },
         }); // bewusst nicht awaited
 
         erfolge.push(`${ziel.name} (${empfaengerIds.length} Spieler)`);
@@ -2480,6 +2483,38 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId
     }
   }
 
+  // Beim Öffnen: Ist die Hinrunde schon komplett gespielt, gleich die Rückrunde zeigen — einmalig, danach
+  // entscheidet der Nutzer selbst.
+  useEffect(() => {
+    if (ladend || !saison || runde !== "Hinrunde" || rundeGeprueftFuer === saison.id) return;
+    // Nur auswerten, wenn die geladenen Spiele wirklich zu dieser Saison und Runde gehören (nicht noch die der vorigen)
+    if (spiele.length > 0 && (spiele[0].saison_id !== saison.id || spiele[0].runde !== "Hinrunde")) return;
+    setRundeGeprueftFuer(saison.id);
+    if (spiele.length > 0 && spiele.every((x) => spielVorbei(x))) setRunde("Rückrunde");
+  }, [ladend, spiele, runde, saison?.id, rundeGeprueftFuer]);
+
+  // Zum nächsten anstehenden Spiel springen. Tablet/PC: Die Tabelle scrollt so, dass seine Spalte gleich hinter
+  // der Spielerspalte steht. Handy: Seine Karte rückt ins Bild. Gespielte Spiele bleiben links bzw. oben erreichbar.
+  useEffect(() => {
+    if (ladend || spiele.length === 0 || !saison) return;
+    // Noch die Spiele einer anderen Saison oder Runde (Umschalten läuft gerade)? Dann abwarten.
+    if (spiele[0].saison_id !== saison.id || spiele[0].runde !== runde) return;
+    const schluessel = `${saison.id}-${runde}`;
+    if (gesprungenFuer === schluessel) return;
+    const naechstes = spiele.find((x) => !spielVorbei(x)) ?? spiele[spiele.length - 1];
+
+    const behaelter = tabellenBehaelter.current;
+    if (behaelter && behaelter.offsetParent !== null) {
+      const spalte = behaelter.querySelector(`[data-spiel="${naechstes.id}"]`);
+      const erste = behaelter.querySelector("thead th");
+      if (spalte) behaelter.scrollLeft = Math.max(0, spalte.offsetLeft - (erste?.offsetWidth ?? 0));
+    }
+    const karte = document.getElementById(`spielkarte-${naechstes.id}`);
+    if (karte && karte.offsetParent !== null) karte.scrollIntoView({ block: "start" });
+
+    setGesprungenFuer(schluessel);
+  }, [ladend, spiele, runde]);
+
   // Aus der Rückfrage "Soll das Spiel verlegt werden?": direkt zu den vorgeschlagenen Terminen
   function rueckfrageBearbeiten(spiel) {
     setFehler(null);
@@ -2615,7 +2650,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId
       if (empfaengerIds.length > 0) {
         await supabase.from("umfrage_ziele").insert(empfaengerIds.map((spieler_id) => ({ umfrage_id: umfrage.id, spieler_id })));
         supabase.functions.invoke("notify-neue-umfrage", {
-          body: { titel: umfrage.titel, beschreibung: umfrage.beschreibung, empfaengerIds },
+          body: { umfrageId: umfrage.id, titel: umfrage.titel, beschreibung: umfrage.beschreibung, empfaengerIds },
         }); // bewusst nicht awaited
       }
       // Eine offene Rückfrage zu diesem Spiel ist damit beantwortet
@@ -3381,7 +3416,8 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId
               return (
                 <div
                   key={s.id}
-                  className="bg-white rounded-lg border overflow-hidden"
+                  id={`spielkarte-${s.id}`}
+                  className="bg-white rounded-lg border overflow-hidden scroll-mt-4"
                   style={vorbei ? { opacity: 0.55 } : {}}
                 >
                   <div className="p-3" style={{ background: vorbei ? "#6B6B63" : gesperrt ? "#4A4A44" : parallel.length > 0 ? COLORS.konflikt : COLORS.petrolDark }}>
@@ -3566,7 +3602,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId
             })}
           </div>
 
-          <div className="hidden sm:block bg-white rounded-lg border overflow-auto max-h-[75vh]">
+          <div ref={tabellenBehaelter} className="hidden sm:block bg-white rounded-lg border overflow-auto max-h-[75vh]">
             {verlegungFormular}
 
             <table className="w-full text-sm min-w-[640px]">
@@ -3594,6 +3630,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId
                     return (
                       <th
                         key={s.id}
+                        data-spiel={s.id}
                         className="p-3 text-center font-medium min-w-[128px]"
                         style={{ background: COLORS.petrolDark, ...kopfStil }}
                       >
@@ -6684,7 +6721,7 @@ function Umfragen({ profil, zielUmfrageId }) {
     }
 
     supabase.functions.invoke("notify-neue-umfrage", {
-      body: { titel: form.titel.trim(), beschreibung: form.beschreibung.trim() || null, empfaengerIds },
+      body: { umfrageId: neueUmfrage.id, titel: form.titel.trim(), beschreibung: form.beschreibung.trim() || null, empfaengerIds },
     }); // bewusst nicht awaited
 
     setSpeichernLadend(false);
@@ -8516,7 +8553,7 @@ function Turniere({ profil }) {
         .single();
       if (neueUmfrage) {
         updates.umfrage_id = neueUmfrage.id;
-        supabase.functions.invoke("notify-neue-umfrage", { body: { titel: neueUmfrage.titel, empfaengerIds: null } });
+        supabase.functions.invoke("notify-neue-umfrage", { body: { umfrageId: neueUmfrage.id, titel: neueUmfrage.titel, empfaengerIds: null } });
       }
     }
 
@@ -11966,11 +12003,22 @@ function NeueVersionHinweis() {
   );
 }
 
+// Einsprung aus einer E-Mail: Die Adresse enthält ?umfrage=<id>. Nach der Anmeldung öffnet die App dann direkt
+// diese Umfrage. Der Wert wird beim Laden der Seite gemerkt, damit er die Anmeldung übersteht.
+const EINSPRUNG_UMFRAGE = (() => {
+  try {
+    return typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("umfrage") : null;
+  } catch {
+    return null;
+  }
+})();
+
 export default function App() {
   const [profil, setProfil] = useState(null);
   const [sessionGeprueft, setSessionGeprueft] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [zielUmfrageId, setZielUmfrageId] = useState(null);
+  const [einsprungUmfrage, setEinsprungUmfrage] = useState(EINSPRUNG_UMFRAGE);
   const [zielBerichtId, setZielBerichtId] = useState(null); // vom Dashboard angesprungener Spielbericht
   const [zielVerlegungSpielId, setZielVerlegungSpielId] = useState(null); // Spiel, dessen Verlegung die Mannschaftsführung prüfen soll
   const [zielSpielerId, setZielSpielerId] = useState(null);
@@ -11980,6 +12028,21 @@ export default function App() {
   const [mannschaften, setMannschaften] = useState([]);
   const [ausgewaehlteMannschaftId, setAusgewaehlteMannschaftId] = useState(null);
   const [passwortZuruecksetzen, setPasswortZuruecksetzen] = useState(false);
+
+  // Link aus einer E-Mail: nach der Anmeldung direkt zur Umfrage springen und die Adresse wieder aufräumen
+  useEffect(() => {
+    if (!einsprungUmfrage || !profil?.id) return;
+    setZielUmfrageId(einsprungUmfrage);
+    setTab("umfragen");
+    setEinsprungUmfrage(null);
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("umfrage");
+      window.history.replaceState({ tab: "umfragen" }, "", u.pathname + u.search + u.hash);
+    } catch {
+      // Adresse bleibt, wie sie ist — harmlos
+    }
+  }, [einsprungUmfrage, profil?.id]);
 
   // Android-Zurücktaste: erst offene Ebenen schließen, dann zum vorherigen Reiter
   useEffect(() => {
