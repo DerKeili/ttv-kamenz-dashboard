@@ -8152,15 +8152,31 @@ function AenderungshinweisVerwaltung() {
   const [beschreibung, setBeschreibung] = useState("");
   const [gespeichert, setGespeichert] = useState(false);
   const [ladend, setLadend] = useState(false);
+  const [perMail, setPerMail] = useState(false);
+  const [mailInfo, setMailInfo] = useState(null);
 
   async function anlegen() {
     if (!titel.trim() || !beschreibung.trim()) return;
     setLadend(true);
-    const { error } = await supabase.from("app_updates").insert({ titel: titel.trim(), beschreibung: beschreibung.trim() });
+    setMailInfo(null);
+    const { data: neu, error } = await supabase
+      .from("app_updates")
+      .insert({ titel: titel.trim(), beschreibung: beschreibung.trim() })
+      .select("id")
+      .single();
+    if (!error && perMail && neu?.id) {
+      const { data, error: mailFehler } = await supabase.functions.invoke("notify-update", { body: { updateId: neu.id } });
+      setMailInfo(
+        mailFehler || data?.error
+          ? `Der Hinweis ist angelegt, die E-Mail ging aber nicht raus: ${await echteFehlermeldung(mailFehler, data)}`
+          : `E-Mail an ${data?.gesendet ?? 0} Personen gesendet.`
+      );
+    }
     setLadend(false);
     if (!error) {
       setTitel("");
       setBeschreibung("");
+      setPerMail(false);
       setGespeichert(true);
       setTimeout(() => setGespeichert(false), 2000);
     }
@@ -8172,7 +8188,12 @@ function AenderungshinweisVerwaltung() {
       <p className="text-xs text-gray-500 mb-3">Erscheint als Popup bei allen Spielern, die ihn noch nicht gesehen haben.</p>
       <input value={titel} onChange={(e) => setTitel(e.target.value)} placeholder="Titel" className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
       <textarea value={beschreibung} onChange={(e) => setBeschreibung(e.target.value)} placeholder="Beschreibung" rows={3} className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
+      <label className="flex items-center gap-2 text-xs text-gray-600 mb-3">
+        <input type="checkbox" checked={perMail} onChange={(e) => setPerMail(e.target.checked)} />
+        Zusätzlich per E-Mail an alle Spieler senden
+      </label>
       {gespeichert && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>Angelegt ✓</p>}
+      {mailInfo && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>{mailInfo}</p>}
       <button onClick={anlegen} disabled={ladend} className="px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: COLORS.orange, opacity: ladend ? 0.6 : 1 }}>
         {ladend ? "Speichere…" : "Änderungshinweis anlegen"}
       </button>
@@ -8239,7 +8260,7 @@ function AenderungsPopup({ profil }) {
           {updates.map((u) => (
             <div key={u.id}>
               <p className="font-semibold text-sm mb-1" style={{ color: COLORS.anthracite }}>{u.titel}</p>
-              <p className="text-sm text-gray-600">{u.beschreibung}</p>
+              <p className="text-sm text-gray-600 whitespace-pre-line">{u.beschreibung}</p>
             </div>
           ))}
         </div>
