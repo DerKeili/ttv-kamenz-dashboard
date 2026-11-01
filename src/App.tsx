@@ -7936,18 +7936,21 @@ const EMAIL_ARTEN = [
   { feld: "email_zusagenwarnung", titel: "Warnung bei zu wenigen Zusagen", nurLeitung: true, text: "Nur für die Mannschaftsführung: Übersicht, wenn für ein anstehendes Spiel zu wenige Spieler zugesagt haben." },
   { feld: "email_aufstellung", titel: "Spielaufstellung", text: "Nachricht, wenn du für ein Spiel aufgestellt wurdest — mit Reihenfolge und Doppelpaaren." },
   { feld: "email_neuigkeiten", titel: "Neuigkeiten und Spielberichte", text: "Wenn ein Beitrag unter \"Neuigkeiten aus dem Verein\" oder ein neuer Spielbericht veröffentlicht wird." },
+  { feld: "email_updates", titel: "Updates zur App", text: "Nur bei größeren Neuerungen oder wichtigen Änderungen an der App. Kleine Änderungen erscheinen nur als Hinweis in der App, nicht per Mail." },
 ];
 
 function EmailEinstellungen({ profil, onProfilGeaendert }) {
+  // "Updates zur App" erscheint erst, wenn es die Spalte in der Datenbank gibt — sonst würde das Speichern scheitern
+  const vorhandeneArten = EMAIL_ARTEN.filter((a) => a.feld !== "email_updates" || "email_updates" in profil);
   const [werte, setWerte] = useState(() =>
-    Object.fromEntries(EMAIL_ARTEN.map((a) => [a.feld, profil[a.feld] ?? true]))
+    Object.fromEntries(vorhandeneArten.map((a) => [a.feld, profil[a.feld] ?? true]))
   );
   const [gespeichert, setGespeichert] = useState(false);
   const [ladend, setLadend] = useState(false);
   const [fehler, setFehler] = useState(null);
 
   // Die Zusagen-Warnung sieht nur, wer auch tatsächlich aufstellen muss
-  const relevanteArten = EMAIL_ARTEN.filter(
+  const relevanteArten = vorhandeneArten.filter(
     (a) => !a.nurLeitung || profil.ist_admin || istTeamLeiter(profil)
   );
 
@@ -8157,6 +8160,7 @@ function AenderungshinweisVerwaltung() {
 
   async function anlegen() {
     if (!titel.trim() || !beschreibung.trim()) return;
+    if (perMail && !window.confirm("Dieser Hinweis geht zusätzlich als E-Mail an alle Spieler, die Update-Mails nicht abgeschaltet haben. Wirklich senden?\n\nNur bei größeren Neuerungen oder wichtigen Änderungen.")) return;
     setLadend(true);
     setMailInfo(null);
     const { data: neu, error } = await supabase
@@ -8185,12 +8189,15 @@ function AenderungshinweisVerwaltung() {
   return (
     <div className="bg-white rounded-lg border p-5">
       <SectionLabel icon={Sparkles}>Neuen Änderungshinweis anlegen</SectionLabel>
-      <p className="text-xs text-gray-500 mb-3">Erscheint als Popup bei allen Spielern, die ihn noch nicht gesehen haben.</p>
+      <p className="text-xs text-gray-500 mb-3">Erscheint als Popup bei allen Spielern, die ihn noch nicht gesehen haben. Eine E-Mail geht nur raus, wenn du sie unten ausdrücklich anhakst.</p>
       <input value={titel} onChange={(e) => setTitel(e.target.value)} placeholder="Titel" className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
       <textarea value={beschreibung} onChange={(e) => setBeschreibung(e.target.value)} placeholder="Beschreibung" rows={3} className="w-full border rounded-md px-3 py-2 text-sm mb-3" />
-      <label className="flex items-center gap-2 text-xs text-gray-600 mb-3">
-        <input type="checkbox" checked={perMail} onChange={(e) => setPerMail(e.target.checked)} />
-        Zusätzlich per E-Mail an alle Spieler senden
+      <label className="flex items-start gap-2 text-xs text-gray-600 mb-3">
+        <input type="checkbox" checked={perMail} onChange={(e) => setPerMail(e.target.checked)} className="mt-0.5" />
+        <span>
+          <span className="font-medium">Auch per E-Mail senden</span>
+          <span className="block text-gray-500">Nur bei größeren Neuerungen oder wichtigen Änderungen. Wer „Updates zur App“ abgeschaltet hat, bekommt keine Mail.</span>
+        </span>
       </label>
       {gespeichert && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>Angelegt ✓</p>}
       {mailInfo && <p className="text-xs mb-2" style={{ color: COLORS.petrol }}>{mailInfo}</p>}
