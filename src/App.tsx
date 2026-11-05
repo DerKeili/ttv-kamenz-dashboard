@@ -230,6 +230,22 @@ function effektivesSpielDatum(spiel) {
   return spiel?.verlegt_auf ?? spiel?.datum ?? null;
 }
 
+// Spiele nach ihrem tatsächlichen Termin ordnen: Ein verlegtes Spiel gehört dorthin, wo es jetzt stattfindet —
+// nicht dorthin, wo es ursprünglich stand. (Die Datenbank kann nur nach dem ursprünglichen Datum sortieren.)
+function nachTermin(spiele) {
+  const zeit = (s) => {
+    const t = new Date(effektivesSpielDatum(s) ?? 0).getTime();
+    return Number.isFinite(t) ? t : 0;
+  };
+  return [...(spiele ?? [])].sort((a, b) => zeit(a) - zeit(b));
+}
+
+// Das nächste anstehende Spiel (nach dem tatsächlichen Termin, nicht nach dem ursprünglichen)
+function naechstesAnstehendesSpiel(spiele) {
+  const jetzt = Date.now();
+  return nachTermin(spiele).find((s) => new Date(effektivesSpielDatum(s) ?? 0).getTime() >= jetzt) ?? null;
+}
+
 // Verlegt UND der ursprüngliche Termin ist bekannt — nur dann gibt es etwas durchzustreichen.
 // Bei vom Verband verlegten Spielen ohne bekannten alten Termin sind datum und verlegt_auf gleich.
 function verlegungMitAltemTermin(spiel) {
@@ -964,7 +980,7 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
     (async () => {
       const [{ data: tabelleZeile }, { data: spiele }, { data: profile }, { data: kalender }, { data: umfragen }, { data: eigeneAntworten }, { data: nachrichten }] = await Promise.all([
         supabase.from("tabelle").select("*").eq("saison_id", saison.id).eq("ist_eigenes_team", true).maybeSingle(),
-        supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).gte("datum", new Date().toISOString()).order("datum").limit(1),
+        supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id),
         supabase.from("profiles").select("id, vorname, nachname, geburtstag"),
         supabase.from("kalender_ereignisse").select("*").gte("datum", new Date().toISOString()).order("datum").limit(4),
         supabase.from("umfragen").select("id, titel, anonym").eq("aktiv", true),
@@ -972,7 +988,7 @@ function Dashboard({ saison, profil, onOeffneUmfrage, onOeffneNachricht, onOeffn
         supabase.from("nachrichten").select("id, von_id").eq("an_id", profil.id).eq("gelesen", false),
       ]);
       setEigenerTabellenplatz(tabelleZeile ?? null);
-      setNaechstesSpiel(spiele?.[0] ?? null);
+      setNaechstesSpiel(naechstesAnstehendesSpiel(spiele));
       setGeburtstag(naechsterGeburtstag(profile ?? []));
       setTermine(kalender ?? []);
       const beantwortetIds = new Set((eigeneAntworten ?? []).map((a) => a.umfrage_id));
@@ -1799,14 +1815,8 @@ function MannschaftsUebersicht({ profil }) {
           .maybeSingle();
         if (!saison) return { mannschaft: m, spiel: null, jaAnzahl: 0, aushilfenAnzahl: 0, anfrageLaeuft: false };
 
-        const { data: spiel } = await supabase
-          .from("verbands_spiele")
-          .select("*")
-          .eq("saison_id", saison.id)
-          .gte("datum", new Date().toISOString())
-          .order("datum")
-          .limit(1)
-          .maybeSingle();
+        const { data: saisonSpiele } = await supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id);
+        const spiel = naechstesAnstehendesSpiel(saisonSpiele);
         if (!spiel) return { mannschaft: m, spiel: null, jaAnzahl: 0, aushilfenAnzahl: 0, anfrageLaeuft: false };
 
         // Zusagen, eingeplante Aushilfen und bereits gestellte Anfragen zusammen holen —
@@ -2713,7 +2723,7 @@ function Spielerplanung({ saison, profil, onOeffneUmfragen, zielVerlegungSpielId
       supabase.from("spielerplanung_meldungen").select("*").eq("saison_id", saison.id),
       supabase.from("abwesenheiten").select("spieler_id, von, bis, grund, notiz"),
     ]);
-    setSpiele(spieleDaten ?? []);
+    setSpiele(nachTermin(spieleDaten));
     setSpieler(spielerDaten ?? []);
     const map = {};
     (spieleDaten ?? []).forEach((s) => { map[s.id] = {}; (spielerDaten ?? []).forEach((sp) => { map[s.id][sp.id] = "offen"; }); });
@@ -4008,7 +4018,7 @@ function Ergebnisse({ saison, profil }) {
   async function laden(still = false) {
     if (!still) setLadend(true);
     const { data } = await supabase.from("verbands_spiele").select("*").eq("saison_id", saison.id).eq("runde", runde).order("datum");
-    setSpiele(data ?? []);
+    setSpiele(nachTermin(data));
     setLadend(false);
   }
 
@@ -4914,7 +4924,7 @@ function Kalender({ profil }) {
                 ) : (
                   <div className="flex items-center gap-3 shrink-0 ml-auto">
                     <KalenderExportMenu ereignis={e} />
-                    {darfMannschaftVerwalten(profil, e.mannschaft_id) && (
+                    {(darfMannschaftVerwalten(profil, e.mannschaft_id) || (istTeamLeiter(profil) && e.erstellt_von === profil.id)) && (
                       <>
                         <button onClick={() => bearbeitenStarten(e)} className="text-gray-400 hover:text-gray-600">
                           <Pencil size={16} />
@@ -5009,7 +5019,7 @@ function Kalender({ profil }) {
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Sichtbar für</label>
-              {profil.ist_admin ? (
+              {profil.ist_admin || istTeamLeiter(profil) ? (
                 <select value={form.mannschaftId} onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })} className="w-full border rounded-md px-3 py-2 text-sm">
                   <option value="">Alle Mannschaften</option>
                   {mannschaften.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -6361,6 +6371,9 @@ function Spielerverwaltung({ profil }) {
 /* ---------- Umfragen ---------- */
 
 function Umfragen({ profil, zielUmfrageId }) {
+  // Admins und Mannschaftsführung (auch Stellvertreter) dürfen Umfragen an alle Spieler, an jede Mannschaft oder an
+  // beliebige einzelne Spieler schicken
+  const darfAlle = Boolean(profil.ist_admin || istTeamLeiter(profil));
   const [umfragen, setUmfragen] = useState([]);
   const [antwortenNachUmfrage, setAntwortenNachUmfrage] = useState({});
   const [aushilfen, setAushilfen] = useState([]);
@@ -6713,7 +6726,7 @@ function Umfragen({ profil, zielUmfrageId }) {
     // steuern trotzdem weiterhin die einzelnen Ziel-Einträge unten.
     const mannschaftIdFuerInsert = form.empfaenger === "mannschaft"
       ? form.mannschaftId
-      : (!profil.ist_admin ? profil.mannschaft_id : null);
+      : (!darfAlle ? profil.mannschaft_id : null);
 
     setSpeichernLadend(true);
     const { data: neueUmfrage, error } = await supabase
@@ -6815,7 +6828,7 @@ function Umfragen({ profil, zielUmfrageId }) {
 
           <label className="block text-xs text-gray-500 mb-1">Empfänger</label>
           <div className="flex gap-2 mb-3">
-            {profil.ist_admin && (
+            {darfAlle && (
               <button
                 onClick={() => setForm({ ...form, empfaenger: "alle" })}
                 className="px-3 py-1.5 rounded-full text-sm font-semibold"
@@ -6832,15 +6845,15 @@ function Umfragen({ profil, zielUmfrageId }) {
               Einzelne Spieler
             </button>
             <button
-              onClick={() => setForm({ ...form, empfaenger: "mannschaft", mannschaftId: profil.ist_admin ? form.mannschaftId : profil.mannschaft_id })}
+              onClick={() => setForm({ ...form, empfaenger: "mannschaft", mannschaftId: darfAlle ? (form.mannschaftId || profil.mannschaft_id || "") : profil.mannschaft_id })}
               className="px-3 py-1.5 rounded-full text-sm font-semibold"
               style={form.empfaenger === "mannschaft" ? { background: COLORS.orange, color: "white" } : { background: "#fff", border: "1px solid #ddd" }}
             >
-              {profil.ist_admin ? "Eine Mannschaft" : "Meine Mannschaft"}
+              {darfAlle ? "Eine Mannschaft" : "Meine Mannschaft"}
             </button>
           </div>
 
-          {form.empfaenger === "mannschaft" && profil.ist_admin && (
+          {form.empfaenger === "mannschaft" && darfAlle && (
             <select
               value={form.mannschaftId}
               onChange={(e) => setForm({ ...form, mannschaftId: e.target.value })}
@@ -6853,7 +6866,7 @@ function Umfragen({ profil, zielUmfrageId }) {
 
           {form.empfaenger === "einzeln" && (
             <div className="grid sm:grid-cols-2 gap-1 mb-3 max-h-40 overflow-y-auto border rounded-md p-2">
-              {spielerListe.filter((s) => profil.ist_admin || s.mannschaft_id === profil.mannschaft_id).map((s) => (
+              {spielerListe.filter((s) => darfAlle || s.mannschaft_id === profil.mannschaft_id).map((s) => (
                 <label key={s.id} className="flex items-center gap-2 text-sm py-1">
                   <input
                     type="checkbox"
@@ -9525,9 +9538,9 @@ function News({ profil }) {
   const [fehler, setFehler] = useState(null);
 
   const darfSchreiben = profil.ist_admin || istTeamLeiter(profil) || profil.darf_news === true;
-  // Admins und Personen mit der Zusatzberechtigung dürfen für jede Mannschaft und den ganzen Verein schreiben,
-  // alle anderen nur für die eigene Mannschaft
-  const darfFuerAlle = Boolean(profil.ist_admin || profil.darf_news_alle === true);
+  // Admins, Mannschaftsführer, Stellvertreter und Personen mit der Zusatzberechtigung dürfen für jede Mannschaft und
+  // den ganzen Verein schreiben, alle anderen nur für die eigene Mannschaft
+  const darfFuerAlle = Boolean(profil.ist_admin || istTeamLeiter(profil) || profil.darf_news_alle === true);
 
   async function laden() {
     setLadend(true);
@@ -10109,7 +10122,7 @@ function Analyse({ saison, profil }) {
       supabase.from("gegner_einsaetze").select("*").eq("saison_id", saison.id),
     ]);
     setEinsaetze(einsatzDaten ?? []);
-    setSpiele(spieleDaten ?? []);
+    setSpiele(nachTermin(spieleDaten));
     setEigene(info?.spieler ?? []);
     setBenoetigt(mannschaft?.benoetigte_spieler ?? 4);
     setEigenerTeamName(mannschaft?.verband_name ?? null);
